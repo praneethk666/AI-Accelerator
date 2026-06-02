@@ -1,9 +1,9 @@
 # Base
 pyyaml
 pytest
+langgraph>=1.2,<2.0
 
 # Add yours in your PR, e.g.:
-# langgraph
 # pymupdf
 # openpyxl
 # pandas

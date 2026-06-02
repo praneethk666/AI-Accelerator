@@ -10,6 +10,10 @@ steps:
   - enrich_chunks
   - embed
   - index
+# route_gates: a listed step runs only for these routes (else the graph skips it).
+# vision is expensive -> only on diagram/scanned routes, never text_default.
+route_gates:
+  vision_enrichment: [diagram_heavy, scanned_heavy]
 vision:
   enabled: true
   dpi: 150

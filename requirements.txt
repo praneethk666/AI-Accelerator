@@ -1,0 +1,12 @@
+# Base
+pyyaml
+pytest
+
+# Add yours in your PR, e.g.:
+# langgraph
+# pymupdf
+# openpyxl
+# pandas
+# python-pptx
+# fastapi
+# uvicorn

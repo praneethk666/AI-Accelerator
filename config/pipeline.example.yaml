@@ -1,0 +1,27 @@
+# A pipeline profile. The categorize tool picks the route; the route selects
+# which steps run and their settings. Copy/extend per client or document type.
+route: diagram_heavy
+steps:
+  - categorize
+  - page_profile
+  - pdf_extraction
+  - vision_enrichment
+  - chunk
+  - enrich_chunks
+  - embed
+  - index
+vision:
+  enabled: true
+  dpi: 150
+  max_images_per_call: 3
+  min_image_px: 150
+  timeout_s: 45
+  max_concurrency: 4
+chunking:
+  strategy: recursive
+  size: 800
+  overlap: 100
+retrieval:
+  mode: hybrid
+  top_n: 20
+  rerank: true

@@ -50,15 +50,24 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
             return END
         return route
 
-    dest_map = {s: s for s in steps}
-    dest_map[END] = END
+    # reachable targets from position i: walk forward, stop at the first UNGATED
+    # step (it always runs, so nothing past it is reachable). END only if all the
+    # rest are skippable. Keeps the graph a clean chain with branches only at gates.
+    def dests_after(i: int) -> dict:
+        d = {}
+        for s in steps[i + 1:]:
+            d[s] = s
+            if s not in gates:  # ungated -> always runs, can't skip past it
+                return d
+        d[END] = END
+        return d
 
     if not steps:
         sg.add_edge(START, END)
     else:
-        sg.add_conditional_edges(START, next_from(-1), dest_map)
+        sg.add_conditional_edges(START, next_from(-1), dests_after(-1))
         for i, step in enumerate(steps):
-            sg.add_conditional_edges(step, next_from(i), dest_map)
+            sg.add_conditional_edges(step, next_from(i), dests_after(i))
 
     return sg.compile()
 

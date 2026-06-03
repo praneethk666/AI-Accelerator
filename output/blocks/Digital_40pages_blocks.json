@@ -1,6 +1,6 @@
 [
   {
-    "block_id": "c76cdadb-53b4-47bd-98ee-2a8b41736658",
+    "block_id": "38882565-79a0-4d0b-9060-8afce4c35c22",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 1 metrics",
@@ -19,12 +19,12 @@
       "raster_images_total": 2,
       "significant_images": 2,
       "vector_drawings_total": 28,
-      "significant_vectors": 2,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "091fa9ae-be9f-4b6f-8e6e-5fd9e157134c",
+    "block_id": "d138ae59-4a9a-4f58-8fd0-2d2c28669725",
     "document_id": "test1",
     "type": "heading",
     "text": "iCube II User Guide",
@@ -41,7 +41,7 @@
     "metadata": {}
   },
   {
-    "block_id": "519fd666-2d5b-4223-ab06-90b6665400b9",
+    "block_id": "5b9bb80d-f9bc-40e1-a7bc-4506107a4a43",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Image - awaiting vision enrichment]",
@@ -51,7 +51,12 @@
       "page": 1,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        21.659128189086914,
+        40.64378356933594,
+        232.33033752441406,
+        262.47027587890625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -61,7 +66,7 @@
     }
   },
   {
-    "block_id": "701b96dc-f358-44f7-8ab0-f17d1793f11f",
+    "block_id": "e3677adc-e7fc-4161-8a27-7b69910b834f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Image - awaiting vision enrichment]",
@@ -71,7 +76,12 @@
       "page": 1,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        21.659128189086914,
+        40.64378356933594,
+        243.45010375976562,
+        262.47027587890625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -81,47 +91,7 @@
     }
   },
   {
-    "block_id": "bcc520a8-ff23-4d89-a841-5adc8aa3ab2e",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 1,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "6cc1be7f-34eb-4da7-bab7-3dea01ede455",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 1,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "02e4034e-6deb-4da8-b197-a6b0d3431896",
+    "block_id": "2f0238b7-c782-4044-a6ee-aef55435313f",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 2 metrics",
@@ -145,7 +115,7 @@
     }
   },
   {
-    "block_id": "df5b8b25-97a1-4852-b847-9753db35388d",
+    "block_id": "6f2db894-fd61-4e9a-931c-2a3ffc2f927b",
     "document_id": "test1",
     "type": "heading",
     "text": "Contents 1. \tWelcome 4 2. \tDescription 5 3. \tiCube II accessories (optional) 6 4. \tGetting started 7 4.1 Setting up the power supply 7 4.2 Charging the battery 8 4.3 Operating time 10 4.4 Switching iCube II On and Off 10 4.5 Target fitting software requirements 10 5. \tConnecting iCube II to your computer 11 5.1 Connecting wirelessly 11 5.2 Connecting via USB cable 13",
@@ -162,7 +132,7 @@
     "metadata": {}
   },
   {
-    "block_id": "a07de338-54a9-4f03-9b4b-76eb30fadfe1",
+    "block_id": "015f817e-cf60-4bc0-8a84-172f311caffe",
     "document_id": "test1",
     "type": "text",
     "text": "2",
@@ -179,7 +149,7 @@
     "metadata": {}
   },
   {
-    "block_id": "cd2c2359-60e4-4123-a3b9-59203ab64979",
+    "block_id": "dbe6e5ef-f9eb-4947-829b-2f567ea02085",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 3 metrics",
@@ -203,7 +173,7 @@
     }
   },
   {
-    "block_id": "24ac107a-922f-489b-872a-b85e053f3069",
+    "block_id": "3e125096-228f-4589-8abd-4c728166fb37",
     "document_id": "test1",
     "type": "text",
     "text": "6. \tUsing iCube II 14 6.1 Wearing iCube II 14 6.2 Detecting and programming hearing instruments 15 6.3 Programming hearing instruments on your desk 16 7.\t Indicator lights 17 8. \tTroubleshooting 20 9. \tService and warranty 22 9.1 Local warranty 22 9.2 International warranty 22 9.3 Warranty limitation 22 10. \tCompliance information 23 11. \tInformation and description of symbols 28 12.\t\t Important safety information 32",
@@ -220,7 +190,7 @@
     "metadata": {}
   },
   {
-    "block_id": "94fc4787-001a-4742-aa25-57ac37358497",
+    "block_id": "4ba9c42d-99cc-46c4-9fae-a7e359f3ae21",
     "document_id": "test1",
     "type": "text",
     "text": "3",
@@ -237,7 +207,7 @@
     "metadata": {}
   },
   {
-    "block_id": "df1d9048-0dd4-492d-b470-d767c8e139de",
+    "block_id": "26495ae7-0bc4-474b-9074-f59a6e4b6f0d",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 4 metrics",
@@ -256,12 +226,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 6,
-      "significant_vectors": 0,
+      "significant_vectors": 1,
       "has_table": false
     }
   },
   {
-    "block_id": "3814b0a6-65d3-42d3-9225-4100fb885bf7",
+    "block_id": "0874bc65-a6ad-4436-ac37-a7b0c7ddc5e5",
     "document_id": "test1",
     "type": "heading",
     "text": "1.\tWelcome iCube II is designed specifically for use by the hearing care professional. Please read this user guide carefully to benefit from all the features of the iCube II . For further information, please visit the Phonak website www.phonak-us.com Phonak \u2013 life is on www.phonak-us.com",
@@ -278,7 +248,7 @@
     "metadata": {}
   },
   {
-    "block_id": "bbf1fd96-9118-462d-b987-99cc826d49fa",
+    "block_id": "781b6cac-a714-4097-b4a4-d3eb3ea5be40",
     "document_id": "test1",
     "type": "text",
     "text": "CE mark applied: 2014 4",
@@ -295,7 +265,32 @@
     "metadata": {}
   },
   {
-    "block_id": "5325eccf-67b5-487c-bb3f-ee539be7364d",
+    "block_id": "7795c8d3-61c8-4c48-90f9-dd5899adc29a",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        55.42499923706055,
+        295.94598388671875,
+        73.5469970703125,
+        321.677978515625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "f9f70fc3-fb95-4e8a-9d15-4be0d19d053b",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 5 metrics",
@@ -314,12 +309,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 99,
-      "significant_vectors": 6,
+      "significant_vectors": 8,
       "has_table": false
     }
   },
   {
-    "block_id": "544789fe-bc6e-4426-b143-0fc9fad9b0c3",
+    "block_id": "f19c8bac-5b60-4ef4-aba0-e7a9fa43834a",
     "document_id": "test1",
     "type": "heading",
     "text": "2. Description The intended use of this device is the wireless transfer of fitting data from the PC to the client\u2019s hearing instruments. Rear neckloop opening",
@@ -336,7 +331,7 @@
     "metadata": {}
   },
   {
-    "block_id": "3bb99b9a-7f2f-42f5-a5ba-25416557916b",
+    "block_id": "b238cbc5-3c2e-42f0-8e66-667bceac3561",
     "document_id": "test1",
     "type": "text",
     "text": "Neckloop plugs Middle indicator light (battery state and PC data transfer) Pairing On/Off button Right indicator Left indicator light (data light (data transfer) transfer) Mini USB charging input Wireless iCube II USB adapter 5",
@@ -353,7 +348,7 @@
     "metadata": {}
   },
   {
-    "block_id": "cc2a7712-6cd5-429c-b3fe-1c6a5f123046",
+    "block_id": "f813b0c6-834a-4e46-97c1-3f51c85e54b1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -363,7 +358,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        67.2968978881836,
+        312.4869079589844,
+        98.8279037475586,
+        330.7109069824219
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -373,7 +373,7 @@
     }
   },
   {
-    "block_id": "39fded83-4305-4a39-ac66-8e9131e14fdd",
+    "block_id": "ebdf74ba-3610-48e1-b876-37013001875a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -383,7 +383,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        90.04720306396484,
+        117.72979736328125,
+        117.14820098876953,
+        135.13980102539062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -393,7 +398,7 @@
     }
   },
   {
-    "block_id": "5cd4c5b6-e6d8-4dd2-8055-b9ec9bee2886",
+    "block_id": "aa182e91-3e2b-4646-b1aa-27e60c8aa40e",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -403,7 +408,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.57730102539062,
+        117.05859375,
+        206.1042938232422,
+        134.67160034179688
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -413,7 +423,7 @@
     }
   },
   {
-    "block_id": "1ceae536-af8c-4447-9f38-3f6b1c532254",
+    "block_id": "e862ad52-b7d4-40cb-8fd1-12ac202eaf66",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -423,7 +433,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        101.5658950805664,
+        166.656005859375,
+        172.8199005126953,
+        269.23699951171875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -433,7 +448,7 @@
     }
   },
   {
-    "block_id": "9c8a6671-69be-4d12-83b8-09412c2065e2",
+    "block_id": "22b96ef4-d286-44d3-9e19-d72c0eea09aa",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -443,7 +458,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        100.94230651855469,
+        166.1890869140625,
+        172.1953125,
+        268.9300842285156
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -453,7 +473,7 @@
     }
   },
   {
-    "block_id": "348ec28e-830b-499f-b224-bbf5fc4890a5",
+    "block_id": "3a6a5d76-97c8-40f5-88ed-fb3c36531b98",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -463,7 +483,12 @@
       "page": 5,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        107.59040069580078,
+        172.77450561523438,
+        165.12840270996094,
+        261.91351318359375
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -473,7 +498,57 @@
     }
   },
   {
-    "block_id": "e53fc6e9-64f9-476c-90c2-a6de2b139980",
+    "block_id": "9ec951b2-f773-476d-9212-2f18220108cd",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 5,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        111.81790161132812,
+        229.34458923339844,
+        161.06690979003906,
+        255.37258911132812
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "b945eb98-5579-4a6f-a10d-5b583b8f274f",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 5,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        101.69839477539062,
+        166.91818237304688,
+        171.15640258789062,
+        268.3201904296875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "35541c33-8fa6-4fd7-bf43-565bcfb2abb0",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 6 metrics",
@@ -492,12 +567,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 6,
-      "significant_vectors": 1,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "55cdee07-46a5-411c-b1c7-4ff6aa43f6b0",
+    "block_id": "2835c86a-5a6c-4372-a82d-914f506b723e",
     "document_id": "test1",
     "type": "heading",
     "text": "3.\tiCube II accessories (optional) J USB cable, 3\u2009m (10\u2009ft) J iCube II desktop stand J USB hub Contents may vary depending on country.",
@@ -514,7 +589,7 @@
     "metadata": {}
   },
   {
-    "block_id": "7c3a5e5d-392e-418d-8d5a-122f2a56605c",
+    "block_id": "b63342bc-661a-4cf6-8e98-6de3bcf45fc7",
     "document_id": "test1",
     "type": "text",
     "text": "6",
@@ -531,27 +606,7 @@
     "metadata": {}
   },
   {
-    "block_id": "89609660-bc97-414f-8912-229d9fecfbdc",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 6,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "a1639dc3-a0a9-45f8-9773-615838560d41",
+    "block_id": "1024d643-2a42-46b0-b011-b11d19ca8f4d",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 7 metrics",
@@ -570,12 +625,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 150,
-      "significant_vectors": 4,
+      "significant_vectors": 12,
       "has_table": false
     }
   },
   {
-    "block_id": "ae3c6490-2723-4026-9276-89d669fa0bbd",
+    "block_id": "27d5abcf-7ebf-4a48-926d-42c170554fb8",
     "document_id": "test1",
     "type": "heading",
     "text": "4. Getting started 4.1 Setting up the power supply Select the adapter for your country.",
@@ -592,7 +647,7 @@
     "metadata": {}
   },
   {
-    "block_id": "5e477af1-19da-4433-ab4c-62f703833453",
+    "block_id": "a87c6ed0-04f9-4628-a2a5-1cba3f412c7c",
     "document_id": "test1",
     "type": "text",
     "text": "US EU 1. 1.\tInsert the top round end of the adapter into the round corner of the power supply. 2.\tClick the tail of the adapter in 2. to lock it into place. 1.\tTo remove, pull back the tab on the power supply. 2.\tPull the adapter upwards to remove it. 2. 1.",
@@ -609,7 +664,7 @@
     "metadata": {}
   },
   {
-    "block_id": "24e0a14d-785c-47af-973d-df926c38a31f",
+    "block_id": "57841e05-36ac-4596-bb38-25a01db437ab",
     "document_id": "test1",
     "type": "text",
     "text": "7",
@@ -626,7 +681,7 @@
     "metadata": {}
   },
   {
-    "block_id": "467af722-e4d4-4c8f-9cb0-bf58b7e7fe28",
+    "block_id": "e956acdb-2df5-44b1-b671-f2cfe94e0aa7",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -636,7 +691,12 @@
       "page": 7,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        187.17160034179688,
+        217.17218017578125,
+        208.73060607910156,
+        269.07818603515625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -646,7 +706,7 @@
     }
   },
   {
-    "block_id": "87655b7d-d01a-4007-9a5a-f39e27e05b52",
+    "block_id": "be9160aa-a876-47a1-85bc-71c616304b00",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -656,7 +716,12 @@
       "page": 7,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        164.7740020751953,
+        165.07618713378906,
+        202.01400756835938,
+        210.87118530273438
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -666,7 +731,7 @@
     }
   },
   {
-    "block_id": "67fad262-47e8-4a59-9276-01d6ed2e4b8b",
+    "block_id": "036b59b5-8136-42c2-a8bc-d0191b2418b3",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -676,7 +741,12 @@
       "page": 7,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        187.03379821777344,
+        165.1429901123047,
+        201.99378967285156,
+        210.87098693847656
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -686,7 +756,7 @@
     }
   },
   {
-    "block_id": "8a8fed6b-d500-43d0-9181-ffc1f616b36f",
+    "block_id": "49b65112-6ca7-46ce-a5d3-ecddd0bc43aa",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -696,7 +766,12 @@
       "page": 7,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        187.37779235839844,
+        165.1519012451172,
+        202.02178955078125,
+        210.81289672851562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -706,7 +781,207 @@
     }
   },
   {
-    "block_id": "065acc6e-e611-481f-98e8-977ee108e120",
+    "block_id": "8f9483f6-6cd6-44c7-80ca-53165db54dd9",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        166.09080505371094,
+        191.74349975585938,
+        196.3778076171875,
+        210.71949768066406
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "c08a7e6d-9d4f-40fd-97e5-870c9d44b8c6",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        208.095703125,
+        164.9405975341797,
+        228.78070068359375,
+        193.9416046142578
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "54560d23-c7f8-4957-a8dd-cce7314f5a38",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        206.5550994873047,
+        190.15618896484375,
+        235.91709899902344,
+        207.97219848632812
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "6811a8bb-fc91-4e07-9a83-684cc9b5dd9f",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        194.722412109375,
+        294.5647888183594,
+        216.389404296875,
+        346.7317810058594
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "8a0aadbd-5dde-403d-b5e8-08f98fa638a9",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        172.2126922607422,
+        242.20730590820312,
+        209.63870239257812,
+        288.2312927246094
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "9cbdf207-5487-4ada-ba93-31f52d90ed3e",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        194.58409118652344,
+        242.29818725585938,
+        209.63909912109375,
+        288.231201171875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "a42fe2d9-f0f7-4cb1-adab-1f9649d4645e",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        194.92950439453125,
+        242.2764892578125,
+        209.6475067138672,
+        288.1734924316406
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "20d3757f-c27c-482b-98e9-6e452a0299e2",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        173.53619384765625,
+        269.0093078613281,
+        203.90419006347656,
+        288.0252990722656
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "ffd5c22d-2f3d-4c27-b726-14f99d315be4",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 8 metrics",
@@ -725,12 +1000,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 209,
-      "significant_vectors": 23,
+      "significant_vectors": 27,
       "has_table": false
     }
   },
   {
-    "block_id": "bbe1b22f-0634-43b7-a332-fc4883f24fc0",
+    "block_id": "c158474b-e7aa-4155-a802-5ed8d53ce286",
     "document_id": "test1",
     "type": "text",
     "text": "4. Getting started 4.2 Charging the battery Plug a mini-USB plug into the iCube II and plug the power supply into a power outlet.",
@@ -747,7 +1022,7 @@
     "metadata": {}
   },
   {
-    "block_id": "07ac2f94-280f-4510-887e-8f4cd3593c9c",
+    "block_id": "5e7e0dfc-8e0b-4522-a5e5-1e58d27468f8",
     "document_id": "test1",
     "type": "text",
     "text": "If you use the iCube II desktop stand, install it as shown below.",
@@ -764,7 +1039,7 @@
     "metadata": {}
   },
   {
-    "block_id": "3d0383dd-e67e-41ea-9a30-37f7375afd59",
+    "block_id": "e3eb0780-a52c-4e69-bd9f-3ec2e15510ee",
     "document_id": "test1",
     "type": "text",
     "text": "It is recommended to charge iCube II whenever it is not in use. This way it will be sufficiently charged and ready for the next fitting session.",
@@ -781,7 +1056,7 @@
     "metadata": {}
   },
   {
-    "block_id": "e119aa58-ad04-4397-819a-84e1cad65286",
+    "block_id": "7bb4d013-6301-4bdf-819c-3bd438573807",
     "document_id": "test1",
     "type": "text",
     "text": "8",
@@ -798,7 +1073,7 @@
     "metadata": {}
   },
   {
-    "block_id": "16c54c6c-9a1f-4a0c-ad67-adb81ff75f1a",
+    "block_id": "a7212a69-14c1-4133-aa8a-f25f3d71620c",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -808,7 +1083,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        54.29999542236328,
+        197.5345001220703,
+        83.72899627685547,
+        229.87548828125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -818,7 +1098,7 @@
     }
   },
   {
-    "block_id": "6e5f2b54-d2d6-40ba-ae89-fb4f800b4e3a",
+    "block_id": "bee2b256-2c06-4f33-af77-2a04af2c7457",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -828,7 +1108,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        69.90430450439453,
+        232.3142852783203,
+        111.69730377197266,
+        266.87530517578125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -838,7 +1123,7 @@
     }
   },
   {
-    "block_id": "6c9502d3-b7c4-424e-8f89-48dece49133f",
+    "block_id": "fb6593e9-16b9-4bc5-ac0c-df71e7415d3a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -848,7 +1133,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        69.94300079345703,
+        232.10079956054688,
+        111.66200256347656,
+        261.32281494140625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -858,7 +1148,7 @@
     }
   },
   {
-    "block_id": "4ed57c0b-b488-4d8b-90d1-556be1242762",
+    "block_id": "621a7b88-bad6-4172-b359-99b0ee18e128",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -868,7 +1158,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        71.63890075683594,
+        234.8029022216797,
+        104.08390045166016,
+        252.78489685058594
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -878,7 +1173,7 @@
     }
   },
   {
-    "block_id": "e287cb78-9e73-4f4d-88f9-cc335037e4a5",
+    "block_id": "e46cd9e0-72c3-4a0c-b5f6-9e5af11cebfa",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -888,7 +1183,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        106.59950256347656,
+        230.50729370117188,
+        131.1634979248047,
+        255.1212921142578
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -898,7 +1198,7 @@
     }
   },
   {
-    "block_id": "32a69d08-af4b-4d40-a1ad-2fc7c98518ad",
+    "block_id": "91405d01-13f3-4335-a4bd-6b5de9d6644e",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -908,7 +1208,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        159.12890625,
+        235.8806915283203,
+        223.00689697265625,
+        251.94468688964844
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -918,7 +1223,7 @@
     }
   },
   {
-    "block_id": "d8a25cf9-dd33-4a3e-846e-9ff31969e5d9",
+    "block_id": "e9a0b9d4-ebf4-4558-b01d-399fc6fccba0",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -928,7 +1233,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        151.76290893554688,
+        204.6888885498047,
+        228.0579071044922,
+        250.96888732910156
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -938,7 +1248,7 @@
     }
   },
   {
-    "block_id": "e03bc080-ad69-4417-a798-ef3d1a521fe4",
+    "block_id": "d2b3668b-2ce5-4376-af16-efe335e68281",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -948,7 +1258,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        158.89968872070312,
+        235.5793914794922,
+        222.77670288085938,
+        251.64439392089844
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -958,7 +1273,7 @@
     }
   },
   {
-    "block_id": "f1e117aa-992f-4a98-ad44-5fb86c70475b",
+    "block_id": "0d4c6b89-d8dc-4e1c-9dfb-2e1ee729b9c1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -968,7 +1283,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        151.53350830078125,
+        204.38839721679688,
+        227.82850646972656,
+        250.66839599609375
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -978,7 +1298,7 @@
     }
   },
   {
-    "block_id": "5041599d-fdfe-42ee-a81a-9d5b95ff07d4",
+    "block_id": "fb189663-410b-43cc-b7bb-87d752783189",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -988,7 +1308,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        151.99771118164062,
+        204.38870239257812,
+        227.5037078857422,
+        239.07069396972656
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -998,7 +1323,7 @@
     }
   },
   {
-    "block_id": "0996bf53-e5d7-4104-91cf-91d1a2d718e3",
+    "block_id": "2cff685a-8e94-420c-b2b9-f7e023921660",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1008,7 +1333,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        152.5081024169922,
+        204.3885040283203,
+        228.06809997558594,
+        237.0205078125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1018,7 +1348,7 @@
     }
   },
   {
-    "block_id": "3a29160c-a004-4f87-b08b-6afcbf3cab6c",
+    "block_id": "201b4730-66ad-46a3-b53b-97571bb56772",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1028,7 +1358,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        170.63829040527344,
+        212.46310424804688,
+        209.727294921875,
+        241.24009704589844
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1038,7 +1373,7 @@
     }
   },
   {
-    "block_id": "ec0a8a0b-4d66-44c7-9861-49b50c9df11d",
+    "block_id": "54a7e903-d1a3-4a5c-8b0f-9914e2381cfc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1048,7 +1383,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        118.93980407714844,
+        251.4807891845703,
+        152.18881225585938,
+        266.3818054199219
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1058,7 +1398,7 @@
     }
   },
   {
-    "block_id": "2a931351-59ee-42fb-b754-8e08c903a2c6",
+    "block_id": "684238b0-23e9-4048-abb3-99fe883c87cc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1068,7 +1408,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        172.2086944580078,
+        172.26080322265625,
+        208.34869384765625,
+        227.23179626464844
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1078,7 +1423,7 @@
     }
   },
   {
-    "block_id": "30ff343a-f8f9-4a06-b62c-15328039ee62",
+    "block_id": "19fb4c0c-a512-4a7d-923d-c142fdcaf94d",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1088,7 +1433,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        171.9112091064453,
+        172.24468994140625,
+        208.15220642089844,
+        228.07469177246094
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1098,7 +1448,7 @@
     }
   },
   {
-    "block_id": "564ce438-2e1a-46e3-a79d-207027ff8e77",
+    "block_id": "a032a730-4e8d-47c7-a0a5-d9602a04a6b1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1108,7 +1458,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        172.25570678710938,
+        173.52499389648438,
+        204.43870544433594,
+        228.04098510742188
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1118,7 +1473,7 @@
     }
   },
   {
-    "block_id": "8f024bb3-6248-4af8-a943-fe1737039edb",
+    "block_id": "0527c4e3-d23f-4772-a855-a062302ffcbf",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1128,7 +1483,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        172.28781127929688,
+        174.15579223632812,
+        204.03480529785156,
+        228.07879638671875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1138,7 +1498,7 @@
     }
   },
   {
-    "block_id": "ebc869d0-9561-41b1-974c-0b03a30a2624",
+    "block_id": "ec1251df-8a3c-4946-9289-1b40af7dea3f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1148,7 +1508,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        176.5518035888672,
+        96.481689453125,
+        228.37380981445312,
+        160.8826904296875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1158,7 +1523,7 @@
     }
   },
   {
-    "block_id": "a1e48848-1968-49dd-90ef-97ee3c4a2257",
+    "block_id": "aadea2ff-dca3-4e01-ae18-53fa7afa5869",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1168,7 +1533,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        179.6208038330078,
+        101.56549072265625,
+        219.12579345703125,
+        165.98348999023438
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1178,7 +1548,7 @@
     }
   },
   {
-    "block_id": "0ed2e516-3b6c-470d-9d76-5eb12590eae8",
+    "block_id": "26a0bd95-8e9e-4abb-8247-098faa65d3ce",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1188,7 +1558,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        169.57199096679688,
+        40.45199966430664,
+        221.89300537109375,
+        94.90399932861328
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1198,7 +1573,7 @@
     }
   },
   {
-    "block_id": "2dc1cd5e-7bfa-4c12-b167-8c6a07bed0d6",
+    "block_id": "b3cd6b92-d02a-47f8-be66-5dcbfafebb93",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1208,7 +1583,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        169.30169677734375,
+        40.01218032836914,
+        221.62368774414062,
+        94.63517761230469
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1218,7 +1598,7 @@
     }
   },
   {
-    "block_id": "45921b65-1599-4acd-aca3-2dc7af1978d3",
+    "block_id": "ae655c3f-cceb-438b-8390-d2089fa8515a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1228,7 +1608,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        170.4453125,
+        40.19879913330078,
+        221.07130432128906,
+        85.41079711914062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1238,7 +1623,7 @@
     }
   },
   {
-    "block_id": "71ddde33-d04e-4528-a2d6-7a23df0f7c4d",
+    "block_id": "0548bd43-efd9-4e06-b4d1-f17bbbcc3ded",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1248,7 +1633,12 @@
       "page": 8,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        170.83609008789062,
+        40.17668914794922,
+        220.6800994873047,
+        84.69168853759766
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1258,7 +1648,107 @@
     }
   },
   {
-    "block_id": "36e46402-022d-400b-9236-01e4631f9fa5",
+    "block_id": "5f56b3d4-9eae-4ddd-b8b8-239ec09e33e2",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        174.9116973876953,
+        41.983184814453125,
+        216.67269897460938,
+        81.1641845703125
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "42b98e95-4861-443b-83f6-f881860cdf5e",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        172.4289093017578,
+        -23.950115203857422,
+        217.61090087890625,
+        7.94488525390625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "a2d1039b-e635-472c-934b-8475820d869d",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        205.12789916992188,
+        113.59959411621094,
+        223.10189819335938,
+        158.36859130859375
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "e2dde741-46e9-4807-81af-459d1ea0c3d0",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        176.55270385742188,
+        115.51019287109375,
+        210.82070922851562,
+        151.91619873046875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "31a18b33-ae50-4f64-bc18-ca8e48cb0fa8",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 9 metrics",
@@ -1277,12 +1767,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 26,
-      "significant_vectors": 5,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "f7f8d4e5-369c-454e-a148-d0b68a9693ca",
+    "block_id": "e5464b1b-e86a-4214-af98-d703cb1c38e5",
     "document_id": "test1",
     "type": "text",
     "text": "iCube II desktop stand is available as an option Battery notes When charging iCube II for the first time, leave it to charge for at least three hours (even if the middle indicator light changes to green color earlier). Charging a depleted battery will take approx. 2 hours. It is safe to leave iCube II connected for longer periods, even if not in use. A new battery\u2019s full performance is achieved only after three complete charge and discharge cycles. The iCube II battery can be charged several hundred times. If the operating time of your iCube II reduces substantially, please contact your local Phonak representative.",
@@ -1299,7 +1789,7 @@
     "metadata": {}
   },
   {
-    "block_id": "ba6a5926-e3f0-4272-a0d8-2e93da917478",
+    "block_id": "ebed4574-5b76-4f53-bf33-da234af35ba4",
     "document_id": "test1",
     "type": "text",
     "text": "9",
@@ -1316,107 +1806,7 @@
     "metadata": {}
   },
   {
-    "block_id": "854485eb-d078-4586-88fb-1d63a565d516",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 9,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "e2c1abda-7f12-40fa-bd0e-fb3111bb819b",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 9,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "e97f5e37-ffc5-4092-8a3a-25f3ed543390",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 9,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "52b05055-3fd9-43a9-bbea-3a6e15989462",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 9,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "ae768247-ed3c-47d1-b287-d05a877e212d",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 9,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "5634f112-465f-4218-98d8-8a186d4c8fae",
+    "block_id": "ea7f5871-8388-4b4d-a8e4-1a349f54e047",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 10 metrics",
@@ -1440,7 +1830,7 @@
     }
   },
   {
-    "block_id": "1dd4a34c-1ee1-4f4c-8c23-e99fd3d2d071",
+    "block_id": "2ce6956e-d0b8-4559-ac09-2034aeb263dc",
     "document_id": "test1",
     "type": "text",
     "text": "4. Getting started 4.3 Operating time Fully charged, your iCube II will operate for up to twelve hours of continuous fitting. 4.4 Switching iCube II on and off Slide the switch as shown to switch iCube II on or off. Off           On Once iCube II is fully operational, the middle indicator light will blink slowly. Switch iCube II off when not in use and while charging. The middle indicator light will stop blinking. 4.5 Target fitting software requirements Before using iCube II , ensure that Phonak Target\u2122 4.0 or a later version is installed on the fitting PC.",
@@ -1457,7 +1847,7 @@
     "metadata": {}
   },
   {
-    "block_id": "b20f5707-093a-458a-b2aa-f664ac59eaa5",
+    "block_id": "d9801994-2eef-4126-b184-68f65c6b35f2",
     "document_id": "test1",
     "type": "text",
     "text": "10",
@@ -1474,7 +1864,7 @@
     "metadata": {}
   },
   {
-    "block_id": "1fc4fb19-c6f8-4aa6-9134-d9bacfe19523",
+    "block_id": "d07310f9-9a73-44e9-bc8c-4cf608e5b5e7",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1484,7 +1874,12 @@
       "page": 10,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        156.6605987548828,
+        132.414794921875,
+        235.75360107421875,
+        148.38580322265625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1494,7 +1889,7 @@
     }
   },
   {
-    "block_id": "7103bcd0-988a-40b4-a979-2149a954d234",
+    "block_id": "7ad2377b-3972-4647-8289-6385bf478f5e",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1504,7 +1899,12 @@
       "page": 10,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        156.35049438476562,
+        132.15618896484375,
+        235.44349670410156,
+        148.127197265625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1514,7 +1914,7 @@
     }
   },
   {
-    "block_id": "f8bc11a3-ed72-456a-b7b7-dd514681db5f",
+    "block_id": "41dfee1e-eadf-4f15-ab07-f3198d6a3fa3",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1524,7 +1924,12 @@
       "page": 10,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        140.73399353027344,
+        145.38558959960938,
+        175.40699768066406,
+        171.43959045410156
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1534,7 +1939,7 @@
     }
   },
   {
-    "block_id": "46fc242e-c472-4edd-a59c-fb392617ab62",
+    "block_id": "119a6c0f-6140-4eb9-9bab-e72215044796",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1544,7 +1949,12 @@
       "page": 10,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        136.68870544433594,
+        116.03999328613281,
+        171.8647003173828,
+        135.2869873046875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1554,7 +1964,7 @@
     }
   },
   {
-    "block_id": "00aad1de-4450-42d9-9915-9b7707662986",
+    "block_id": "b0694588-6734-4ae8-ad4c-0615b57d24fd",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 11 metrics",
@@ -1578,7 +1988,7 @@
     }
   },
   {
-    "block_id": "3731a8d1-ed2a-41b5-95e4-e3326557dd75",
+    "block_id": "8560239c-0aca-4f76-9839-a08df29451a6",
     "document_id": "test1",
     "type": "heading",
     "text": "5. Connecting iCube II to your computer iCube II is shipped with a pre-paired wireless USB adapter to ensure a quick and easy set-up of the wireless connection with your fitting PC. iCube II may also be connected with any Bluetooth capable PC if a USB socket is not available at all or via a USB cable if a wireless connection is not possible. 5.1 Connecting wirelessly Automatic connection To connect iCube II with the fitting PC make sure that Phonak Target 4.0 and newer is installed. Plug the USB adapter into a free USB port on your fitting PC. Make sure the USB adapter is plugged in a USB port on the fitting PC. Do not use a USB extension cable to connect it.",
@@ -1595,7 +2005,7 @@
     "metadata": {}
   },
   {
-    "block_id": "0b5ac513-d38b-4dbe-b7fa-c9a9efe82ef0",
+    "block_id": "e8995b81-61de-4502-952c-72581ea99689",
     "document_id": "test1",
     "type": "text",
     "text": "11",
@@ -1612,7 +2022,7 @@
     "metadata": {}
   },
   {
-    "block_id": "db7febf2-d7b6-426c-887b-353606105ae4",
+    "block_id": "cf8953d2-af88-4b83-88bd-548973d86e59",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1622,7 +2032,12 @@
       "page": 11,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        206.31210327148438,
+        84.29399108886719,
+        237.8430938720703,
+        102.51799774169922
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1632,7 +2047,7 @@
     }
   },
   {
-    "block_id": "d0fb9fd5-c28b-40c9-8ad9-fe178e0b9ade",
+    "block_id": "7de57613-58fd-4212-8924-b505fe790e0c",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 12 metrics",
@@ -1651,12 +2066,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 14,
-      "significant_vectors": 2,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "514b77cd-d760-42fb-b58a-01cbb06f7e59",
+    "block_id": "31f4ac72-35b6-4aee-91b5-352549ad4499",
     "document_id": "test1",
     "type": "text",
     "text": "5. Connecting iCube II to your computer Switch iCube II on and the connection will be established automatically as soon as Phonak Target is started. The USB adapter is pre-paired with iCube II . After replacement of either the adapter or iCube II , a manual pairing is required as described below. Manual pairing Switch iCube II on and press the pairing button for 2 seconds to start the pairing mode. When in pairing mode, all indicator lights will rapidly blink back and forth. In Phonak Target, go to Settings , select Fitting device and check Enable iCube II . Go to iCube II via USB adapter and start the Pairing assistant . It will guide you through the pairing process. A manual pairing is also required after a reset to factory settings.",
@@ -1673,7 +2088,7 @@
     "metadata": {}
   },
   {
-    "block_id": "de9a4b82-9c6b-484c-b716-b5e96efd7a83",
+    "block_id": "e74b3ed1-5c4f-427d-b5fe-7a3a28fd8bc5",
     "document_id": "test1",
     "type": "text",
     "text": "12",
@@ -1690,47 +2105,7 @@
     "metadata": {}
   },
   {
-    "block_id": "f10f50e9-1e89-4995-9fc7-26ec4a9e3641",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 12,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "4e04045d-1a24-48c0-aacd-a460883669bb",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 12,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "6e762337-111c-41bd-a9b8-d0b59873f13e",
+    "block_id": "e1d81c3d-63ed-4a76-9622-91b705df384d",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 13 metrics",
@@ -1754,7 +2129,7 @@
     }
   },
   {
-    "block_id": "bbca85af-75cd-4796-aafe-c4f698d90e1f",
+    "block_id": "4c512836-e96e-4469-b692-e8a545fae638",
     "document_id": "test1",
     "type": "text",
     "text": "5.2 Connecting via USB cable To connect iCube II via USB cable, insert the mini-USB plug into iCube II and the other end into a free USB port on the fitting PC. Phonak Target 4.0 or newer will automatically detect iCube II and it can be selected as the fitting device. Use the optional USB hub if there are no free USB ports on your computer.",
@@ -1771,7 +2146,7 @@
     "metadata": {}
   },
   {
-    "block_id": "2c44c176-1f26-41a1-a01b-418b1110246c",
+    "block_id": "1fa34a6a-249a-47dc-b17c-caffe7333769",
     "document_id": "test1",
     "type": "text",
     "text": "13",
@@ -1788,7 +2163,7 @@
     "metadata": {}
   },
   {
-    "block_id": "31654635-0ded-46d5-b826-b30d9da05e3c",
+    "block_id": "18ab18df-5f79-44f3-a8f9-c48f4084a4e3",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1798,7 +2173,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        174.30130004882812,
+        47.34170913696289,
+        226.622314453125,
+        101.79370880126953
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1808,7 +2188,7 @@
     }
   },
   {
-    "block_id": "e6a194b8-5120-401c-9761-3ef98b16747e",
+    "block_id": "9f488fc0-a6c2-49f8-9f56-f4a6f6180168",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1818,7 +2198,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        174.031005859375,
+        46.90188980102539,
+        226.35299682617188,
+        101.52488708496094
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1828,7 +2213,7 @@
     }
   },
   {
-    "block_id": "bbea7a4f-8218-4168-aa85-714126c5e3bd",
+    "block_id": "a7355344-b8f3-49be-a11b-0be3ac10d7c8",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1838,7 +2223,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        175.17459106445312,
+        47.08850860595703,
+        225.80059814453125,
+        92.30050659179688
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1848,7 +2238,7 @@
     }
   },
   {
-    "block_id": "767a0dae-8a6e-400f-a526-19c7a0f26ce7",
+    "block_id": "84df4d36-ed98-4b49-a69e-fd0f578f5edf",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1858,7 +2248,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        175.5653076171875,
+        47.06639862060547,
+        225.4093017578125,
+        91.5813980102539
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1868,7 +2263,7 @@
     }
   },
   {
-    "block_id": "b0324f80-144b-41b0-bc23-d5fe0aaaaeae",
+    "block_id": "36c72797-1785-4e6f-815e-0d2fb5385d5b",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1878,7 +2273,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        179.6409912109375,
+        48.872894287109375,
+        221.40199279785156,
+        88.05389404296875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1888,7 +2288,7 @@
     }
   },
   {
-    "block_id": "ac824bb6-eb8d-4fda-9660-1dd795b0770e",
+    "block_id": "162cc1ff-ab33-4329-957b-cc9560b7794a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1898,7 +2298,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        177.158203125,
+        -17.060405731201172,
+        222.34019470214844,
+        14.8345947265625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1908,7 +2313,7 @@
     }
   },
   {
-    "block_id": "6a48a969-3be4-4f82-9955-bd3c90aca9a6",
+    "block_id": "eb8d6223-ad39-4fbf-b5b2-45d5e77cd2e0",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1918,7 +2323,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        209.85719299316406,
+        120.48939514160156,
+        227.83119201660156,
+        165.25839233398438
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1928,7 +2338,7 @@
     }
   },
   {
-    "block_id": "0c0054d5-e1ee-4665-8b08-524007e18970",
+    "block_id": "98d63ea5-ebfc-49d9-af90-83f5bb02bdaf",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -1938,7 +2348,12 @@
       "page": 13,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        181.28199768066406,
+        122.39988708496094,
+        215.5500030517578,
+        158.80589294433594
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -1948,7 +2363,7 @@
     }
   },
   {
-    "block_id": "9e6cc283-5be7-4388-bdbe-efacc3836bf5",
+    "block_id": "8a0d3806-a3dd-4a1e-a282-1bca3f83f052",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 14 metrics",
@@ -1967,12 +2382,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 71,
-      "significant_vectors": 7,
+      "significant_vectors": 8,
       "has_table": false
     }
   },
   {
-    "block_id": "b4938315-030f-461b-9ea2-e193037ed613",
+    "block_id": "4b3c891d-a1ec-46c3-b980-614d9d0e97fb",
     "document_id": "test1",
     "type": "heading",
     "text": "6. Using iCube II Before using iCube II , make sure the battery is sufficiently charged. If the middle indicator light is orange, please charge iCube II . Make sure that iCube II is selected and shown as the fitting device in Phonak Target. 6.1 Wearing iCube II Make sure both ends of the neckloop are firmly plugged into the iCube II . Open the neckloop by unplugging the connector in the middle of the Right PC Left neckloop and place iCube II around your client\u2019s neck. Close the neckloop to allow the built-in antenna to operate correctly.",
@@ -1989,7 +2404,7 @@
     "metadata": {}
   },
   {
-    "block_id": "68993d36-3b44-4747-a2d7-f614339ee3cd",
+    "block_id": "b491103c-4726-4626-9ab0-be0d80722aee",
     "document_id": "test1",
     "type": "text",
     "text": "14",
@@ -2006,7 +2421,7 @@
     "metadata": {}
   },
   {
-    "block_id": "516ed27b-fd1b-4b45-a180-5ef237f558a5",
+    "block_id": "99305f2b-397d-4128-b490-578b9cd88d15",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2016,7 +2431,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        200.6068115234375,
+        205.40579223632812,
+        237.93679809570312,
+        278.6537780761719
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2026,7 +2446,7 @@
     }
   },
   {
-    "block_id": "ae00ac4a-c04c-4e21-a2f9-ad9333bfc840",
+    "block_id": "41485ffd-1f39-490f-b41b-5dd82f153ea6",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2036,7 +2456,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        135.0594024658203,
+        205.5388946533203,
+        168.6154022216797,
+        278.0998840332031
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2046,7 +2471,7 @@
     }
   },
   {
-    "block_id": "1f012c60-e1f1-449a-b774-32c3f5f73715",
+    "block_id": "07b604ed-0e64-45cd-afc4-78b8502d6a0b",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2056,7 +2481,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        161.452392578125,
+        161.64178466796875,
+        214.62640380859375,
+        238.31378173828125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2066,7 +2496,7 @@
     }
   },
   {
-    "block_id": "ff690631-652d-44bb-b5aa-35f8042c1cfb",
+    "block_id": "5b88e663-33e0-44b2-9176-2002fd7eb7d6",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2076,7 +2506,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        160.9873046875,
+        161.29209899902344,
+        214.16030883789062,
+        237.96409606933594
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2086,7 +2521,7 @@
     }
   },
   {
-    "block_id": "2958d588-53aa-433a-980e-dcb2d8181837",
+    "block_id": "01a34899-0ba8-4c30-8cb3-038694709f58",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2096,7 +2531,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        165.94769287109375,
+        166.20748901367188,
+        208.88670349121094,
+        232.72848510742188
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2106,7 +2546,7 @@
     }
   },
   {
-    "block_id": "886d7f84-e502-44ff-a800-efb169e74d5b",
+    "block_id": "7b29933c-c45e-4e99-8b5d-4170b5a5a18d",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2116,7 +2556,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        169.10279846191406,
+        208.4233856201172,
+        205.85580444335938,
+        227.8463897705078
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2126,7 +2571,7 @@
     }
   },
   {
-    "block_id": "ab9bd6dd-b782-4146-9387-18e30b703408",
+    "block_id": "16fb062e-9e58-42e2-94c6-3418684fd116",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2136,7 +2581,12 @@
       "page": 14,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        161.87489318847656,
+        162.26129150390625,
+        213.47689819335938,
+        236.71629333496094
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2146,7 +2596,32 @@
     }
   },
   {
-    "block_id": "20bf9782-b92f-4324-8439-fc0b4ca153be",
+    "block_id": "a6002947-6e9f-49a1-aa33-d7737e8decb5",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 14,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        162.45700073242188,
+        163.00408935546875,
+        212.49099731445312,
+        235.74609375
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "72dba461-a8bf-436f-ada0-1cac9c416d83",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 15 metrics",
@@ -2170,7 +2645,7 @@
     }
   },
   {
-    "block_id": "5304f2bb-537e-4911-a82e-6f7aabdc7b35",
+    "block_id": "2c110836-e75a-460d-acae-03afdbf975ef",
     "document_id": "test1",
     "type": "text",
     "text": "6.2\tDetecting and programming hearing instruments For a wireless fitting, the assignment of the left/right hearing aid is done in Phonak Target. Make sure that iCube II is selected as fitting device and click Connect . The detected devices will be shown to assign (or reassign) each hearing instrument to the desired side (left or right). Click Continue . Follow the instructions on the screen to finish the detection.",
@@ -2187,7 +2662,7 @@
     "metadata": {}
   },
   {
-    "block_id": "617c7b87-f7b5-45ca-8d3c-751f4ad48836",
+    "block_id": "a0e44318-f794-4e13-a24b-d814e0d7f60a",
     "document_id": "test1",
     "type": "text",
     "text": "15",
@@ -2204,7 +2679,7 @@
     "metadata": {}
   },
   {
-    "block_id": "4c36f7f0-1772-4d54-a2b8-687bbebe726e",
+    "block_id": "161df715-2e0a-4663-b16c-08615775b93a",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 16 metrics",
@@ -2223,12 +2698,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 134,
-      "significant_vectors": 9,
+      "significant_vectors": 13,
       "has_table": false
     }
   },
   {
-    "block_id": "ff27ec49-3019-4b2d-8485-ac36d58fc656",
+    "block_id": "dbc95da8-1463-4a46-b628-2baed36bc4f4",
     "document_id": "test1",
     "type": "text",
     "text": "6. Using iCube II 6.3\tProgramming hearing instruments on your desk If you need to program hearing instruments outside of the client\u2019s ears (e.g. to prepare the hearing instuments before a fitting session), place the hearing instruments on a flat surface and put the neckloop of iCube II around them as shown in the picture.",
@@ -2245,7 +2720,7 @@
     "metadata": {}
   },
   {
-    "block_id": "28e03765-7ab4-4b31-85f9-eeb56b75dfb7",
+    "block_id": "27101a3a-db52-481d-b3e5-f73d8157c2fc",
     "document_id": "test1",
     "type": "text",
     "text": "16",
@@ -2262,7 +2737,7 @@
     "metadata": {}
   },
   {
-    "block_id": "19c86018-e195-4377-bc70-6f09c984564b",
+    "block_id": "0ebc732b-de00-44cd-8716-9f0d57777464",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2272,7 +2747,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.0133056640625,
+        242.2692108154297,
+        200.8553009033203,
+        309.7062072753906
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2282,7 +2762,7 @@
     }
   },
   {
-    "block_id": "5a077e72-aa9c-4a47-9225-b0f300fb353b",
+    "block_id": "ceeb91ea-f454-490f-8bd5-93b4fa93d992",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2292,7 +2772,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        153.60369873046875,
+        241.96258544921875,
+        200.4447021484375,
+        309.50457763671875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2302,7 +2787,7 @@
     }
   },
   {
-    "block_id": "8d0363ab-4588-4a95-8a37-42a11593e7ae",
+    "block_id": "6147ceef-92f2-4daf-a8b8-44e4afee47c0",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2312,7 +2797,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        157.97390747070312,
+        246.29229736328125,
+        195.79991149902344,
+        304.89129638671875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2322,7 +2812,7 @@
     }
   },
   {
-    "block_id": "0f7b2aa9-ef02-4b7e-9700-5b960ea5bcbc",
+    "block_id": "2945db1a-0f00-42be-8678-537558d52ccd",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2332,7 +2822,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        160.75230407714844,
+        283.4808044433594,
+        193.12930297851562,
+        300.591796875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2342,7 +2837,7 @@
     }
   },
   {
-    "block_id": "c48b8b26-5c65-4050-baea-66a6e0a277ce",
+    "block_id": "5e1143d1-d094-4050-ae7a-28369409a96e",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2352,7 +2847,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.1005096435547,
+        242.4421844482422,
+        199.7624969482422,
+        309.10321044921875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2362,7 +2862,7 @@
     }
   },
   {
-    "block_id": "c386796a-1fdc-4998-953a-d1efd365fd3f",
+    "block_id": "908b9be8-c6bb-49d7-91d6-3dc617d4a52f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2372,7 +2872,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        132.22799682617188,
+        92.0949935913086,
+        162.06900024414062,
+        178.41299438476562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2382,7 +2887,7 @@
     }
   },
   {
-    "block_id": "adab4513-51e5-43b5-8527-f4110cdef30b",
+    "block_id": "0ccbea79-9d5a-4b23-8342-84ac0fb6ad55",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2392,7 +2897,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        190.9842987060547,
+        92.34309387207031,
+        220.84230041503906,
+        178.4300994873047
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2402,7 +2912,7 @@
     }
   },
   {
-    "block_id": "8ec59953-8f3d-4724-9007-c6ed09e58ae5",
+    "block_id": "3c48f635-f563-4d4d-b88b-ffe6245886ff",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2412,7 +2922,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        128.4626922607422,
+        124.30070495605469,
+        161.0366973876953,
+        201.418701171875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2422,7 +2937,7 @@
     }
   },
   {
-    "block_id": "79ba70ce-5a07-4045-9015-dd413c70b50b",
+    "block_id": "06c5e16c-f8ae-404c-b87f-485e63eb7c5d",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2432,7 +2947,12 @@
       "page": 16,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        194.13780212402344,
+        124.57689666748047,
+        227.0688018798828,
+        201.74789428710938
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2442,7 +2962,107 @@
     }
   },
   {
-    "block_id": "8045e9be-6669-4851-a586-3f0f7075bc54",
+    "block_id": "021339b4-1cf2-45ad-939c-5b5858f9bb90",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        142.77490234375,
+        139.529296875,
+        168.7698974609375,
+        167.23928833007812
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "bde6b7db-ed0b-4456-a1bc-01b57f2ff3d4",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        142.8188934326172,
+        140.6826934814453,
+        168.11590576171875,
+        161.38169860839844
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "34f991c0-edf8-46ae-9b97-88d338bd087f",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        186.60130310058594,
+        139.529296875,
+        212.59629821777344,
+        167.23928833007812
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "f78575b4-b496-4a6e-8d82-979da9a19070",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        187.2556915283203,
+        140.6824951171875,
+        212.55169677734375,
+        161.38150024414062
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "d4ea4323-f798-4982-b768-fa5aaac7e50b",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 17 metrics",
@@ -2461,12 +3081,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 241,
-      "significant_vectors": 24,
+      "significant_vectors": 32,
       "has_table": false
     }
   },
   {
-    "block_id": "3d42b581-ea5b-4af7-8539-6c38cb459daf",
+    "block_id": "35703eab-fd7f-4508-930e-a09c2d9243e7",
     "document_id": "test1",
     "type": "heading",
     "text": "7.\tIndicator lights There are 3 indicator lights on iCube II for an easy indication of the battery, connection and fitting status. Middle indicator Charging remains solid orange Middle indicator Charging remains solid complete green Middle indicator iCube II 2 sec is solid green starting up for 2\u2009s Middle indicator iCube II 3\u2009x slowly blinking switching off 3 times",
@@ -2483,7 +3103,7 @@
     "metadata": {}
   },
   {
-    "block_id": "15fe23e4-081c-43a8-9b12-c6bfa461e48f",
+    "block_id": "b4e6ac91-11c6-4c23-ac5b-39edee1fadf2",
     "document_id": "test1",
     "type": "text",
     "text": "17",
@@ -2500,7 +3120,7 @@
     "metadata": {}
   },
   {
-    "block_id": "d82d14ec-ed81-454f-bd5a-140194a927db",
+    "block_id": "c8b0ee5f-0c7a-4a5f-835b-7430edc490b4",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2510,7 +3130,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.27000427246094,
+        2.1667847633361816,
+        178.01699829101562,
+        135.90078735351562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2520,7 +3145,7 @@
     }
   },
   {
-    "block_id": "3f61e115-620a-490b-8b09-e64c824065f8",
+    "block_id": "bdd3c169-932b-46b0-9f3b-6ea9a3a85072",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2530,7 +3155,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.45899963378906,
+        1.5575084686279297,
+        177.20399475097656,
+        135.2895050048828
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2540,7 +3170,7 @@
     }
   },
   {
-    "block_id": "95a8874e-07fc-4ae1-a269-7169d8d111c8",
+    "block_id": "35a2bf4c-e8f5-447e-97e1-25fcb85b9a98",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2550,7 +3180,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        93.1116943359375,
+        10.130395889282227,
+        168.0056915283203,
+        126.15839385986328
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2560,7 +3195,7 @@
     }
   },
   {
-    "block_id": "edd3b038-8eda-43af-929a-716e761f304f",
+    "block_id": "76e40424-7755-4852-b8ad-d6af507aab2c",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2570,7 +3205,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.6133041381836,
+        83.764404296875,
+        162.71929931640625,
+        117.6444091796875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2580,7 +3220,7 @@
     }
   },
   {
-    "block_id": "1e42d0d8-9617-47e4-b9d1-6b3f8deadde5",
+    "block_id": "174b1bfa-01a1-48aa-996e-65b09405ee47",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2590,7 +3230,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.98729705810547,
+        -117.1303939819336,
+        104.69029998779297,
+        -13.76739501953125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2600,7 +3245,7 @@
     }
   },
   {
-    "block_id": "a8a77664-6b5c-43dc-9b16-658a079c5544",
+    "block_id": "bd14136c-67ba-4a6b-8755-dc90d6a937c1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2610,7 +3255,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.51719665527344,
+        -117.7025146484375,
+        162.2181854248047,
+        -14.34051513671875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2620,7 +3270,7 @@
     }
   },
   {
-    "block_id": "19cf4260-7fc8-45b4-adf2-6b04068ba52d",
+    "block_id": "e6f426c5-84df-4b44-ae3a-c50680e9149f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2630,7 +3280,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.07540893554688,
+        3.2479095458984375,
+        176.01341247558594,
+        133.11489868164062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2640,7 +3295,7 @@
     }
   },
   {
-    "block_id": "f553e7e0-17a0-45be-bf7c-91c02b27642c",
+    "block_id": "c2d104e9-dca1-4935-9a33-36bf2110eb8a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2650,7 +3305,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        88.0696029663086,
+        4.544300556182861,
+        173.54859924316406,
+        131.42330932617188
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2660,7 +3320,7 @@
     }
   },
   {
-    "block_id": "3d277037-e668-4f8c-98d7-3f69a795e63a",
+    "block_id": "4d00248e-761f-4fb2-919f-3bac69919c09",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2670,7 +3330,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.27000427246094,
+        46.876380920410156,
+        178.01699829101562,
+        180.61038208007812
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2680,7 +3345,7 @@
     }
   },
   {
-    "block_id": "815d365b-1a1d-47fa-a263-d753c460b3b3",
+    "block_id": "71ab0630-4cc5-4aa4-b038-71934d7fdea5",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2690,7 +3355,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.45899963378906,
+        46.26710510253906,
+        177.20399475097656,
+        179.9990997314453
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2700,7 +3370,7 @@
     }
   },
   {
-    "block_id": "98295c85-aaca-4b56-80a4-b4c7c12b6bd6",
+    "block_id": "c1889a6a-1267-4446-b7ac-3648d168e5b9",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2710,7 +3380,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        93.1116943359375,
+        54.839988708496094,
+        168.0056915283203,
+        170.86798095703125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2720,7 +3395,7 @@
     }
   },
   {
-    "block_id": "a9eba1e0-174c-4017-b768-bfaa2b975be9",
+    "block_id": "8ee89bf2-cefb-4786-a573-eaddd28f7f33",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2730,7 +3405,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.6133041381836,
+        128.4748992919922,
+        162.71929931640625,
+        162.35389709472656
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2740,7 +3420,7 @@
     }
   },
   {
-    "block_id": "e047e03d-3912-4a1c-9280-637397ee6843",
+    "block_id": "081502e5-78c8-45ad-a391-fa5e0df1ac64",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2750,7 +3430,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.98729705810547,
+        -72.42089080810547,
+        104.69029998779297,
+        30.942108154296875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2760,7 +3445,7 @@
     }
   },
   {
-    "block_id": "4614c3b1-d5ef-47a3-b9d2-f859bc78b016",
+    "block_id": "22be582c-e8ab-40e8-96bc-3c9868faac22",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2770,7 +3455,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.51719665527344,
+        -72.992919921875,
+        162.2181854248047,
+        30.36907958984375
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2780,7 +3470,7 @@
     }
   },
   {
-    "block_id": "12148add-7bfe-4e5c-9d44-a54df88f6fd0",
+    "block_id": "78048578-417e-4149-83f9-921ffc2ff130",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2790,7 +3480,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.07540893554688,
+        47.95750427246094,
+        176.01341247558594,
+        177.82449340820312
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2800,7 +3495,7 @@
     }
   },
   {
-    "block_id": "8ed345d8-fd2e-4bdd-933d-4ee4836bc3a1",
+    "block_id": "9ee90d6d-509d-4f6d-a0c1-205edbc4dd7a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2810,7 +3505,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        88.0696029663086,
+        49.2538948059082,
+        173.54859924316406,
+        176.13290405273438
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2820,7 +3520,7 @@
     }
   },
   {
-    "block_id": "53b626d1-6fd0-4ace-bf30-255dfa23a3f3",
+    "block_id": "a31cbf1b-2fac-4b49-9d0a-e536fdbc9411",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2830,7 +3530,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.37629699707031,
+        94.16629791259766,
+        178.123291015625,
+        227.90029907226562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2840,7 +3545,7 @@
     }
   },
   {
-    "block_id": "732221b6-cf7b-4ad1-b31d-b5ff884ca25b",
+    "block_id": "34b87282-f944-48e0-9c99-09e66cbc11ce",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2850,7 +3555,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.5653076171875,
+        93.55708312988281,
+        177.310302734375,
+        227.28907775878906
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2860,7 +3570,7 @@
     }
   },
   {
-    "block_id": "8e6063ba-5aa2-467c-a8c4-8407835374c8",
+    "block_id": "9aceb105-c614-4076-bf54-3032ed2e9b20",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2870,7 +3580,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        93.21800231933594,
+        102.12989044189453,
+        168.11199951171875,
+        218.15789794921875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2880,7 +3595,7 @@
     }
   },
   {
-    "block_id": "276e0e51-49aa-4e5a-a202-cc6abcf92d53",
+    "block_id": "09f13f3b-250f-42ca-82dc-179273cb7078",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2890,7 +3605,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.71959686279297,
+        175.764892578125,
+        162.82559204101562,
+        209.64389038085938
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2900,7 +3620,7 @@
     }
   },
   {
-    "block_id": "f53770db-9db6-4259-977f-2e75c7ea72c2",
+    "block_id": "82db0ace-4702-4df7-9627-4b4ce85c4f02",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2910,7 +3630,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        97.09359741210938,
+        -25.13091278076172,
+        104.79660034179688,
+        78.23208618164062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2920,7 +3645,7 @@
     }
   },
   {
-    "block_id": "c82225ae-451a-46c0-9afd-fe401437fd2b",
+    "block_id": "7df281a3-4ed7-4071-a4e6-b4c1c6e49988",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2930,7 +3655,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.62350463867188,
+        -25.7030029296875,
+        162.32449340820312,
+        77.65899658203125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2940,7 +3670,7 @@
     }
   },
   {
-    "block_id": "fa06cefc-2568-4fc1-96a2-b96c2b5f4adb",
+    "block_id": "ab87c7f1-a55d-439b-a9f7-c32278719cfc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2950,7 +3680,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.18170166015625,
+        95.24739074707031,
+        176.1197052001953,
+        225.1143798828125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2960,7 +3695,7 @@
     }
   },
   {
-    "block_id": "0fdd01e2-9f43-4ae1-a58b-12284f715bd0",
+    "block_id": "916d9568-a220-4fc4-b099-dad176ddd1dc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -2970,7 +3705,12 @@
       "page": 17,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        88.17589569091797,
+        96.54378509521484,
+        173.65489196777344,
+        223.42279052734375
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -2980,7 +3720,207 @@
     }
   },
   {
-    "block_id": "068d602f-4077-41ac-b7bc-f1c40ed95cdf",
+    "block_id": "8caf52a4-667c-4a3f-b245-b5f253a81d8d",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        85.3583984375,
+        139.00259399414062,
+        178.10340881347656,
+        272.735595703125
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "2700cf59-1b4a-4df6-aea3-ac90059084cf",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        84.54740142822266,
+        138.39588928222656,
+        177.2904052734375,
+        272.1248779296875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "4eba10bf-4e1e-449c-9735-e1adeef8a3bb",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        93.2000961303711,
+        146.96739196777344,
+        168.0930938720703,
+        262.9933776855469
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "ce669c80-cb81-4951-8378-f4f2875c664b",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        98.70159912109375,
+        220.60110473632812,
+        162.8065948486328,
+        254.4801025390625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "b1e0a1e8-43d7-4ef9-9213-b9c48f3cf7ab",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        97.07540130615234,
+        19.708900451660156,
+        104.77840423583984,
+        123.06990051269531
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "ea5b6acb-e556-440b-b7cc-97143d46c0a0",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        154.60440063476562,
+        19.13658905029297,
+        162.30538940429688,
+        122.49758911132812
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "f729cce3-e1be-4c86-8049-1407213ed0c0",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        87.164306640625,
+        140.08560180664062,
+        176.09930419921875,
+        269.9495849609375
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "52fd8da7-6617-4e83-b391-90a4212e1eb6",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        88.15800476074219,
+        141.3824005126953,
+        173.635009765625,
+        268.2583923339844
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "c1ea6398-df83-47ed-b1cc-6962e61a6116",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 18 metrics",
@@ -2999,12 +3939,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 478,
-      "significant_vectors": 42,
+      "significant_vectors": 56,
       "has_table": false
     }
   },
   {
-    "block_id": "69bc817d-f703-4b87-8079-76d179e9e5a7",
+    "block_id": "92ead1d1-7c9b-47be-b8ab-f4f9ddede971",
     "document_id": "test1",
     "type": "text",
     "text": "7. Indicator lights Middle indicator On, no active slowly blinking connection to fitting PC Middle indicator Active connection regularly blinking to fitting PC",
@@ -3021,7 +3961,7 @@
     "metadata": {}
   },
   {
-    "block_id": "614b90a4-167c-4da3-8101-94fc6b2bcfa5",
+    "block_id": "cf0b195a-a565-407d-806f-456c702aae9b",
     "document_id": "test1",
     "type": "text",
     "text": "Right and Programming middle indicator right hearing rapidly blinking instrument Left and Programming middle indicator left hearing Right PC Left rapidly blinking instrument All indicators Pairing mode rapidly blinking enabled back and forth All three indicators Updating rapidly blinking firmware on iCube II",
@@ -3038,7 +3978,7 @@
     "metadata": {}
   },
   {
-    "block_id": "479b047a-8dd1-4280-ab82-5e251229cdfd",
+    "block_id": "0c6692dc-a132-4737-b9e2-2d9b8757d575",
     "document_id": "test1",
     "type": "text",
     "text": "18",
@@ -3055,7 +3995,7 @@
     "metadata": {}
   },
   {
-    "block_id": "678bf18a-8deb-4a8a-882d-2ec0337bda51",
+    "block_id": "c49d1f97-7b51-4499-b342-635e92439cb3",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3065,7 +4005,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.27000427246094,
+        -32.33359909057617,
+        178.01699829101562,
+        101.40139770507812
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3075,7 +4020,7 @@
     }
   },
   {
-    "block_id": "3fc6c661-c82a-4799-8a5c-478a24c23121",
+    "block_id": "f97a0ba8-b0de-4148-9876-5f4dd7615525",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3085,7 +4030,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.45899963378906,
+        -32.941307067871094,
+        177.20399475097656,
+        100.79069519042969
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3095,7 +4045,7 @@
     }
   },
   {
-    "block_id": "33128fc1-75b5-41d2-9e9d-51f69108bd1a",
+    "block_id": "df5a7cae-294a-4313-ad45-2f6c9f34316d",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3105,7 +4055,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        93.1116943359375,
+        -24.36871910095215,
+        168.0056915283203,
+        91.65827941894531
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3115,7 +4070,7 @@
     }
   },
   {
-    "block_id": "3b2d52ff-6599-4a9d-9f04-af2b23de7f24",
+    "block_id": "52dfbcf8-c81c-42e0-82d8-f6e690da418d",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3125,7 +4080,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.6133041381836,
+        49.26620101928711,
+        162.71929931640625,
+        83.14520263671875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3135,7 +4095,7 @@
     }
   },
   {
-    "block_id": "5e2cf619-d5e0-4ca7-a2f4-f998c97db551",
+    "block_id": "c0397c99-e2ef-447b-9c2b-0ea273a74c27",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3145,7 +4105,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.98729705810547,
+        -151.62960815429688,
+        104.69029998779297,
+        -48.2666015625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3155,7 +4120,7 @@
     }
   },
   {
-    "block_id": "8f7fa272-a7e9-41b9-beb6-0fab6f31fc4e",
+    "block_id": "74a8b7f1-b343-44be-b33f-129a579b2848",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3165,7 +4130,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.51719665527344,
+        -152.201904296875,
+        162.2181854248047,
+        -48.838897705078125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3175,7 +4145,7 @@
     }
   },
   {
-    "block_id": "32934240-4435-4d4e-b46e-6bc50e61f590",
+    "block_id": "b0afc199-824e-497e-84c9-631c6a4f7288",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3185,7 +4155,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.07540893554688,
+        -31.250205993652344,
+        176.01341247558594,
+        98.61579132080078
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3195,7 +4170,7 @@
     }
   },
   {
-    "block_id": "b35f6cad-36e8-44e5-8c17-9fe27a924d73",
+    "block_id": "f5d7f734-17d5-4df0-a7a4-f773d3c23da8",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3205,7 +4180,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        88.0696029663086,
+        -29.954814910888672,
+        173.54859924316406,
+        96.92418670654297
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3215,7 +4195,7 @@
     }
   },
   {
-    "block_id": "dd5b75ba-dc2b-499e-adfb-974308be0623",
+    "block_id": "a67814ca-81db-477d-a205-33e7d7735e69",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3225,7 +4205,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.27000427246094,
+        12.375997543334961,
+        178.01699829101562,
+        146.11099243164062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3235,7 +4220,7 @@
     }
   },
   {
-    "block_id": "33adaf9c-1dc7-4436-8e6b-a5de55d91957",
+    "block_id": "741045b0-cbcd-40f5-8cb4-6e537ae1ca42",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3245,7 +4230,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.45899963378906,
+        11.769286155700684,
+        177.20399475097656,
+        145.5002899169922
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3255,7 +4245,7 @@
     }
   },
   {
-    "block_id": "a421c839-e16a-4349-b8a5-b099096f24e7",
+    "block_id": "dfc9b68f-d9fb-4662-94f2-7c506d0a6703",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3265,7 +4255,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        93.1116943359375,
+        20.340906143188477,
+        168.0056915283203,
+        136.36790466308594
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3275,7 +4270,7 @@
     }
   },
   {
-    "block_id": "799ba902-0b66-4889-aa19-77da4ad63e7d",
+    "block_id": "a8a2ceb5-d96f-4cab-a2b3-e486136819e1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3285,7 +4280,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.6133041381836,
+        93.97579193115234,
+        162.71929931640625,
+        127.85479736328125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3295,7 +4295,7 @@
     }
   },
   {
-    "block_id": "e11e36c3-599a-4b3c-b42a-21d7e6eecd6c",
+    "block_id": "1f3860ad-e425-4384-89ba-155ce25a6932",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3305,7 +4305,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.98729705810547,
+        -106.92000579833984,
+        104.69029998779297,
+        -3.5570068359375
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3315,7 +4320,7 @@
     }
   },
   {
-    "block_id": "75e71cf8-ccd4-4b2e-954c-51a153f30ef4",
+    "block_id": "949a4d59-118d-4524-b438-0ab5dec39aa3",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3325,7 +4330,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.51719665527344,
+        -107.49230194091797,
+        162.2181854248047,
+        -4.129302978515625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3335,7 +4345,7 @@
     }
   },
   {
-    "block_id": "d2c764b9-c6ee-4232-9d9a-5931555f44bc",
+    "block_id": "557102ec-b0d2-48eb-bc1f-f4894f4e7df6",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3345,7 +4355,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.07540893554688,
+        13.459388732910156,
+        176.01341247558594,
+        143.32537841796875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3355,7 +4370,7 @@
     }
   },
   {
-    "block_id": "b4edd899-c6f2-41b3-b39b-8d8fa10018dc",
+    "block_id": "b07d1d40-5351-4709-af04-eba9870d0532",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3365,7 +4380,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        88.0696029663086,
+        14.754779815673828,
+        173.54859924316406,
+        141.6337890625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3375,7 +4395,7 @@
     }
   },
   {
-    "block_id": "3df2c189-8f86-4ce2-93a5-cf91f30d26e7",
+    "block_id": "e2c406f6-38be-4e84-b500-cefd817f1b6a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3385,7 +4405,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.09379577636719,
+        59.14180374145508,
+        177.83779907226562,
+        192.87380981445312
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3395,7 +4420,7 @@
     }
   },
   {
-    "block_id": "1d654236-674a-46c2-8792-4ae46de767de",
+    "block_id": "06683682-21a9-4d33-9a88-422e54d63de5",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3405,7 +4430,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.28180694580078,
+        58.534095764160156,
+        177.02481079101562,
+        192.26309204101562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3415,7 +4445,7 @@
     }
   },
   {
-    "block_id": "4aab58c7-d668-4976-a966-e8958b7495e7",
+    "block_id": "44e56589-074f-4144-970c-339447cbe9a5",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3425,7 +4455,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        92.9345932006836,
+        67.10649871826172,
+        167.82659912109375,
+        183.13150024414062
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3435,7 +4470,7 @@
     }
   },
   {
-    "block_id": "9b7fafa7-8714-4867-9586-91d39b9cb343",
+    "block_id": "135434d8-6374-4e28-a54e-01f0b6ab53a1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3445,7 +4480,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.43709564208984,
+        140.7386932373047,
+        162.5410919189453,
+        174.61769104003906
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3455,7 +4495,7 @@
     }
   },
   {
-    "block_id": "b3c2951d-4a53-4fc6-a2e6-c79c05779278",
+    "block_id": "ea18948e-6341-4092-9063-ce198d6656de",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3465,7 +4505,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.8113021850586,
+        -60.15080261230469,
+        104.5133056640625,
+        43.209197998046875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3475,7 +4520,7 @@
     }
   },
   {
-    "block_id": "b18dcbf7-1c35-4c05-814b-fc1f69c7122b",
+    "block_id": "402963e1-7eaf-4038-8ef2-60ca4d77fbae",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3485,7 +4530,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.33880615234375,
+        -60.72380065917969,
+        162.039794921875,
+        42.636199951171875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3495,7 +4545,7 @@
     }
   },
   {
-    "block_id": "ebd1541b-cf9e-4230-b27e-0ab875a23fe1",
+    "block_id": "8668a091-466a-4448-b5df-30669ff170c5",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3505,7 +4555,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        86.89849853515625,
+        60.22509002685547,
+        175.83450317382812,
+        190.0880889892578
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3515,7 +4570,7 @@
     }
   },
   {
-    "block_id": "9fc01935-14a9-4835-b51a-c8352363fed7",
+    "block_id": "fa2b80d4-9034-40fc-8ebe-66b568ac97ef",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3525,7 +4580,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.89250183105469,
+        61.5214958190918,
+        173.3695068359375,
+        188.3955078125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3535,7 +4595,7 @@
     }
   },
   {
-    "block_id": "42a0c148-b4bd-4a97-9ddc-160df7bff5e9",
+    "block_id": "24cd1f7a-5e91-438c-a92c-f278909c9342",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3545,7 +4605,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.1033935546875,
+        103.9937973022461,
+        177.83938598632812,
+        237.71279907226562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3555,7 +4620,7 @@
     }
   },
   {
-    "block_id": "eaa4ffbc-ee0e-4313-bf12-5422ac54c199",
+    "block_id": "37a8cf70-6b5f-4534-8cc6-bc5825ed59b7",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3565,7 +4630,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.2914047241211,
+        103.38468933105469,
+        177.02639770507812,
+        237.1016845703125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3575,7 +4645,7 @@
     }
   },
   {
-    "block_id": "88809ec8-d639-4cf0-abf9-3b442e7ea3c7",
+    "block_id": "8cb57c8a-b9f7-444a-baea-91da561dfa45",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3585,7 +4655,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        92.94329833984375,
+        111.95659637451172,
+        167.8292999267578,
+        227.97059631347656
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3595,7 +4670,7 @@
     }
   },
   {
-    "block_id": "9e836c0e-8ffe-42be-9e9e-ccaa165eb084",
+    "block_id": "5a351233-bb59-4e84-ada4-9e7f64aa3e85",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3605,7 +4680,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.44509887695312,
+        185.58279418945312,
+        162.54310607910156,
+        219.45779418945312
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3615,7 +4695,7 @@
     }
   },
   {
-    "block_id": "11e59c8f-a4bc-4a66-947d-54dfa1483ff1",
+    "block_id": "601eb223-f2ea-4cf6-bd50-81bac552ab6b",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3625,7 +4705,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.81929779052734,
+        -15.288414001464844,
+        104.52029418945312,
+        88.06158447265625
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3635,7 +4720,7 @@
     }
   },
   {
-    "block_id": "28a54d33-c958-4ea8-851c-4c91f0b53690",
+    "block_id": "17315266-1bd3-45e2-850a-a9a271ffa888",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3645,7 +4730,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.34219360351562,
+        -15.861412048339844,
+        162.0421905517578,
+        87.48858642578125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3655,7 +4745,7 @@
     }
   },
   {
-    "block_id": "b47a5004-dc2b-41eb-aaaa-3174775e9453",
+    "block_id": "f78c8964-b8c2-4f41-8cd3-a1c9ea872bab",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3665,7 +4755,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        86.25170135498047,
+        105.07479858398438,
+        175.83470153808594,
+        234.9268035888672
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3675,7 +4770,7 @@
     }
   },
   {
-    "block_id": "6fd96c32-1f11-4af7-8aef-e4ae5dc21296",
+    "block_id": "7244f938-d2b6-407b-8724-9037c822156a",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3685,7 +4780,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.25390625,
+        106.37210083007812,
+        173.4188995361328,
+        233.235107421875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3695,7 +4795,7 @@
     }
   },
   {
-    "block_id": "8724d762-581a-4f67-a936-c1a6488f1ab3",
+    "block_id": "ed80703e-7fdd-4aa6-9d1f-7e32e11850a0",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3705,7 +4805,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.09379577636719,
+        104.02259063720703,
+        177.82879638671875,
+        237.74258422851562
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3715,7 +4820,7 @@
     }
   },
   {
-    "block_id": "5b470d5a-6d55-4d73-af83-d08778519132",
+    "block_id": "d9e4e204-cc6a-48eb-8d10-f0e83e2f12cc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3725,7 +4830,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.28189849853516,
+        103.4158935546875,
+        177.01589965820312,
+        237.13088989257812
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3735,7 +4845,7 @@
     }
   },
   {
-    "block_id": "326da35b-55fc-44bb-8898-4925459d1b5b",
+    "block_id": "a907c441-25b6-405f-9168-3471712dc991",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3745,7 +4855,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        92.93379211425781,
+        111.98729705810547,
+        167.81878662109375,
+        228.0012969970703
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3755,7 +4870,7 @@
     }
   },
   {
-    "block_id": "a79192f7-dfb8-4ec5-becf-2a1b102c2200",
+    "block_id": "853716a9-748a-4477-9f3d-82e95e3f20e1",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3765,7 +4880,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        98.43559265136719,
+        185.61279296875,
+        162.53359985351562,
+        219.48779296875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3775,7 +4895,7 @@
     }
   },
   {
-    "block_id": "e0ed9be0-19a5-43f3-afd4-f08f1c12e801",
+    "block_id": "c9055ba1-4540-41f5-8427-0a6bba100e51",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3785,7 +4905,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.80979919433594,
+        -15.259208679199219,
+        104.51080322265625,
+        88.09078979492188
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3795,7 +4920,7 @@
     }
   },
   {
-    "block_id": "501cb521-5da7-4d71-af79-0553f635b69c",
+    "block_id": "f6509fe3-1e05-4db6-a71a-04e6e93eb9b4",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3805,7 +4930,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.33270263671875,
+        -15.831413269042969,
+        162.03269958496094,
+        87.51858520507812
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3815,7 +4945,7 @@
     }
   },
   {
-    "block_id": "71f2380a-021a-4074-a5d3-477b8ca96b8f",
+    "block_id": "b49cf94a-9996-47fe-ad64-a2337b8ef760",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3825,7 +4955,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        86.89891052246094,
+        105.10588836669922,
+        175.8249053955078,
+        234.95689392089844
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3835,7 +4970,7 @@
     }
   },
   {
-    "block_id": "007a8193-432b-4449-bcbe-d8a168aa5a33",
+    "block_id": "5fb4ee71-4b15-4fe3-a620-1432c142739f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3845,7 +4980,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        87.8927001953125,
+        106.402099609375,
+        173.36070251464844,
+        233.26510620117188
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3855,7 +4995,7 @@
     }
   },
   {
-    "block_id": "90d5ca83-d810-458c-b5a1-5f7d15434840",
+    "block_id": "985ee4e6-8c49-4030-be70-b31c25360b93",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3865,7 +5005,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        85.35890197753906,
+        151.302490234375,
+        178.1029052734375,
+        285.03448486328125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3875,7 +5020,7 @@
     }
   },
   {
-    "block_id": "12918a71-d4ff-413f-bf3d-494d7e8889b7",
+    "block_id": "bbf5e4d4-be2e-4169-a98f-5d1e16e5fa7f",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -3885,7 +5030,12 @@
       "page": 18,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        84.5468978881836,
+        150.69580078125,
+        177.28990173339844,
+        284.4237976074219
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -3895,7 +5045,357 @@
     }
   },
   {
-    "block_id": "25fde9b2-ea41-4059-b033-23d0aa861743",
+    "block_id": "de36e406-495a-4d14-8557-06c138a05b39",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        93.19969940185547,
+        159.26719665527344,
+        168.09170532226562,
+        275.29217529296875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "b1355a45-0390-4a73-82e1-9d2c518ee134",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        98.70209503173828,
+        232.900390625,
+        162.80609130859375,
+        266.77838134765625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "b0935948-35a7-4c67-892b-1c1a5552169b",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        97.07630157470703,
+        32.0098876953125,
+        104.77830505371094,
+        135.36988830566406
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "df1d39b7-2dfc-4716-b22c-56f7d75a59af",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        154.6038055419922,
+        31.4368896484375,
+        162.30479431152344,
+        134.79689025878906
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "fff26fad-45ce-49fe-b6a8-779593271355",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        87.16449737548828,
+        152.38580322265625,
+        176.09950256347656,
+        282.248779296875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "6f7a758d-8bdf-4dda-9f07-0d7692efe722",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        88.15750122070312,
+        153.6822967529297,
+        173.63450622558594,
+        280.5563049316406
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "966d5521-e0b6-4da8-b2c8-989ffefddd29",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        85.35890197753906,
+        196.17478942871094,
+        178.1029052734375,
+        329.90679931640625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "3104eb49-0b14-487b-be38-d6d9050e3b14",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        84.5468978881836,
+        195.56809997558594,
+        177.28990173339844,
+        329.29608154296875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "3119a01b-fb2a-40cb-aae9-c1526fa141c5",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        93.19969940185547,
+        204.13949584960938,
+        168.09170532226562,
+        320.16448974609375
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "e62ba5df-dd51-444b-bebe-3836f02f9efc",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        98.70209503173828,
+        277.772705078125,
+        162.80609130859375,
+        311.65069580078125
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "8bee9753-1336-4e8c-93a9-058f665c96ea",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        97.07630157470703,
+        76.88218688964844,
+        104.77830505371094,
+        180.2421875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "22a9c4f8-0698-4c56-b9e6-fa1717f21828",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        154.6038055419922,
+        76.30918884277344,
+        162.30479431152344,
+        179.669189453125
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "8f2cc13b-fdd0-4413-99da-b5e9a4bf3124",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        87.16449737548828,
+        197.25808715820312,
+        176.09950256347656,
+        327.12109375
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "98af7518-df11-46c7-8775-a8d31db21324",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        88.15750122070312,
+        198.55459594726562,
+        173.63450622558594,
+        325.4285888671875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "f1d4b909-8a00-443a-b321-6e9d19482a83",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 19 metrics",
@@ -3914,12 +5414,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 83,
-      "significant_vectors": 8,
+      "significant_vectors": 2,
       "has_table": true
     }
   },
   {
-    "block_id": "fbc771d6-015d-4500-ae60-2936d418d98e",
+    "block_id": "dfbc8b72-40d2-48c4-bdb6-58cac38f2ddf",
     "document_id": "test1",
     "type": "text",
     "text": "The middle indicator light will change to orange color when the battery gets low. Make sure to charge iCube II after the fitting session. Phonak Target will display a notification when a new firmware version for iCube II is available.",
@@ -3936,7 +5436,7 @@
     "metadata": {}
   },
   {
-    "block_id": "03a368f6-a8af-4fc7-b5fb-2ba3f1252fa9",
+    "block_id": "4be9ccb5-f165-4ca0-9e9f-e4ec702f8f22",
     "document_id": "test1",
     "type": "text",
     "text": "Middle indicator Malfunction, remains solid red please refer to troubleshooting section",
@@ -3953,7 +5453,7 @@
     "metadata": {}
   },
   {
-    "block_id": "7fbb922c-a05f-450c-a512-81bdbefb4d8c",
+    "block_id": "3534f4ac-0dae-442e-a95a-463269565225",
     "document_id": "test1",
     "type": "text",
     "text": "19",
@@ -3970,7 +5470,7 @@
     "metadata": {}
   },
   {
-    "block_id": "1369160a-8f1f-48d4-afd8-22371c576554",
+    "block_id": "245c2965-8fda-4ef7-827f-b578ecde7f7e",
     "document_id": "test1",
     "type": "table",
     "text": null,
@@ -4020,7 +5520,7 @@
     "metadata": {}
   },
   {
-    "block_id": "8dadd08b-4020-4ea4-b35c-566807aecb1f",
+    "block_id": "9e56e80b-1490-412c-8137-5898f880eddc",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -4030,7 +5530,12 @@
       "page": 19,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        96.98580169677734,
+        -59.6317138671875,
+        104.68880462646484,
+        43.73028564453125
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -4040,7 +5545,7 @@
     }
   },
   {
-    "block_id": "12995902-b6c7-4a84-b167-295846882ffb",
+    "block_id": "e462a75a-e134-4480-b598-1a163e59d4af",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -4050,7 +5555,12 @@
       "page": 19,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        154.51519775390625,
+        -60.20380401611328,
+        162.2161865234375,
+        43.157196044921875
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -4060,127 +5570,7 @@
     }
   },
   {
-    "block_id": "98612b3f-ba64-4a0b-add9-dae6278e0ac3",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "30fff447-305c-4a3e-ab80-cabbe2c21355",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "559aeb8e-0fee-4a86-9a1a-c3a7da63be94",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "de763c53-3c01-4125-a372-8760cabac76a",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "36e79228-856b-421a-822b-1c9e662e3e35",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "b7c4b920-bcc8-459b-a8df-c8fee7901454",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 19,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "3ea08116-f642-479e-b61a-32cbcfa0d158",
+    "block_id": "c2d1d369-5a76-495a-9b9e-f4b98fda4eee",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 20 metrics",
@@ -4199,12 +5589,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 11,
-      "significant_vectors": 3,
+      "significant_vectors": 0,
       "has_table": true
     }
   },
   {
-    "block_id": "48429621-5b31-4f0c-a223-fff5fc100ad4",
+    "block_id": "addfaf81-2066-4afc-9ff2-becf3f237224",
     "document_id": "test1",
     "type": "heading",
     "text": "8.\tTroubleshooting Causes What to do iCube II is no longer recognized by the computer to which it was previously paired. J Plug in the iCube II USB J The iCube II USB adapter is adapter. disconnected from the fitting computer. J Move iCube II closer to your J iCube II is out of range. computer. iCube II turns off. J Charge iCube II . J The battery is empty. iCube II is unresponsive and the middle indicator is lit solid red. J Switch iCube II off and J This may indicate a wait for 20 seconds before malfunction. switching on again. J If iCube II is connected to the fitting PC via cable, disconnect it from the cable and perform reboot as described above.",
@@ -4221,7 +5611,7 @@
     "metadata": {}
   },
   {
-    "block_id": "4d4935da-f321-46d4-9fca-af2b064f43b7",
+    "block_id": "15133e68-3687-479e-acb5-f8700a18df01",
     "document_id": "test1",
     "type": "text",
     "text": "20",
@@ -4238,7 +5628,7 @@
     "metadata": {}
   },
   {
-    "block_id": "a164d2ab-ce54-4e2e-84fc-ddf77aabaa34",
+    "block_id": "e591d462-e483-41bf-baa7-5da6af3cda79",
     "document_id": "test1",
     "type": "table",
     "text": null,
@@ -4266,7 +5656,7 @@
     "metadata": {}
   },
   {
-    "block_id": "391b6bb5-4598-4bc9-b6b7-3257b071a596",
+    "block_id": "7d02d40b-7c38-40bb-a29b-fd11eb029412",
     "document_id": "test1",
     "type": "table",
     "text": null,
@@ -4294,7 +5684,7 @@
     "metadata": {}
   },
   {
-    "block_id": "aee4f696-0c6b-46ab-bbad-c2c326ecbbe3",
+    "block_id": "6a7d908a-4fe0-4716-ae40-10cd079f58c4",
     "document_id": "test1",
     "type": "table",
     "text": null,
@@ -4322,67 +5712,7 @@
     "metadata": {}
   },
   {
-    "block_id": "273bcfac-d472-492f-ade6-bee98bda4d24",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 20,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "2b8a9ece-afb1-4743-abfe-01e1a5fdc687",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 20,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "f5eecc44-3360-4781-ba89-f8e55f3bd0e0",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 20,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "5ef838e3-8996-46b7-98e3-5e862e50a7cf",
+    "block_id": "850bbaf0-70ee-4acf-a422-42b0f4fd6aea",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 21 metrics",
@@ -4401,12 +5731,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 5,
-      "significant_vectors": 1,
+      "significant_vectors": 0,
       "has_table": true
     }
   },
   {
-    "block_id": "2988ffa0-a8d1-4098-a077-0e7af59e384d",
+    "block_id": "73a406d5-98c0-4916-85ee-e42b1fee16e9",
     "document_id": "test1",
     "type": "text",
     "text": "Causes What to do A second or different iCube II cannot be connected to the fitting PC. J If you use the USB adapter, J Only one iCube II can be press the pairing button on paired with the fitting PC. iCube II to connect it with your computer. J If you do not use the USB adapter, make sure your Bluetooth device is switched on and in pairing mode to establish the connection.",
@@ -4423,7 +5753,7 @@
     "metadata": {}
   },
   {
-    "block_id": "fd212c22-2e3c-418e-9fbc-deaf32425e7f",
+    "block_id": "bafe7ce8-813b-4ac9-b540-0975bd4a3f94",
     "document_id": "test1",
     "type": "text",
     "text": "21",
@@ -4440,7 +5770,7 @@
     "metadata": {}
   },
   {
-    "block_id": "c021a4dd-c04e-49c5-a158-027a64f720fb",
+    "block_id": "a3643ca7-bd45-4623-9376-10185a53b233",
     "document_id": "test1",
     "type": "table",
     "text": null,
@@ -4468,27 +5798,7 @@
     "metadata": {}
   },
   {
-    "block_id": "9915290e-6ec3-4205-b551-f4d4bdede4f4",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 21,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "cb189bdc-ec48-456e-a4d6-77d60707000e",
+    "block_id": "71ccb69f-e333-4bdd-b637-ca913cc353b2",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 22 metrics",
@@ -4512,7 +5822,7 @@
     }
   },
   {
-    "block_id": "1206d532-def1-4d90-9982-0b1edf44f2b2",
+    "block_id": "6db97d3d-3e41-46ac-bfbb-a25ff5e8df2c",
     "document_id": "test1",
     "type": "heading",
     "text": "9. Service and warranty 9.1 Local warranty Please ask your local Phonak representative, where you purchased your device, about the terms of the local warranty. 9.2 International warranty Phonak offers a one year limited international warranty, valid as of the date of purchase. This limited warranty covers manufacturing and material defects. The warran\u00ad ty only comes into force if proof of purchase is shown. The international warranty does not affect any legal rights that you might have under applicable national legislation governing sale of consumer goods.",
@@ -4529,7 +5839,7 @@
     "metadata": {}
   },
   {
-    "block_id": "f0e29321-0f50-4faf-b922-f8051eafd5d3",
+    "block_id": "0464014a-b2d6-45be-9d4f-a9f39aca40d3",
     "document_id": "test1",
     "type": "text",
     "text": "22",
@@ -4546,7 +5856,7 @@
     "metadata": {}
   },
   {
-    "block_id": "0deab3b9-86bb-484e-8e73-d8e99c5c5f22",
+    "block_id": "bbc75e08-29c6-4e34-8f61-ccebace0d5ad",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 23 metrics",
@@ -4570,7 +5880,7 @@
     }
   },
   {
-    "block_id": "588b80df-a8df-4d76-bd6e-d1ed3fba1b3d",
+    "block_id": "6768d3b3-ad18-4035-a2f0-5962cb8859be",
     "document_id": "test1",
     "type": "text",
     "text": "9.3 Warranty limitation This warranty does not cover damage from improper handling or care, exposure to chemicals, immersion in water or undue stress. Damage caused by third parties or non-authorized service centers renders the warranty null and void. Serial number:",
@@ -4587,7 +5897,7 @@
     "metadata": {}
   },
   {
-    "block_id": "1d858970-c493-42a4-bf57-5d6890c9ba2b",
+    "block_id": "98c601c1-85ac-4bbc-a673-8ab5d63f6d85",
     "document_id": "test1",
     "type": "text",
     "text": "Date of purchase:",
@@ -4604,7 +5914,7 @@
     "metadata": {}
   },
   {
-    "block_id": "b9f397d9-521f-4b04-8d34-4d3cff697a15",
+    "block_id": "88a6312e-cee5-4b3f-80bd-266d38155f23",
     "document_id": "test1",
     "type": "text",
     "text": "23",
@@ -4621,7 +5931,7 @@
     "metadata": {}
   },
   {
-    "block_id": "508c2c6b-56e1-4214-a4fa-614113004672",
+    "block_id": "1b58554f-cc45-4835-9d7c-4bea225760db",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 24 metrics",
@@ -4645,7 +5955,7 @@
     }
   },
   {
-    "block_id": "233849e2-9d7e-437f-9df6-220e5e02d122",
+    "block_id": "2250e006-3bcf-4c70-8cbd-8e3f47323d61",
     "document_id": "test1",
     "type": "heading",
     "text": "10. Compliance information Europe: Declaration of conformity Hereby Phonak AG declares that this Phonak product is in compliance with the essential requirements of the Medical Devices Directive 93/42/EEC as well as the Radio and Telecommunications Terminal Equipment Directive 1999/5/EC. The full text of the Declaration of Conformity can be obtained from the manufacturer or the local Phonak representative whose address can be taken from the list on http://www.phonak-us.com (worldwide locations).",
@@ -4662,7 +5972,7 @@
     "metadata": {}
   },
   {
-    "block_id": "0386ba0e-3cd9-4e3c-9a1d-51c1c70ebeb5",
+    "block_id": "e374b18e-650b-426b-9c38-bf561fb52b61",
     "document_id": "test1",
     "type": "text",
     "text": "24",
@@ -4679,7 +5989,7 @@
     "metadata": {}
   },
   {
-    "block_id": "1f67cd49-569e-44a5-a653-b9b586b01815",
+    "block_id": "b01ad191-ead1-4fa5-af09-3c72fed22a3f",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 25 metrics",
@@ -4703,7 +6013,7 @@
     }
   },
   {
-    "block_id": "64a4bd9b-0086-4e35-b748-007d43635cff",
+    "block_id": "c893ec67-56ec-419d-ad43-602574e07711",
     "document_id": "test1",
     "type": "text",
     "text": "Australia: Supplier Code Number N15398 New Zealand: Supplier Code Number Z1285 The Phonak iCube II is certified under: USA FCC ID: KWC-iCube2 Canada IC: 2262A-iCube2 The Phonak iCube II USB adapter is certified under: USA FCC ID 079BT402 Canada IC 11512A-BT403",
@@ -4720,7 +6030,7 @@
     "metadata": {}
   },
   {
-    "block_id": "33a30c5b-50dc-488d-9930-a136ef779efc",
+    "block_id": "d279b274-d0c8-4c5c-ae92-243aa8390b73",
     "document_id": "test1",
     "type": "text",
     "text": "25",
@@ -4737,7 +6047,7 @@
     "metadata": {}
   },
   {
-    "block_id": "09a02cc3-7774-4404-b5e5-0fe0b8b11500",
+    "block_id": "388a4366-7282-4856-9b10-926aeb9fbadd",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 26 metrics",
@@ -4761,7 +6071,7 @@
     }
   },
   {
-    "block_id": "a339f542-abbc-4358-b07f-687c9ae3582a",
+    "block_id": "e09f9451-9954-4f21-903f-ef4fe90fc004",
     "document_id": "test1",
     "type": "text",
     "text": "10. Compliance information Notice 1: This device complies with Part 15 of the FCC Rules and with RSS-210 of Industry Canada. Operation is subject to the following two conditions: 1) this device may not cause harmful interference, and 2) this device must accept any interference received, including interference that may cause undesired operation. Notice 2: Changes or modifications made to this device not expressly approved by Phonak may void the FCC authorization to operate this device. Notice 3: This device has been tested and found to comply with the limits for a Class B digital device, pursuant to Part 15 of the FCC Rules and ICES-003 of Industry Canada. These limits are designed to provide reasonable protection against harmful interference in a residential installation. This device  generates, uses and can radiate radio frequency energy and, if not installed and used in accordance with the instructions, may cause harmful interference to radio communications. 26",
@@ -4778,7 +6088,7 @@
     "metadata": {}
   },
   {
-    "block_id": "c070aac1-58a0-4616-b9f0-608c87627644",
+    "block_id": "0b5bacb8-5cb2-4f64-8bd1-0c9f37f3a4a8",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 27 metrics",
@@ -4802,7 +6112,7 @@
     }
   },
   {
-    "block_id": "b19014c4-6b61-43e4-82bf-16676420de4e",
+    "block_id": "b419c32e-9b0f-418e-9482-bf2eefac4bb5",
     "document_id": "test1",
     "type": "text",
     "text": "However, there is no guarantee that interference will not occur in a particular installation. If this device does cause harmful interference to radio or television reception, which can be determined by turning the equipment off and on, the user is encouraged to try to correct the interference by one or more of the following measures: J Reorient or relocate the receiving antenna. J Increase the separation between the device and receiver. J Connect the device into an outlet on a circuit different from that to which the receiver is connected. J Consult the dealer or an experienced radio\u2009/\u2009TV technician for help. Notice 4: Japanese Radio Law and Japanese Telecommunications Business Law Compliance. This device is granted pursuant to the Japanese Radio Law ( \u96fb\u6ce2\u6cd5 ) and the Japanese Telecommunications Business Law ( \u96fb\u6c17\u901a\u4fe1\u4e8b\u696d\u6cd5 ). This device should not be modified (otherwise the granted designation number will become invalid).",
@@ -4819,7 +6129,7 @@
     "metadata": {}
   },
   {
-    "block_id": "13999811-1c4a-457a-bf3a-a40efc489d1c",
+    "block_id": "333d3ec2-6745-4e69-81f5-44212cc6e255",
     "document_id": "test1",
     "type": "text",
     "text": "27",
@@ -4836,7 +6146,7 @@
     "metadata": {}
   },
   {
-    "block_id": "9a4bf628-4824-4783-8bde-020f3f0efaac",
+    "block_id": "ff856801-3f69-4898-b3b1-214f6372a17d",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 28 metrics",
@@ -4860,7 +6170,7 @@
     }
   },
   {
-    "block_id": "6dacb734-f729-45a1-a353-6772dd3ad129",
+    "block_id": "cf89d9d0-8853-4938-b576-f51056912aec",
     "document_id": "test1",
     "type": "heading",
     "text": "11. Information and description of symbols With the CE symbol, Phonak AG confirms that this Phonak product meets the requirements of the Medical Devices Directive 93/42/EEC as well as the R&TTE Directive 1999/5/EC on radio and telecommunications equipment. This symbol indicates that the products described in these user instructions adhere to the requirements for an applied part of Type B of EN 60601-1. The surface of the device is specified as an applied part of Type B. This symbol indicates that it is important for the user to read and take into account the relevant information in this user guide.",
@@ -4877,7 +6187,7 @@
     "metadata": {}
   },
   {
-    "block_id": "183dd42b-09c6-4798-b2f1-94c2edc064e3",
+    "block_id": "3e5fd828-37ea-4737-b43d-8c774e02e485",
     "document_id": "test1",
     "type": "text",
     "text": "28",
@@ -4894,7 +6204,7 @@
     "metadata": {}
   },
   {
-    "block_id": "7d0b48e1-d7b3-4061-822a-ff1aca6b1fd9",
+    "block_id": "53332744-07ca-4a11-8228-12c807e3e882",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 29 metrics",
@@ -4918,7 +6228,7 @@
     }
   },
   {
-    "block_id": "bab88871-4fce-43f5-b31f-12bc51b06d99",
+    "block_id": "1faf7392-afe8-4eab-9281-4fc4a269d2e5",
     "document_id": "test1",
     "type": "text",
     "text": "This symbol indicates that it is important for the user to pay attention to the relevant warning notices in these user guides. Important information for handling and product safety. EMC and radio communications compliance label Australia. Operating The device is designed such that conditions it functions without problems or restrictions if used as intended, unless otherwise noted in this user guide. Temperature transport and storage: \u201320\u00b0 to +60\u00b0\u2009Celsius (\u20134\u00b0 to +140\u00b0 Fahrenheit). Temperature operation: 0\u00b0 to 40\u00b0\u2009Celsius (+32\u00b0 to +104\u00b0 Fahrenheit)",
@@ -4935,7 +6245,7 @@
     "metadata": {}
   },
   {
-    "block_id": "71204004-e27a-47aa-82e4-5cb6f03158a4",
+    "block_id": "de4f7298-fc52-4185-ba75-0ee0b8a533ad",
     "document_id": "test1",
     "type": "text",
     "text": "29",
@@ -4952,7 +6262,7 @@
     "metadata": {}
   },
   {
-    "block_id": "7d0ee341-c072-4df3-bb15-a7d99394b061",
+    "block_id": "58c7aba1-b5c3-4b02-908d-26722418872a",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 30 metrics",
@@ -4971,12 +6281,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 32,
-      "significant_vectors": 0,
+      "significant_vectors": 1,
       "has_table": false
     }
   },
   {
-    "block_id": "a021f513-29f5-42f0-9441-c824fb37602d",
+    "block_id": "74a27409-c71d-4eac-bd64-06b8c0f1edcd",
     "document_id": "test1",
     "type": "text",
     "text": "11. Information and description of symbols Keep dry",
@@ -4993,7 +6303,7 @@
     "metadata": {}
   },
   {
-    "block_id": "f3126f63-407a-4b42-a4a1-769433889e12",
+    "block_id": "4dd3d8a1-ba2c-43ff-8dc4-aefd701d4cc2",
     "document_id": "test1",
     "type": "text",
     "text": "Humidity transportation and storage: <90% (non-condensing). Humidity operation: <95% (non condensing). Atmospheric pressure: 200\u2009hPA to 1500\u2009hPA. The symbol with the crossed-out garbage bin is to make you aware that this device may not be thrown away as normal household waste. Please dispose of old or unused device, at waste disposal sites intended for electronic waste, or return it to your group company for disposal. Proper disposal protects the environment and health.",
@@ -5010,7 +6320,7 @@
     "metadata": {}
   },
   {
-    "block_id": "01ed535e-0ec8-4255-a966-9557bd2629b5",
+    "block_id": "5efecac4-fd33-477c-9a63-e00600a8ee86",
     "document_id": "test1",
     "type": "text",
     "text": "30",
@@ -5027,7 +6337,32 @@
     "metadata": {}
   },
   {
-    "block_id": "02b9f919-76e1-4bd3-a30f-e6883b271bd4",
+    "block_id": "baeaa93c-4141-489b-b21c-118ac434dae0",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Vector drawing - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_40pages.pdf",
+      "page": 30,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        22.483999252319336,
+        178.5970001220703,
+        40.60499954223633,
+        204.32899475097656
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": true
+    }
+  },
+  {
+    "block_id": "a5c26bd8-9ff5-49ae-9b61-88a272cbd826",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 31 metrics",
@@ -5051,7 +6386,7 @@
     }
   },
   {
-    "block_id": "35a6aa20-fedb-45fd-aace-43bdbfd4ae39",
+    "block_id": "de4f454d-4c64-4949-814c-f7e94a7449de",
     "document_id": "test1",
     "type": "text",
     "text": "T he Bluetooth\u00ae word mark and logos are registered trademarks owned by Bluetooth SIG, Inc. and any use of such marks by Phonak is under license. Other trademarks and trade names are those of their respective owners. Japanese mark for certified radio equipment. Indicates the medical device manufacturer, as defined in EU Directive 93/42/EEC.",
@@ -5068,7 +6403,7 @@
     "metadata": {}
   },
   {
-    "block_id": "6c868400-9a2c-4086-9f76-c70c4b8c0eeb",
+    "block_id": "4ffebfc5-9cb3-4d99-b5db-758e7b8a7704",
     "document_id": "test1",
     "type": "text",
     "text": "31",
@@ -5085,7 +6420,7 @@
     "metadata": {}
   },
   {
-    "block_id": "fdb5999b-1db4-4535-9ef8-ff840bf8b2bb",
+    "block_id": "e08daa6a-ef8e-4710-88df-0a0b3dee6486",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 32 metrics",
@@ -5104,12 +6439,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 8,
-      "significant_vectors": 1,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "3d8015ef-bed2-4ec8-a786-a018a97d53ca",
+    "block_id": "a3db0cd7-0901-4742-b763-43ca25737b12",
     "document_id": "test1",
     "type": "heading",
     "text": "12. Important safety information The following pages contain important safety information. Hazard warnings Phonak devices may generate magnetic fields. Tests that Phonak conducted showed that no interfe\u00ad rences with the implantable devices were caused that would impact the safe and effective use of the implantable devices. Users of implantable devices should contact their doctor and/or the manufacturer of the implantable device before they start using a Phonak device. Stop using the Phonak device if any influence of the Phonak device on the implantable device is experienced and contact the manufacturer of the implantable device for advice. Keep this device out of reach of children under 3 years. Changes or modifications to the device that were not explicitly approved by Phonak are not permitted. Phonak is not responsible for situations resulting from a modified device. 32",
@@ -5126,27 +6461,7 @@
     "metadata": {}
   },
   {
-    "block_id": "d6293b9a-6adb-4ae4-ae31-ea601c24c8cd",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 32,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "673d3a58-27d7-4f92-a137-05d5f91656ee",
+    "block_id": "50b5ead0-0016-41c8-9ea0-e564a4da2fcd",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 33 metrics",
@@ -5165,12 +6480,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 15,
-      "significant_vectors": 2,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "77a7f6f5-5382-42b6-93fb-3e78e31391ef",
+    "block_id": "6be9bf68-dfec-42d9-a1e0-d140b0496bb1",
     "document_id": "test1",
     "type": "text",
     "text": "Opening the device might damage it. If problems occur which cannot be resolved by following the remedy guidelines in the troubleshooting section of this user guide, consult your local Phonak representative. This product has an embedded, non-replaceable battery. Do not attempt to open the product or remove the battery as this may cause injury and damage the device. Dispose of electrical components in accordance with your local regulations by Phonak AG. Only use accessories approved by Phonak AG, to avoid any electrical shock. Using the device, its connectors or cables in any way contradictory to their intended purpose as described in this user guide (e.g. wearing the USB cable around the neck) can cause injury. When operating machinery, ensure that no parts get caught in the machine. 33",
@@ -5187,47 +6502,7 @@
     "metadata": {}
   },
   {
-    "block_id": "cea82719-4aaa-4350-ba43-bccc62c4d00f",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 33,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "3139827e-72bc-431a-9157-a54c243b8005",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 33,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "b5dbb148-2822-418a-9a09-13c81ccc52ba",
+    "block_id": "9e23ac12-7f91-41fa-ad89-f1e90cbead42",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 34 metrics",
@@ -5251,7 +6526,7 @@
     }
   },
   {
-    "block_id": "ab780d78-672c-43f4-9f7f-02ad8f7a3e09",
+    "block_id": "953f3d8e-a26b-4fad-89e0-6b6da508f329",
     "document_id": "test1",
     "type": "text",
     "text": "12. Important safety information The mini-USB port is to be used for the described purpose only. For safety reasons, only use chargers supplied by Phonak or stabilized chargers with a rating of 5VDC, min. 500\u2009mA.",
@@ -5268,7 +6543,7 @@
     "metadata": {}
   },
   {
-    "block_id": "5ff29884-f70a-40f2-a86a-55dd22469ee8",
+    "block_id": "7bf3aca2-a65b-4917-9989-08d9acf25424",
     "document_id": "test1",
     "type": "text",
     "text": "Caution: electric shock. Do not insert plug alone into electrical outlets. Do not use the device in explosive areas (mines or industrial areas with danger of explosions, oxygen rich environments or areas where flammable anesthetics are handled) or where electronic equipment is prohibited.",
@@ -5285,7 +6560,7 @@
     "metadata": {}
   },
   {
-    "block_id": "1a4cbbb0-0c44-4536-98df-bb37c0f18bf6",
+    "block_id": "ae2423e9-9abc-489f-9e32-2d6e67552142",
     "document_id": "test1",
     "type": "text",
     "text": "34",
@@ -5302,7 +6577,7 @@
     "metadata": {}
   },
   {
-    "block_id": "98de0103-d93e-4726-9875-e39d31d93435",
+    "block_id": "69a16668-b54d-41b0-b19c-0da506466bdd",
     "document_id": "test1",
     "type": "image_caption",
     "text": "[Vector drawing - awaiting vision enrichment]",
@@ -5312,7 +6587,12 @@
       "page": 34,
       "sheet": null,
       "slide": null,
-      "bbox": null
+      "bbox": [
+        132.43280029296875,
+        141.7938995361328,
+        166.5258026123047,
+        160.92489624023438
+      ]
     },
     "confidence": 0.5,
     "language": "en",
@@ -5322,7 +6602,7 @@
     }
   },
   {
-    "block_id": "4455d0e0-eaf9-4d9f-b008-514c408e31e1",
+    "block_id": "1c29a1d3-5d82-46af-9ff4-c180cc07fa30",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 35 metrics",
@@ -5341,12 +6621,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 19,
-      "significant_vectors": 2,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "98b2cbb1-70e6-4df0-b12e-c9c2a6014f7e",
+    "block_id": "1b687972-9b9f-427b-86bb-d8cbe0c0f728",
     "document_id": "test1",
     "type": "text",
     "text": "Information on product safety Protect the device from excessive moisture (bathing, swimming), heat (radiator, car dashboard) or direct skin contact when sweating. Do not drop the device. Dropping it onto a hard surface can damage the device. Do not disconnect the neckloop while the device is transmitting signals to the hearing aids. Protect the device connectors, plugs, charging slot and power supply from dirt and debris. Clean the device using a damp cloth. Never use household cleaning products (washing powder, soap, etc.) or alcohol to clean the device. Never use a microwave or other heating devices to dry the device.",
@@ -5363,7 +6643,7 @@
     "metadata": {}
   },
   {
-    "block_id": "d5bd3368-79a8-478e-8be2-cbb99dcab9cf",
+    "block_id": "95beec4f-0ff0-4545-89cf-cdd67d675546",
     "document_id": "test1",
     "type": "text",
     "text": "35",
@@ -5380,47 +6660,7 @@
     "metadata": {}
   },
   {
-    "block_id": "fc5509b1-8241-44cd-b92a-df614daf1a8a",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 35,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "e5aa8e52-86f3-4a99-8c32-1c8745b2bc9c",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 35,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "42faabed-7d24-4517-af11-b1290a95b21d",
+    "block_id": "811e4461-7fe4-431c-aa3b-684529992b41",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 36 metrics",
@@ -5439,12 +6679,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 18,
-      "significant_vectors": 1,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "b843cfb7-04de-47c5-bd21-c24b2a4e89a0",
+    "block_id": "a6507402-fafd-4faa-a65d-8ec75be66c21",
     "document_id": "test1",
     "type": "text",
     "text": "12. Important safety information The digitally-coded, inductive transmission technology used in the device is highly reliable and experiences virtually no interference from other devices. It should be noted, however, that when operating the hearing system near computer equipment, larger electronic installation or other strong electromagnetic fields, it may be necessary to be at least 60 cm (24\u201d) away from the interfering device to ensure proper operation. Keep the device of at least 10 cm away from any kind of magnets. Do not connect an USB cable exceeding 3 meters (9 feet) in length to the device. When the device is not in use, turn it off, keep the neckloop closed and store it safely.",
@@ -5461,7 +6701,7 @@
     "metadata": {}
   },
   {
-    "block_id": "e135ee1a-cfb2-487e-bfa9-257016760d00",
+    "block_id": "90f4aa2f-1e79-4ff7-bda9-c21551402c3f",
     "document_id": "test1",
     "type": "text",
     "text": "36",
@@ -5478,27 +6718,7 @@
     "metadata": {}
   },
   {
-    "block_id": "c738c214-ec3c-4326-b538-239e8d10dd3c",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 36,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "75c4827c-9fcc-462c-8e95-8e968695c575",
+    "block_id": "9fe64488-d9d7-4bff-a209-842787a868ab",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 37 metrics",
@@ -5517,12 +6737,12 @@
       "raster_images_total": 0,
       "significant_images": 0,
       "vector_drawings_total": 15,
-      "significant_vectors": 2,
+      "significant_vectors": 0,
       "has_table": false
     }
   },
   {
-    "block_id": "97fa49ea-4652-42aa-ba94-73c387574a0b",
+    "block_id": "b424f03a-ae11-467d-85e6-961f9d00e5a1",
     "document_id": "test1",
     "type": "text",
     "text": "Other important information If you use several devices in the same building, be aware that their inductive field can disturb one another if within a range of 2 meters (6 feet). This may even occur when used in different rooms. High-powered electronic equipment, larger electronic installations and metallic structures may impair and significantly reduce the operating range. If the hearing aids do not respond to the device because of an unusual field disturbance, move away from the disturbing field.",
@@ -5539,7 +6759,7 @@
     "metadata": {}
   },
   {
-    "block_id": "e903fd54-9baa-4b6b-9861-5fea49230341",
+    "block_id": "2447b7fa-7d09-4bc0-a65e-fb85857cd396",
     "document_id": "test1",
     "type": "text",
     "text": "37",
@@ -5556,47 +6776,7 @@
     "metadata": {}
   },
   {
-    "block_id": "3ab39836-2358-4893-9a19-ea4dc2fe455c",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 37,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "6bd07cee-e823-4243-ab4f-6dbe3f0a481b",
-    "document_id": "test1",
-    "type": "image_caption",
-    "text": "[Vector drawing - awaiting vision enrichment]",
-    "table_data": null,
-    "source_ref": {
-      "filename": "Digital_40pages.pdf",
-      "page": 37,
-      "sheet": null,
-      "slide": null,
-      "bbox": null
-    },
-    "confidence": 0.5,
-    "language": "en",
-    "metadata": {
-      "pending_vision": true,
-      "is_vector": true
-    }
-  },
-  {
-    "block_id": "b445da90-ef26-40bd-99c4-c042409a3f5f",
+    "block_id": "76abfe9f-2030-48f5-adbe-7af17902163f",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 38 metrics",
@@ -5620,7 +6800,7 @@
     }
   },
   {
-    "block_id": "f48afbbe-7dde-4582-a205-2c552e1ea821",
+    "block_id": "c4f7eb71-7084-4c17-97ae-7a183063589a",
     "document_id": "test1",
     "type": "heading",
     "text": "Notes",
@@ -5637,7 +6817,7 @@
     "metadata": {}
   },
   {
-    "block_id": "0a3004f2-58cb-4696-a2ea-076e07bae8d3",
+    "block_id": "56a0f2f7-d439-4be5-9848-ffdd05d50a03",
     "document_id": "test1",
     "type": "text",
     "text": "38",
@@ -5654,7 +6834,7 @@
     "metadata": {}
   },
   {
-    "block_id": "6a78a35b-9045-4ee6-949b-bf762246a1e1",
+    "block_id": "05d5a3ab-50ff-4a72-af45-e52edf589535",
     "document_id": "test1",
     "type": "page_metrics",
     "text": "Page 39 metrics",
@@ -5678,7 +6858,7 @@
     }
   },
   {
-    "block_id": "ca592bac-34db-41d6-b658-c3ad45b4dee0",
+    "block_id": "a71882ae-e8c2-4a5f-b9ef-c8d19b0c8d69",
     "document_id": "test1",
     "type": "text",
     "text": "Phonak LLC 4520 Weaver Parkway Warrenville, IL 60555",
@@ -5695,7 +6875,7 @@
     "metadata": {}
   },
   {
-    "block_id": "e75d1913-c0eb-49ea-9928-a1580df201dd",
+    "block_id": "be21e5ce-ddf1-4301-a892-952f1c9de089",
     "document_id": "test1",
     "type": "text",
     "text": "029-0310-03/2014-10/Printed in USA \u00a9 Phonak US   All rights reserved www.phonak-us.com",

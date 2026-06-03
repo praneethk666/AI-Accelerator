@@ -3,7 +3,7 @@
     "page_number": 1,
     "kind": "digital",
     "text_len": 1463,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": true,
     "images": []
   },
@@ -11,7 +11,7 @@
     "page_number": 2,
     "kind": "digital",
     "text_len": 1271,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": true,
     "images": []
   },
@@ -19,7 +19,7 @@
     "page_number": 3,
     "kind": "digital",
     "text_len": 1517,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": false,
     "images": []
   },
@@ -35,7 +35,7 @@
     "page_number": 5,
     "kind": "digital",
     "text_len": 1569,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": false,
     "images": []
   },
@@ -75,7 +75,7 @@
     "page_number": 10,
     "kind": "digital",
     "text_len": 1827,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": true,
     "images": []
   },
@@ -83,7 +83,7 @@
     "page_number": 11,
     "kind": "digital",
     "text_len": 1909,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": false,
     "images": []
   },
@@ -107,7 +107,7 @@
     "page_number": 14,
     "kind": "digital",
     "text_len": 1904,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": false,
     "images": []
   },
@@ -147,7 +147,7 @@
     "page_number": 19,
     "kind": "digital",
     "text_len": 2017,
-    "has_vector_graphics": false,
+    "has_vector_graphics": true,
     "table_hint": false,
     "images": []
   },

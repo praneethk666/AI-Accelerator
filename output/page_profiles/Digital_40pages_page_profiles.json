@@ -3,7 +3,7 @@
     "page_number": 1,
     "kind": "digital",
     "text_len": 19,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": [
       {
@@ -45,7 +45,7 @@
     "page_number": 2,
     "kind": "digital",
     "text_len": 429,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -53,7 +53,7 @@
     "page_number": 3,
     "kind": "digital",
     "text_len": 474,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -77,7 +77,7 @@
     "page_number": 6,
     "kind": "digital",
     "text_len": 139,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -101,7 +101,7 @@
     "page_number": 9,
     "kind": "digital",
     "text_len": 642,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -125,7 +125,7 @@
     "page_number": 12,
     "kind": "digital",
     "text_len": 759,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -149,7 +149,7 @@
     "page_number": 15,
     "kind": "digital",
     "text_len": 424,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -189,7 +189,7 @@
     "page_number": 20,
     "kind": "digital",
     "text_len": 677,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": true,
     "images": []
   },
@@ -197,7 +197,7 @@
     "page_number": 21,
     "kind": "digital",
     "text_len": 390,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": true,
     "images": []
   },
@@ -205,7 +205,7 @@
     "page_number": 22,
     "kind": "digital",
     "text_len": 570,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -213,7 +213,7 @@
     "page_number": 23,
     "kind": "digital",
     "text_len": 291,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -221,7 +221,7 @@
     "page_number": 24,
     "kind": "digital",
     "text_len": 512,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -229,7 +229,7 @@
     "page_number": 25,
     "kind": "digital",
     "text_len": 270,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -237,7 +237,7 @@
     "page_number": 26,
     "kind": "digital",
     "text_len": 995,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -245,7 +245,7 @@
     "page_number": 27,
     "kind": "digital",
     "text_len": 945,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -253,7 +253,7 @@
     "page_number": 28,
     "kind": "digital",
     "text_len": 623,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -261,7 +261,7 @@
     "page_number": 29,
     "kind": "digital",
     "text_len": 569,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -277,7 +277,7 @@
     "page_number": 31,
     "kind": "digital",
     "text_len": 353,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -285,7 +285,7 @@
     "page_number": 32,
     "kind": "digital",
     "text_len": 901,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -293,7 +293,7 @@
     "page_number": 33,
     "kind": "digital",
     "text_len": 817,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -309,7 +309,7 @@
     "page_number": 35,
     "kind": "digital",
     "text_len": 656,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -317,7 +317,7 @@
     "page_number": 36,
     "kind": "digital",
     "text_len": 718,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -325,7 +325,7 @@
     "page_number": 37,
     "kind": "digital",
     "text_len": 521,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -333,7 +333,7 @@
     "page_number": 38,
     "kind": "digital",
     "text_len": 16,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   },
@@ -341,7 +341,7 @@
     "page_number": 39,
     "kind": "digital",
     "text_len": 139,
-    "has_vector_graphics": true,
+    "has_vector_graphics": false,
     "table_hint": false,
     "images": []
   }

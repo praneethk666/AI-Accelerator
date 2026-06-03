@@ -8,13 +8,15 @@ from backend.utils.save_json import save_page_profiles
 
 # ===== CONFIGURATION (tune per document type) =====
 MIN_IMAGE_PX = 150               # Ignore images smaller than this (both dimensions)
-MIN_VECTOR_AREA_RATIO = 0.05     # 5% of page area – ignore small vectors (borders, formula boxes)
+MIN_VECTOR_AREA_RATIO = 0.005   # 0.5% of page area – captures small vector drawings (icons, diagrams)
+MIN_VECTOR_COMPLEXITY = 5        # Minimum number of drawing items to be considered meaningful
 
 
 def page_profile(pdf_path: str) -> List[PageProfile]:
     """
     Analyze every page of a PDF and generate PageProfile metadata.
-    Only significant vector drawings (area >= MIN_VECTOR_AREA_RATIO * page_area) are considered.
+    Only significant vector drawings (area >= MIN_VECTOR_AREA_RATIO * page_area)
+    AND with at least MIN_VECTOR_COMPLEXITY items are considered.
     Vectors that overlap tables by >50% are also skipped.
     """
     doc = fitz.open(pdf_path)
@@ -39,7 +41,7 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
                 table_bboxes = []
                 table_hint = False
 
-            # ---- Vector graphics (significant only, exclude table‑overlapping ones) ----
+            # ---- Vector graphics (significant only, exclude table‑overlapping and simple ones) ----
             drawings = page.get_drawings()
             significant_vector_count = 0
             for dr in drawings:
@@ -49,6 +51,12 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
                 area = (rect[2] - rect[0]) * (rect[3] - rect[1])
                 if area / page_area < MIN_VECTOR_AREA_RATIO:
                     continue   # too small – ignore
+
+                # Complexity filter: skip simple drawings (e.g., single rectangle)
+                items = dr.get("items", [])
+                if len(items) < MIN_VECTOR_COMPLEXITY:
+                    continue
+
                 # Skip if drawing heavily overlaps any table (likely a table border)
                 skip = False
                 for t_bbox in table_bboxes:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-
 # Safe-state default when route is not declared. Matches the .md rules:
 #       low confidence / unknown -> text_default, never wrong-and-confident.
 DEFAULT_ROUTE = "text_default"

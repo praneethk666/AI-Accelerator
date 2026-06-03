@@ -5,6 +5,7 @@
 - tools never call each other — they read/write the shared state; the graph routes
 - one tool failing -> appended to state["errors"], never kills the run
 """
+
 from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
@@ -44,10 +45,11 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
     def next_from(i: int):
         def route(state: PipelineState) -> str:
             current_route = state.get("route") or config.route
-            for s in steps[i + 1:]:
+            for s in steps[i + 1 :]:
                 if _enabled(s, current_route, gates):
                     return s
             return END
+
         return route
 
     # reachable targets from position i: walk forward, stop at the first UNGATED
@@ -55,7 +57,7 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
     # rest are skippable. Keeps the graph a clean chain with branches only at gates.
     def dests_after(i: int) -> dict:
         d = {}
-        for s in steps[i + 1:]:
+        for s in steps[i + 1 :]:
             d[s] = s
             if s not in gates:  # ungated -> always runs, can't skip past it
                 return d
@@ -75,7 +77,11 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
 def run_pipeline(tools, state: PipelineState, config) -> PipelineState:
     """Build + run in one call. Accepts dicts (legacy) or a registry/PipelineConfig."""
     registry = tools if isinstance(tools, ToolRegistry) else _registry_from_dict(tools)
-    cfg = config if isinstance(config, PipelineConfig) else PipelineConfig.from_dict(config)
+    cfg = (
+        config
+        if isinstance(config, PipelineConfig)
+        else PipelineConfig.from_dict(config)
+    )
     graph = build_pipeline(registry, cfg)
     return graph.invoke(state)
 

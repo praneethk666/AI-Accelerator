@@ -3,6 +3,7 @@
 The integration contract: write a Tool (a `name` + `run`), register it,
 add its name to `config.steps`. No edits to anyone else's code.
 """
+
 from __future__ import annotations
 
 from backend.core.tool import Tool

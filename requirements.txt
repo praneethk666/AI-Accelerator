@@ -3,6 +3,10 @@ pyyaml
 pytest
 langgraph>=1.2,<2.0
 
+# Dev: format with black, lint with ruff (see CONTRIBUTING.md)
+black
+ruff
+
 # Add yours in your PR, e.g.:
 # pymupdf
 # openpyxl

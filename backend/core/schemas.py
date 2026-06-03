@@ -1,5 +1,6 @@
 """Shared data contracts. Every tool reads/writes these shapes.
 Keep field names stable — changing them is a team decision, not a solo one."""
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
@@ -16,6 +17,7 @@ class ImageRegion:
 @dataclass
 class PageProfile:
     """Per-page x-ray of a PDF (owner: Manoj)."""
+
     page_number: int
     kind: str  # "digital" | "scanned" | "mixed"
     text_len: int = 0
@@ -36,6 +38,7 @@ class SourceRef:
 @dataclass
 class NormalizedBlock:
     """The common output of every extractor/enricher."""
+
     block_id: str
     document_id: str
     type: str  # "text" | "table" | "heading" | "image_caption"
@@ -50,8 +53,11 @@ class NormalizedBlock:
 @dataclass
 class Chunk:
     """A retrieval-ready unit. tags carry category + text-enrichment."""
+
     chunk_id: str
     document_id: str
     text: str
-    tags: dict = field(default_factory=dict)  # industry, doc_type, topic, section, keywords
+    tags: dict = field(
+        default_factory=dict
+    )  # industry, doc_type, topic, section, keywords
     source_ref: Optional[SourceRef] = None

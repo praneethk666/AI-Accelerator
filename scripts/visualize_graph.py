@@ -10,6 +10,7 @@ Run from repo root:
     python scripts/visualize_graph.py                         # example config -> docs/pipeline_graph.png
     python scripts/visualize_graph.py <config.yaml> <out.png>
 """
+
 import os
 import sys
 

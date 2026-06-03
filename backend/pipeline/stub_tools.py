@@ -4,6 +4,7 @@
 - I think LangGraph will reject any unknown keys
 - ***swap stubs for real tools when ready
 """
+
 from __future__ import annotations
 
 from backend.core.tool import PipelineState
@@ -23,7 +24,9 @@ class PageProfileStub:
     name = "page_profile"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
-        state.setdefault("page_profiles", []).append({"page_number": 1, "kind": "digital"})
+        state.setdefault("page_profiles", []).append(
+            {"page_number": 1, "kind": "digital"}
+        )
         return state
 
 
@@ -32,7 +35,9 @@ class PdfExtractionStub:
     name = "pdf_extraction"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
-        state.setdefault("blocks", []).append({"type": "text", "text": "stub body text"})
+        state.setdefault("blocks", []).append(
+            {"type": "text", "text": "stub body text"}
+        )
         return state
 
 
@@ -41,7 +46,9 @@ class VisionEnrichmentStub:
     name = "vision_enrichment"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
-        state.setdefault("blocks", []).append({"type": "image_caption", "text": "stub caption"})
+        state.setdefault("blocks", []).append(
+            {"type": "image_caption", "text": "stub caption"}
+        )
         return state
 
 
@@ -51,7 +58,8 @@ class ChunkStub:
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         blocks = state.get("blocks", [])
         state.setdefault("chunks", []).extend(
-            {"chunk_id": f"c{i}", "text": b.get("text", ""), "tags": {}} for i, b in enumerate(blocks)
+            {"chunk_id": f"c{i}", "text": b.get("text", ""), "tags": {}}
+            for i, b in enumerate(blocks)
         )
         return state
 

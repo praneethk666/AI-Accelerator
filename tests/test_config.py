@@ -1,4 +1,5 @@
 """PipelineConfig tests.  Run:  python tests/test_config.py   (or:  python3)"""
+
 import os
 import sys
 
@@ -26,8 +27,8 @@ def test_section_returns_tool_settings():
 
 def test_missing_fields_use_safe_defaults():
     cfg = PipelineConfig.from_dict({})
-    assert cfg.route == DEFAULT_ROUTE   # unknown route -> safe-state default
-    assert cfg.steps == []              # no steps -> nothing runs, no crash
+    assert cfg.route == DEFAULT_ROUTE  # unknown route -> safe-state default
+    assert cfg.steps == []  # no steps -> nothing runs, no crash
     assert cfg.section("vision") == {}  # missing section -> empty, not error
 
 

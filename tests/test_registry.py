@@ -1,4 +1,5 @@
 """ToolRegistry tests.  Run:  python tests/test_registry.py   (or:  python3)"""
+
 import os
 import sys
 

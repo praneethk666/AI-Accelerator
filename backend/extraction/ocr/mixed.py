@@ -12,6 +12,12 @@ from backend.extraction.ocr.scanned import get_ocr, page_to_pil
 from backend.core.schemas import NormalizedBlock, SourceRef
 from backend.utils.save_json import save_blocks
 
+# Configuration (move to config later)
+MIN_IMAGE_AREA = 1000               # ignore logos/icons smaller than ~32x32 px
+MIN_DRAWING_AREA_RATIO = 0.005      # 0.5% of page area -> captures small vector drawings
+MIN_VECTOR_COMPLEXITY = 5           # minimum number of drawing items to be considered meaningful
+TABLE_OVERLAP_THRESHOLD = 0.5       # skip vector if >50% of its area overlaps a table
+
 
 def extract_mixed(
     pdf_path: str,
@@ -21,10 +27,10 @@ def extract_mixed(
     Process a mixed PDF.
 
     Digital pages:
-        -> PyMuPDF extraction
+        -> PyMuPDF extraction (text, tables, images, vectors)
 
     Scanned pages:
-        -> OCR extraction
+        -> OCR extraction (text only)
 
     Returns:
         List[NormalizedBlock]
@@ -99,10 +105,22 @@ def _extract_digital_page(
 ) -> List[NormalizedBlock]:
     """
     Extract a single digital page.
+    Includes text, headings, tables, images, and vector drawings (with bbox).
+    Vector drawings that overlap tables (by >50% area) are ignored.
+    Vector drawings with low complexity (few drawing items) are also ignored.
     """
 
     blocks: List[NormalizedBlock] = []
+    page_area = page.rect.width * page.rect.height
 
+    # ---- Detect tables for overlap filtering ----
+    try:
+        tables_found = page.find_tables()
+        table_bboxes = [t.bbox for t in tables_found.tables] if tables_found.tables else []
+    except Exception:
+        table_bboxes = []
+
+    # ---- 1. Text extraction ----
     text_dict = page.get_text("dict")
 
     for block in text_dict.get("blocks", []):
@@ -152,7 +170,7 @@ def _extract_digital_page(
                     )
                 )
 
-    # Table extraction
+    # ---- 2. Table extraction ----
     try:
         tables = page.find_tables()
 
@@ -197,6 +215,86 @@ def _extract_digital_page(
             f"on page {page_number}: {e}"
         )
 
+    # ---- 3. Image placeholders (significant only) WITH BBOX ----
+    try:
+        for img in page.get_images(full=True):
+            rects = page.get_image_rects(img)
+            if not rects:
+                continue
+            bbox = rects[0]
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            if width * height < MIN_IMAGE_AREA:
+                continue   # skip tiny logos/icons
+            blocks.append(
+                NormalizedBlock(
+                    block_id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    type="image_caption",
+                    text="[Image - awaiting vision enrichment]",
+                    source_ref=SourceRef(
+                        filename=filename,
+                        page=page_number,
+                        bbox=list(bbox)
+                    ),
+                    confidence=0.5,
+                    metadata={"pending_vision": True, "is_vector": False},
+                )
+            )
+    except Exception as e:
+        print(f"Image extraction failed on page {page_number}: {e}")
+
+    # ---- 4. Vector drawing placeholders (filtered: area + complexity + table overlap) ----
+    try:
+        drawings = page.get_drawings()
+        for dr in drawings:
+            rect = dr.get("rect")
+            if not rect:
+                continue
+            area = (rect[2] - rect[0]) * (rect[3] - rect[1])
+            # Area threshold
+            if area / page_area < MIN_DRAWING_AREA_RATIO:
+                continue
+
+            # Complexity filter: skip simple drawings (e.g., single rectangle)
+            items = dr.get("items", [])
+            if len(items) < MIN_VECTOR_COMPLEXITY:
+                continue
+
+            # Overlap check with tables
+            skip = False
+            for t_bbox in table_bboxes:
+                # intersection area
+                ix1 = max(rect[0], t_bbox[0])
+                iy1 = max(rect[1], t_bbox[1])
+                ix2 = min(rect[2], t_bbox[2])
+                iy2 = min(rect[3], t_bbox[3])
+                if ix2 > ix1 and iy2 > iy1:
+                    inter_area = (ix2 - ix1) * (iy2 - iy1)
+                    if inter_area / area > TABLE_OVERLAP_THRESHOLD:
+                        skip = True
+                        break
+            if skip:
+                continue
+
+            blocks.append(
+                NormalizedBlock(
+                    block_id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    type="image_caption",
+                    text="[Vector drawing - awaiting vision enrichment]",
+                    source_ref=SourceRef(
+                        filename=filename,
+                        page=page_number,
+                        bbox=list(rect)
+                    ),
+                    confidence=0.5,
+                    metadata={"pending_vision": True, "is_vector": True},
+                )
+            )
+    except Exception as e:
+        print(f"Vector drawing extraction failed on page {page_number}: {e}")
+
     return blocks
 
 
@@ -208,6 +306,7 @@ def _extract_scanned_page(
 ) -> List[NormalizedBlock]:
     """
     OCR a single scanned page.
+    Returns only text blocks (no images/vectors for scanned pages).
     """
 
     ocr = get_ocr()

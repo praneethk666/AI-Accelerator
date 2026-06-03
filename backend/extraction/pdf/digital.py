@@ -1,17 +1,22 @@
 """Extract content from a digital PDF into NormalizedBlock list.
 Merges spans into paragraphs to reduce fragmentation.
+Includes bounding boxes for image and vector placeholders.
+Vector drawings that overlap tables (by >50% area) are ignored.
+Vector drawings with low complexity (few drawing items) are also ignored.
 """
 import fitz
 import uuid
-from typing import List, Dict, Any
+from typing import List
 
 from backend.core.schemas import NormalizedBlock, SourceRef
 from backend.utils.save_json import save_blocks
 
 # Configuration (move to config later)
 MIN_IMAGE_AREA = 1000               # ignore logos/icons smaller than ~32x32 px
-MIN_DRAWING_AREA_RATIO = 0.01       # 1% of page area -> significant vector drawing
+MIN_DRAWING_AREA_RATIO = 0.005      # 0.5% of page area -> captures small vector drawings
+MIN_VECTOR_COMPLEXITY = 5           # minimum number of drawing items to be considered meaningful
 LINE_GAP_FACTOR = 1.5               # lines closer than this * line_height are same paragraph
+TABLE_OVERLAP_THRESHOLD = 0.5       # skip vector if >50% of its area overlaps a table
 
 
 def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
@@ -23,6 +28,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
         for page_num in range(len(doc)):
             page = doc[page_num]
             page_number = page_num + 1
+            page_area = page.rect.width * page.rect.height
 
             # ---- 1. Page metrics ----
             text = page.get_text().strip()
@@ -39,17 +45,45 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
 
             drawings = page.get_drawings()
             vector_count = len(drawings)
+
+            # Detect tables and collect their bounding boxes
+            tables_found = page.find_tables()
+            table_bboxes = [t.bbox for t in tables_found.tables] if tables_found.tables else []
+            has_table = len(table_bboxes) > 0
+
+            # Count significant vectors (area + complexity + table overlap filter)
             significant_vector_count = 0
-            page_area = page.rect.width * page.rect.height
+            vector_bboxes_for_placeholders = []  # store rects that pass filters
             for dr in drawings:
                 rect = dr.get("rect")
-                if rect:
-                    area = (rect[2] - rect[0]) * (rect[3] - rect[1])
-                    if area / page_area >= MIN_DRAWING_AREA_RATIO:
-                        significant_vector_count += 1
+                if not rect:
+                    continue
+                area = (rect[2] - rect[0]) * (rect[3] - rect[1])
+                # Area threshold
+                if area / page_area < MIN_DRAWING_AREA_RATIO:
+                    continue   # too small – ignore
 
-            tables_found = page.find_tables()
-            has_table = len(tables_found.tables) > 0
+                # Complexity filter: skip simple drawings (e.g., single rectangle)
+                items = dr.get("items", [])
+                if len(items) < MIN_VECTOR_COMPLEXITY:
+                    continue
+
+                # Check overlap with any table
+                skip = False
+                for t_bbox in table_bboxes:
+                    # intersection area
+                    ix1 = max(rect[0], t_bbox[0])
+                    iy1 = max(rect[1], t_bbox[1])
+                    ix2 = min(rect[2], t_bbox[2])
+                    iy2 = min(rect[3], t_bbox[3])
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_area = (ix2 - ix1) * (iy2 - iy1)
+                        if inter_area / area > TABLE_OVERLAP_THRESHOLD:
+                            skip = True
+                            break
+                if not skip:
+                    significant_vector_count += 1
+                    vector_bboxes_for_placeholders.append(rect)
 
             metrics_block = NormalizedBlock(
                 block_id=str(uuid.uuid4()),
@@ -95,7 +129,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             except Exception as e:
                 print(f"Table extraction failed on page {page_number}: {e}")
 
-            # ---- 4. Image placeholders (significant only) ----
+            # ---- 4. Image placeholders (significant only) WITH BBOX ----
             try:
                 for img in page.get_images(full=True):
                     rects = page.get_image_rects(img)
@@ -112,7 +146,11 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
                             document_id=document_id,
                             type="image_caption",
                             text="[Image - awaiting vision enrichment]",
-                            source_ref=SourceRef(filename=filename, page=page_number),
+                            source_ref=SourceRef(
+                                filename=filename,
+                                page=page_number,
+                                bbox=list(bbox)
+                            ),
                             confidence=0.5,
                             metadata={"pending_vision": True, "is_vector": False},
                         )
@@ -120,22 +158,20 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             except Exception as e:
                 print(f"Image extraction failed on page {page_number}: {e}")
 
-            # ---- 5. Vector drawing placeholders ----
+            # ---- 5. Vector drawing placeholders (filtered: area + complexity + table overlap) ----
             try:
-                for dr in drawings:
-                    rect = dr.get("rect")
-                    if not rect:
-                        continue
-                    area = (rect[2] - rect[0]) * (rect[3] - rect[1])
-                    if area / page_area < MIN_DRAWING_AREA_RATIO:
-                        continue
+                for rect in vector_bboxes_for_placeholders:
                     blocks.append(
                         NormalizedBlock(
                             block_id=str(uuid.uuid4()),
                             document_id=document_id,
                             type="image_caption",
                             text="[Vector drawing - awaiting vision enrichment]",
-                            source_ref=SourceRef(filename=filename, page=page_number),
+                            source_ref=SourceRef(
+                                filename=filename,
+                                page=page_number,
+                                bbox=list(rect)
+                            ),
                             confidence=0.5,
                             metadata={"pending_vision": True, "is_vector": True},
                         )
@@ -209,7 +245,6 @@ def _extract_paragraphs(page, page_num: int, filename: str, document_id: str) ->
         if prev_line is None:
             current_para.append(line)
         else:
-            # Estimate line height from previous line's bbox
             prev_height = prev_line["y1"] - prev_line["y0"]
             gap = line["y0"] - prev_line["y1"]
             if gap < LINE_GAP_FACTOR * prev_height:

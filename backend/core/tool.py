@@ -10,7 +10,7 @@ from typing import Protocol, TypedDict
 
 class PipelineState(TypedDict, total=False):
     document_id: str
-    file_path: str
+    file_path: str 
     file_type: str        # "pdf" | "excel" | "ppt" | "image"
     route: str            # set by categorize; drives the graph
     page_profiles: list   # PageProfile[]

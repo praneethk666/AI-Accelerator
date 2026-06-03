@@ -10,3 +10,10 @@ pytest
 # python-pptx
 # fastapi
 # uvicorn
+
+#For Digital and Scanned PDF 
+PyMuPDF==1.24.12
+paddleocr==2.7.3
+paddlepaddle==2.6.2
+Pillow==10.1.0
+numpy==1.24.3

@@ -1,0 +1,93 @@
+[
+  {
+    "page_number": 1,
+    "kind": "digital",
+    "text_len": 1174,
+    "has_vector_graphics": true,
+    "table_hint": true,
+    "images": [
+      {
+        "bbox": [
+          57.63589859008789,
+          35.996910095214844,
+          128.5500030517578,
+          84.23291015625
+        ],
+        "width": 197,
+        "height": 134,
+        "significant": false
+      },
+      {
+        "bbox": [
+          57.63589859008789,
+          410.48565673828125,
+          521.63720703125,
+          638.586669921875
+        ],
+        "width": 708,
+        "height": 348,
+        "significant": true
+      }
+    ]
+  },
+  {
+    "page_number": 2,
+    "kind": "digital",
+    "text_len": 820,
+    "has_vector_graphics": false,
+    "table_hint": false,
+    "images": [
+      {
+        "bbox": [
+          57.63589859008789,
+          35.996910095214844,
+          128.5500030517578,
+          84.23291015625
+        ],
+        "width": 197,
+        "height": 134,
+        "significant": false
+      }
+    ]
+  },
+  {
+    "page_number": 3,
+    "kind": "digital",
+    "text_len": 1051,
+    "has_vector_graphics": true,
+    "table_hint": true,
+    "images": [
+      {
+        "bbox": [
+          57.63589859008789,
+          35.996910095214844,
+          128.5500030517578,
+          84.23291015625
+        ],
+        "width": 197,
+        "height": 134,
+        "significant": false
+      }
+    ]
+  },
+  {
+    "page_number": 4,
+    "kind": "digital",
+    "text_len": 437,
+    "has_vector_graphics": false,
+    "table_hint": false,
+    "images": [
+      {
+        "bbox": [
+          57.63589859008789,
+          35.996910095214844,
+          128.5500030517578,
+          84.23291015625
+        ],
+        "width": 197,
+        "height": 134,
+        "significant": false
+      }
+    ]
+  }
+]

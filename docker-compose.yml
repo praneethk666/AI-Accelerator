@@ -1,7 +1,40 @@
-# STUB (owner: Karthii). Bring up the local data plane with one command.
-# Fill in the images/ports for the vector DB, relational DB, and object store
-# once those are chosen. Keep all of this self-hosted.
-services: {}
-#  vector-db:        { image: "<chosen-vector-db>",  ports: ["6333:6333"] }
-#  relational-db:    { image: "postgres:16",         ports: ["5432:5432"], environment: {} }
-#  object-store:     { image: "<s3-compatible>",     ports: ["9000:9000"] }
+# Creds come from .env (copy .env.example). 
+
+# postgres (relational db for rows)
+# pgvector [postgres extension] (vector search for chunk embeddings)
+# minio (for original uploaded files)
+services:
+  postgres:
+    image: pgvector/pgvector:pg16 # Postgres 16 with pgvector preinstalled
+    env_file: .env # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data # persistent DB files
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro # runs once on first init
+    healthcheck:
+      # $$ escapes compose interpolation -> expanded inside the container
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    env_file: .env # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API (code talks here)
+      - "9001:9001" # web console (browse at localhost:9001)
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      # adjust if curl is missing in the image; verified at boot
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  miniodata:

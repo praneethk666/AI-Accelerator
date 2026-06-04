@@ -1,52 +1,40 @@
-# backend/vision/vision_client.py
-
 import os
-
-from google import genai
+import re
+import json
 from dotenv import load_dotenv
-
+from google import genai
+from google.genai import types
 from .prompts import VISION_PROMPT
 
 load_dotenv()
 
-api_key = os.getenv("GOOGLE_API_KEY")
-
-if not api_key:
-    raise RuntimeError(
-        "GOOGLE_API_KEY not found in .env or environment"
-    )
-
-client = genai.Client(api_key=api_key)
-
-
 class VisionClient:
+    def __init__(self, model_name="gemma-4-26b-a4b-it"):
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found")
+        self.client = genai.Client(api_key=api_key)
+        self.model = model_name
 
-    def __init__(self, model_name=None):
+    def describe(self, image_bytes: bytes, config: dict | None = None) -> str:
+        mime = "image/png" if image_bytes[:4] == b"\x89PNG" else "image/jpeg"
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime)
 
-        if model_name is None:
-            model_name = os.getenv(
-                "VISION_MODEL",
-                "gemma-4-26b-a4b-it"
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[VISION_PROMPT, image_part],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=1024,
+                ),
             )
-
-        self.model_name = model_name
-
-    def describe(
-        self,
-        image_bytes,
-        config,
-    ):
-        image_part = {
-            "mime_type": "image/png",
-            "data": image_bytes,
-        }
-
-        response = client.models.generate_content(
-            model=self.model_name,
-            contents=[
-                VISION_PROMPT,
-                image_part,
-            ],
-        )
-
-        return response.text
+            raw = response.text.strip() if response.text else ""
+            json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                return json.dumps(parsed)
+            return raw
+        except Exception as e:
+            print(f"\n⚠️ Vision API error: {e}")
+            return ""

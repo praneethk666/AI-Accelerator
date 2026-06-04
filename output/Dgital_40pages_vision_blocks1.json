@@ -1,0 +1,576 @@
+[
+  {
+    "block_id": "dd364b41-bd1c-487d-979c-e1da43124306",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A product photograph of the iCube II device, a black electronic component with a long attached cable. The device features several control icons on its surface and is presented against a light gray background.\n\nEntities: iCube II, User Guide, cable, connector, ear icon, Bluetooth icon",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        21.659128189086914,
+        40.64378356933594,
+        243.45010375976562,
+        262.47027587890625
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "photo",
+      "entities": [
+        "iCube II",
+        "User Guide",
+        "cable",
+        "connector",
+        "ear icon",
+        "Bluetooth icon"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "78ce5b4e-b6ce-40ae-a626-fb52e6e79d25",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A product photograph of a black electronic device labeled 'iCube II' with an attached black cable. The device features several icons and a USB-C port, presented against a light gray background.\n\nEntities: iCube II, User Guide, USB-C, cable, electronic device",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        21.659128189086914,
+        40.64378356933594,
+        232.33033752441406,
+        262.47027587890625
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "photo",
+      "entities": [
+        "iCube II",
+        "User Guide",
+        "USB-C",
+        "cable",
+        "electronic device"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "be9524b0-d72b-46e8-a32e-76ef9536b3ae",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "Cover page of the iCube II User Guide, featuring a product photograph of a black electronic device with an attached cable. The Phonak brand logo and the tagline 'life is on' are displayed at the bottom.\n\nEntities: iCube II, User Guide, PHONAK, life is on",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0.0,
+        0.0,
+        261.0,
+        355.0
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "iCube II",
+        "User Guide",
+        "PHONAK",
+        "life is on"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "154677d1-bad6-4353-b4b9-71b526229324",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A welcome page from a user guide for the iCube II device by Phonak. It contains introductory text, a website URL, and regulatory symbols including the CE mark.\n\nEntities: iCube II, Phonak, www.phonak-us.com, CE mark, 2014, hearing care professional",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "iCube II",
+        "Phonak",
+        "www.phonak-us.com",
+        "CE mark",
+        "2014",
+        "hearing care professional"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "a6ce2d2f-3484-4811-ae0e-52f7213f2b26",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A technical diagram of the iCube II device, illustrating its various components and controls through labeled line drawings. It includes labels for the neckloop parts, indicator lights, pairing button, and charging input, along with a separate illustration of a USB adapter.\n\nEntities: iCube II, Rear neckloop opening, Neckloop plugs, Middle indicator light, battery state, PC data transfer, On/Off, Right indicator light, Left indicator light, Pairing button, Mini USB charging input, Wireless iCube II USB adapter",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 5,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "iCube II",
+        "Rear neckloop opening",
+        "Neckloop plugs",
+        "Middle indicator light",
+        "battery state",
+        "PC data transfer",
+        "On/Off",
+        "Right indicator light",
+        "Left indicator light",
+        "Pairing button",
+        "Mini USB charging input",
+        "Wireless iCube II USB adapter"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "cf0cd16d-d336-41aa-bbb0-f86157b9fa32",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual titled 'Getting started' and 'Setting up the power supply'. It contains illustrations of US and EU power adapters and two instructional diagrams with numbered green arrows showing how to insert and remove an adapter from a power supply.\n\nEntities: Getting started, Setting up the power supply, US adapter, EU adapter, power supply, adapter, tab",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Getting started",
+        "Setting up the power supply",
+        "US adapter",
+        "EU adapter",
+        "power supply",
+        "adapter",
+        "tab"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "5b77cefa-f9b9-42fd-a5f5-1d2fac4ee2d2",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual titled '4.2 Charging the battery' for the iCube II device. It features instructional line drawings with green arrows demonstrating how to plug in a mini-USB cable and how to connect the device to a power outlet using a desktop stand.\n\nEntities: iCube II, mini-USB plug, power supply, power outlet, desktop stand, charging, battery",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "iCube II",
+        "mini-USB plug",
+        "power supply",
+        "power outlet",
+        "desktop stand",
+        "charging",
+        "battery"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "b364736e-a628-440b-915d-8c699228167a",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual for the iCube II device, providing instructions on operating time, switching the device on and off, and software requirements. It includes a technical illustration demonstrating the slide switch operation.\n\nEntities: iCube II, Phonak Target\u2122 4.0, Off, On, middle indicator light, Switching iCube II on and off",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 10,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "iCube II",
+        "Phonak Target\u2122 4.0",
+        "Off",
+        "On",
+        "middle indicator light",
+        "Switching iCube II on and off"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "9f59b1c6-975c-43f7-b535-9eeebe813ef5",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual titled '5. Connecting iCube II to your computer'. It provides instructions for connecting the iCube II device via a wireless USB adapter, Bluetooth, or USB cable, including software requirements and a warning about USB extension cables.\n\nEntities: iCube II, wireless USB adapter, Bluetooth, USB cable, Phonak Target 4.0, USB port, USB extension cable",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 11,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "iCube II",
+        "wireless USB adapter",
+        "Bluetooth",
+        "USB cable",
+        "Phonak Target 4.0",
+        "USB port",
+        "USB extension cable"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "23efa9a0-041f-4689-8a53-0a01f85c4b96",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 13,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.0,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [],
+      "enrichment_failed": true
+    }
+  },
+  {
+    "block_id": "2781a001-bf6c-46c0-97ef-5965063467e2",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual for the iCube II device, providing instructions on battery charging and how to wear the neckloop. It includes two technical diagrams illustrating the connection of components and the opening/closing of the neckloop.\n\nEntities: iCube II, Phonak Target, neckloop, battery, indicator light, connector, antenna",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 14,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "iCube II",
+        "Phonak Target",
+        "neckloop",
+        "battery",
+        "indicator light",
+        "connector",
+        "antenna"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "d2aba988-142d-4e7f-96f8-b0251b9f5397",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.0,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [],
+      "enrichment_failed": true
+    }
+  },
+  {
+    "block_id": "bb884c51-b881-48a6-9a6e-281e1782581a",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A technical guide illustrating the different indicator light patterns for the iCube II device. It shows four states: charging (solid orange), charging complete (solid green), starting up (solid green for 2 seconds), and switching off (blinking 3 times).\n\nEntities: iCube II, Indicator lights, Charging, Charging complete, starting up, switching off, solid orange, solid green, 2 sec, 3 x",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 17,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "iCube II",
+        "Indicator lights",
+        "Charging",
+        "Charging complete",
+        "starting up",
+        "switching off",
+        "solid orange",
+        "solid green",
+        "2 sec",
+        "3 x"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "e39e5f07-5209-43f9-a442-544acff2a61d",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A reference guide illustrating various indicator light patterns for a device, likely related to hearing instruments. Each entry pairs a description of the light behavior with a visual diagram and its corresponding functional meaning.\n\nEntities: Indicator lights, Middle indicator, Right and middle indicator, Left and middle indicator, All indicators, All three indicators, fitting PC, right hearing instrument, left hearing instrument, Pairing mode, Updating firmware, iCube II",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 18,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Indicator lights",
+        "Middle indicator",
+        "Right and middle indicator",
+        "Left and middle indicator",
+        "All indicators",
+        "All three indicators",
+        "fitting PC",
+        "right hearing instrument",
+        "left hearing instrument",
+        "Pairing mode",
+        "Updating firmware",
+        "iCube II"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "30ef1fb9-5c1e-4a81-b38a-cd03a67d149e",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual featuring instructional text and a technical diagram of the iCube II device. The diagram illustrates indicator light states, specifically highlighting a solid red middle indicator as a sign of malfunction.\n\nEntities: iCube II, Phonak Target, middle indicator light, battery, firmware version, solid red, malfunction, troubleshooting section",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 19,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "iCube II",
+        "Phonak Target",
+        "middle indicator light",
+        "battery",
+        "firmware version",
+        "solid red",
+        "malfunction",
+        "troubleshooting section"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "02c78219-9561-4bbb-a54b-fc01ecef1e3e",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A reference table titled 'Information and description of symbols' that lists various icons and their corresponding meanings. It covers instructions for keeping devices dry, humidity limits for storage and operation, atmospheric pressure ranges, and proper electronic waste disposal.\n\nEntities: Keep dry, Humidity transportation and storage, <90% (non-condensing), Humidity operation, <95% (non condensing), Atmospheric pressure, 200 hPA to 1500 hPA, crossed-out garbage bin, electronic waste",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 30,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Keep dry",
+        "Humidity transportation and storage",
+        "<90% (non-condensing)",
+        "Humidity operation",
+        "<95% (non condensing)",
+        "Atmospheric pressure",
+        "200 hPA to 1500 hPA",
+        "crossed-out garbage bin",
+        "electronic waste"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "133fda42-4a7b-46a7-91d9-03f2b350d205",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a safety manual containing text warnings and technical illustrations. It includes instructions on charger specifications, warnings against electric shock, and restrictions on use in explosive environments.\n\nEntities: Important safety information, mini-USB port, Phonak, 5VDC, 500 mA, electric shock, explosive areas, mines, industrial areas, oxygen rich environments, flammable anesthetics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_40pages.pdf",
+      "page": 34,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        260.7869873046875,
+        354.33099365234375
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Important safety information",
+        "mini-USB port",
+        "Phonak",
+        "5VDC",
+        "500 mA",
+        "electric shock",
+        "explosive areas",
+        "mines",
+        "industrial areas",
+        "oxygen rich environments",
+        "flammable anesthetics"
+      ],
+      "enrichment_failed": false
+    }
+  }
+]

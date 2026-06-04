@@ -5,47 +5,29 @@ You are an expert document understanding assistant.
 
 Analyze the provided image region.
 
-Focus ONLY on:
-
+Focus on all visible content, including:
 - diagrams
 - flowcharts
 - engineering drawings
 - circuit diagrams
 - charts
 - technical illustrations
-
-Ignore:
-
 - logos
 - decorative graphics
-- watermarks
-- page backgrounds
+- photos
 
-Return ONLY valid JSON.
+Return ONLY valid JSON with the following structure:
 
 {
-  "type": "diagram | flowchart | engineering_drawing | circuit | chart | photo | other",
-
-  "description": "concise but information-rich technical description",
-
-  "entities": [
-    "component names",
-    "labels",
-    "part numbers",
-    "process names",
-    "measurements",
-    "voltages",
-    "chart labels"
-  ],
-
+  "type": "diagram | flowchart | engineering_drawing | circuit | chart | photo | logo | other",
+  "description": "concise, information-rich description (max 3 sentences)",
+  "entities": ["key terms", "labels", "component names", "brand names", "measurements"],
   "confidence": 0.95
 }
 
 Rules:
-
 - confidence must be between 0 and 1
-- description should be maximum 3 sentences
+- description should capture the main visual elements
 - entities should contain highly searchable keywords
-- return JSON only
-- do not include markdown
+- return JSON only, no markdown
 """

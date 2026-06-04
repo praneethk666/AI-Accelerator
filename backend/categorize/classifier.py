@@ -24,7 +24,7 @@ import fitz
 
 import yaml
 
-from .text_extractor import extract_text, extract_toc_text
+from .text_extractor import extract_text, extract_toc_text, analyze_cad_document, is_cad_document_by_filename
 from .vision import run_vision
 
 
@@ -136,6 +136,50 @@ def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[
         filename = os.path.basename(file_path)
         lowered = filename.lower()
 
+        # ---- CAD Document Detection (filename-first) ----
+        suspected_cad = False
+        if is_cad_document_by_filename(filename):
+            suspected_cad = True
+        
+        # If PDF, try text-based CAD detection
+        cad_analysis = None
+        if lowered.endswith('.pdf') and not suspected_cad:
+            try:
+                cad_analysis = analyze_cad_document(file_path, max_pages=3)
+                if cad_analysis.get('is_cad'):
+                    # Confidence for CAD detection from text analysis: 0.85
+                    cad_metadata = cad_analysis.get('metadata', {})
+                    if cad_metadata.get('industry'):
+                        best["industry"] = cad_metadata['industry']
+                        best["document_type"] = "cad_drawing"
+                        best["confidence"] = 0.85
+                        best["route"] = config["type_to_route"].get("cad_drawing", "diagram_heavy")
+                        reasoning_parts = [
+                            f"CAD document detected from engineering metadata.",
+                            f"Drawing#: {cad_metadata.get('drawing_number', 'N/A')}",
+                            f"Industry: {cad_metadata.get('industry', 'engineering')}",
+                        ]
+                        best["reasoning"] = "\n".join(reasoning_parts).strip()
+                        
+                        # Write to state and return early
+                        state["route"] = best["route"]
+                        state["document_type"] = best["document_type"]
+                        state["industry"] = best["industry"]
+                        state["categorization_confidence"] = best["confidence"]
+                        state["reasoning"] = best["reasoning"]
+                        state.setdefault("errors", [])
+                        
+                        return {
+                            "route": state["route"],
+                            "document_type": state["document_type"],
+                            "industry": state["industry"],
+                            "confidence": state["categorization_confidence"],
+                            "reasoning": state["reasoning"],
+                        }
+            except Exception as e:
+                # If CAD analysis fails, continue with normal flow
+                pass
+
         # ---- Document type: filename-first ----
         type_to_route: Dict[str, str] = config["type_to_route"]
         supported_types = list(type_to_route.keys())
@@ -194,6 +238,13 @@ def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[
 
             if not doc_type:
                 doc_type = "report"
+
+            # ---- CAD Override: If filename suggests CAD and vision didn't catch it ----
+            if suspected_cad and doc_type != "cad_drawing" and doc_type != "circuit_diagram" and doc_type != "schematic":
+                # Boost CAD classification if filename is clear CAD signal
+                doc_type = "cad_drawing"
+                conf = max(conf, 0.75)  # At least 0.75 confidence from filename hint
+                reasoning = f"Filename pattern indicates CAD document (suspected_cad=True). Original vision: {reasoning}"
 
             best["document_type"] = doc_type
             best["confidence"] = conf

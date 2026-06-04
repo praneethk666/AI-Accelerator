@@ -30,9 +30,178 @@ A production-grade document classification system that:
 10. [File Type Support](#file-type-support)
 11. [Known Limitations](#known-limitations)
 
----
+## 🏗️ CAD & Engineering Document Support
 
-## 🚀 Quick Start
+### What is CAD Document Detection?
+
+The system can now automatically detect and properly classify engineering CAD drawings (PDFs) with specialized extraction:
+
+- **Automatic Detection:** Analyzes PDF text for engineering keywords
+- **Metadata Extraction:** Pulls drawing numbers, models, scales, revisions
+- **Industry Inference:** Detects industry from part names, material specs, model codes
+- **Routing:** Correctly routes to `diagram_heavy` for downstream processors
+
+### CAD Detection Indicators
+
+The system detects CAD documents by looking for:
+```
+- Drawing/part numbers (99Y_MKR2002100AB, DWG-####)
+- Scale specifications (Scale 1:2, 1:50)
+- Engineering dimensions (mm, inches)
+- Title blocks and revision blocks
+- BOM (Bill of Materials) tables
+- Views (front_view, side_view, section_A)
+- Technical notations and tolerances
+```
+
+### CAD Document Example
+
+**Input:** `MS03AAA981AA-Expansion Motor.pdf` (Engineering drawing)
+
+**Detection & Classification:**
+```python
+state = {}
+result = run(r'D:\AI-Accelerator\MS03AAA981AA-Expansion Motor.pdf', state)
+
+print(result)
+# {
+#     "route": "diagram_heavy",        # ✅ Correct route for CAD
+#     "document_type": "cad_drawing",  # ✅ Detected as CAD from filename pattern
+#     "industry": "automotive",        # ✅ Inferred from part number
+#     "confidence": 0.75,              # ✅ High confidence from filename detection
+#     "reasoning": "Filename pattern indicates CAD document..."
+# }
+
+print(state)
+# {
+#     "route": "diagram_heavy",
+#     "document_type": "cad_drawing",
+#     "industry": "automotive",
+#     "categorization_confidence": 0.75,
+#     "reasoning": "...",
+#     "errors": []  # ✅ No errors
+# }
+```
+
+**What Changed:**
+- ❌ **Before**: Motor drawing → `route: text_default`, `document_type: report` (WRONG)
+- ✅ **After**: Motor drawing → `route: diagram_heavy`, `document_type: cad_drawing` (CORRECT)
+
+### CAD Extraction Pipeline
+
+The CAD extractor performs 5-stage analysis:
+
+```
+PDF Input
+    ↓
+1. TEXT EXTRACTION (first 3 pages)
+    ├─ Extract all text content
+    ├─ Detect CAD indicators (keywords, patterns)
+    └─ If < 3 CAD keywords → Not a CAD document
+    ↓
+2. METADATA EXTRACTION
+    ├─ Drawing number (99Y_MKR2002100AB, DWG-001, etc.)
+    ├─ Title/model information
+    ├─ Scale specification
+    └─ Industry from model codes
+    ↓
+3. BOM EXTRACTION
+    ├─ Parse Bill of Materials table
+    ├─ Extract part numbers, quantities
+    └─ Preserve Japanese + English bilingual content
+    ↓
+4. DIMENSION EXTRACTION
+    ├─ Extract numeric dimensions (mm, inches)
+    ├─ Collect measurement data
+    └─ Build dimension metadata
+    ↓
+5. INDUSTRY DETECTION
+    ├─ Match model/part keywords to industries
+    ├─ Automotive (toyota, motor, ecu, etc.)
+    ├─ Manufacturing (production, assembly, bom, etc.)
+    ├─ Aerospace, pharma, electronics, etc.
+    └─ Return detected or default industry
+```
+
+### Extracted CAD Metadata Structure
+
+```python
+# From analyze_cad_document()
+result = {
+    'is_cad': True,
+    'file': '/path/to/drawing.pdf',
+    'metadata': {
+        'drawing_number': '99Y_MKR2002100AB',
+        'title': 'Motor Assembly',
+        'model': 'MKR2002100AB',
+        'scale': '1:2',
+        'industry': 'automotive',
+    },
+    'bom': [
+        {'item': '1', 'part_name': 'Motor Base', 'qty': '1', 'notes': ''},
+        {'item': '2', 'part_name': 'Rotor', 'qty': '1', 'notes': ''},
+    ],
+    'dimensions': [
+        {'value': 100.0, 'unit': 'mm'},
+        {'value': 50.0, 'unit': 'mm'},
+    ]
+}
+```
+
+### CAD Supported Industries
+
+```yaml
+automotive:      Toyota, Honda, Nissan, BMW, motor, engine, chassis, wiring
+manufacturing:   Production fixtures, assembly jigs, tolerance specs, BOM
+engineering:     Voltage, resistors, torque, bearings, shafts, mechanical details
+aerospace:       Aircraft, landing gear, fuselage components
+pharma:          Equipment, validation equipment, controlled environments
+```
+
+### Using CAD Extraction Directly
+
+```python
+from backend.categorize.text_extractor import analyze_cad_document
+
+# Direct CAD analysis
+cad_data = analyze_cad_document('/path/to/drawing.pdf')
+
+if cad_data.get('is_cad'):
+    print(f"Drawing: {cad_data['metadata']['drawing_number']}")
+    print(f"Industry: {cad_data['metadata']['industry']}")
+    print(f"BOM items: {len(cad_data['bom'])}")
+    print(f"Dimensions found: {len(cad_data['dimensions'])}")
+```
+
+### CAD Command Examples
+
+#### Test a CAD Drawing
+```bash
+python -c "
+from backend.categorize.categorize_tool import run
+state = {}
+result = run(r'D:\drawings\motor_motor.pdf', state)
+print('Type:', result['document_type'])
+print('Route:', result['route'])
+print('Industry:', result['industry'])
+print('Confidence:', result['confidence'])
+"
+```
+
+#### Batch Process CAD Drawings
+```bash
+python -c "
+from pathlib import Path
+from backend.categorize.text_extractor import analyze_cad_document
+
+for pdf in Path(r'D:\drawings').glob('*.pdf'):
+    cad = analyze_cad_document(str(pdf))
+    if cad.get('is_cad'):
+        print(f'{pdf.name}: {cad[\"metadata\"][\"industry\"]} drawing')
+"
+```
+
+---
 
 ### 1. Install Dependencies
 ```bash

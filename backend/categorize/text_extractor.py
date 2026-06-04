@@ -3,14 +3,17 @@
 Used for:
 - industry keyword scoring (first 3 pages)
 - TOC extraction (no API cost)
+- CAD document detection and extraction
+- Specialized engineering metadata extraction
 
 The categorization engine still relies on vision for document_type.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Dict, Any, Optional
 import os
+import re
 
 import fitz
 
@@ -175,4 +178,201 @@ def extract_toc_text(file_path: str, max_pages: int = 2) -> str:
 
     except Exception:
         return ""
+
+
+# ============================================================
+# CAD DOCUMENT DETECTION & EXTRACTION
+# ============================================================
+
+CAD_KEYWORDS = [
+    'drawing number', 'drawing no', 'drawing sheet', 'dwg',
+    'model', 'scale', 'revision', 'rev', 'bom', 'bill of materials',
+    'part number', 'part no', 'qty', 'quantity', 'description',
+    'material', 'finish', 'tolerance', 'dimension', 'view',
+    'section', 'detail', 'mm', 'inches', 'unless otherwise specified',
+    'title block', 'signature block', 'approval', '図面番号',
+    'scale 1:', 'drawing sheet', 'engineering drawing',
+    'mechanical drawing', 'technical drawing', 'schematic',
+    'cad', 'autocad', 'solidworks', 'catia', '3d model'
+]
+
+ENGINEERING_INDUSTRIES = {
+    'automotive': ['vehicle', 'motor', 'engine', 'chassis', 'wiring', 'harness', 'ecu', 'drive', 'wheel', 'transmission'],
+    'manufacturing': ['production', 'assembly', 'fixture', 'tolerance', 'qc', 'iso', 'jig', 'bore'],
+    'engineering': ['voltage', 'resistor', 'schematic', 'pcb', 'torque', 'bearing', 'shaft', 'bolt', 'washer'],
+    'aerospace': ['aircraft', 'avionics', 'flight', 'fuselage', 'landing', 'wing'],
+    'pharma': ['equipment', 'validation', 'batch', 'sterile', 'controlled', 'chamber'],
+}
+
+
+def is_cad_document_by_filename(filename: str) -> bool:
+    """
+    Detect CAD documents by filename patterns.
+    
+    Looks for:
+    - Part/drawing numbers: MS03AAA981AA, DWG-0001, 99Y_MKR2002100AB
+    - Common CAD file naming: drawing_, schematic_, print_, layout_
+    - Technical suffixes: -A, -B, -R1, -R2 (revisions)
+    """
+    lower = filename.lower()
+    
+    # Part number patterns (aerospace, automotive, manufacturing)
+    part_number_patterns = [
+        r'^[A-Z]{1,3}\d{2}[A-Z]{3}\d{6}',  # MS03AAA981AA style
+        r'dwg[-_]?\d{4}',  # DWG-0001
+        r'\d{2}y[-_]?[a-z]{3}\d{7}',  # 99Y_MKR2002100AB style
+        r'[a-z]{2}\d{2}[a-z]{2}\d{3,6}[a-z]{2}',  # Generic part number
+    ]
+    
+    for pattern in part_number_patterns:
+        if re.search(pattern, lower):
+            return True
+    
+    # Common CAD naming prefixes
+    cad_prefixes = ['drawing_', 'schematic_', 'print_', 'layout_', 'cad_', 'dxf_', 'dwg_']
+    if any(lower.startswith(p) for p in cad_prefixes):
+        return True
+    
+    # Common CAD file suffixes and revisions
+    cad_suffixes = ['-a.pdf', '-b.pdf', '-r1.pdf', '-r2.pdf', '-sheet.pdf', '_sheet.pdf']
+    if any(lower.endswith(s) for s in cad_suffixes):
+        return True
+    
+    # Motor/engine/mechanical keywords in filename
+    mechanical_keywords = ['motor', 'engine', 'assembly', 'bracket', 'fixture', 'jig', 'bearing', 'shaft']
+    word_count = sum(1 for kw in mechanical_keywords if kw in lower.replace('_', ' ').replace('-', ' '))
+    if word_count >= 1:
+        return True
+    
+    return False
+    """Detect if PDF is engineering CAD drawing based on text keywords."""
+    if not text or len(text) < 100:
+        return False
+    
+    text_lower = text.lower()
+    keyword_matches = sum(1 for kw in CAD_KEYWORDS if kw in text_lower)
+    
+    # At least 3 CAD keywords indicates CAD document
+    return keyword_matches >= 3
+
+
+def extract_cad_metadata(text: str) -> Dict[str, Optional[str]]:
+    """Extract engineering metadata from CAD document text."""
+    metadata = {
+        'drawing_number': None,
+        'title': None,
+        'model': None,
+        'scale': None,
+        'industry': None,
+    }
+    
+    text_lower = text.lower()
+    
+    # Extract drawing number
+    drawing_patterns = [
+        r'(?:drawing|drawing no|dwg)[\s:]*([A-Z0-9\-\/]+)',
+        r'([A-Z]\d{2}[A-Z]\d{4}\d{3}[A-Z]{2})',  # Format like 99Y_MKR2002100AB
+    ]
+    
+    for pattern in drawing_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            metadata['drawing_number'] = match.group(1)
+            break
+    
+    # Extract model
+    model_match = re.search(r'(?:model|型式)[\s:]*([A-Z0-9\-]+)', text, re.IGNORECASE)
+    if model_match:
+        metadata['model'] = model_match.group(1)
+    
+    # Extract scale
+    scale_match = re.search(r'scale[\s:]*([0-9:\.]+)', text, re.IGNORECASE)
+    if scale_match:
+        metadata['scale'] = scale_match.group(1)
+    
+    # Detect industry from keywords
+    for industry, keywords in ENGINEERING_INDUSTRIES.items():
+        if any(kw in text_lower for kw in keywords):
+            metadata['industry'] = industry
+            break
+    
+    # Fallback to 'engineering' if no specific industry detected
+    if metadata['industry'] is None and is_cad_document(text):
+        metadata['industry'] = 'engineering'
+    
+    return metadata
+
+
+def extract_cad_bom(text: str) -> List[Dict[str, Any]]:
+    """Extract BOM (Bill of Materials) from CAD document text."""
+    bom_entries = []
+    
+    lines = text.split('\n')
+    bom_section = False
+    
+    for line in lines:
+        # Detect BOM section
+        if any(kw in line.upper() for kw in ['BOM', 'BILL OF MATERIALS', '部品表']):
+            bom_section = True
+            continue
+        
+        if not bom_section:
+            continue
+        
+        # Look for BOM entries: item number + part name + qty
+        match = re.match(r'\s*(\d+)\s+(.+?)\s+(\d+)\s*(.*)', line)
+        if match and len(match.group(2)) > 2:
+            entry = {
+                'item': match.group(1),
+                'part_name': match.group(2).strip(),
+                'qty': match.group(3),
+                'notes': match.group(4).strip() if match.group(4) else '',
+            }
+            bom_entries.append(entry)
+    
+    return bom_entries
+
+
+def extract_cad_dimensions(text: str) -> List[Dict[str, Any]]:
+    """Extract dimensions from CAD document text."""
+    dimensions = []
+    
+    # Pattern for dimensions: number + unit
+    dim_pattern = r'(\d+(?:\.\d+)?)\s*(mm|cm|inch|in|″|\')'
+    
+    for match in re.finditer(dim_pattern, text):
+        unit = match.group(2).replace('″', 'inch').replace('′', 'inch')
+        dimensions.append({
+            'value': float(match.group(1)),
+            'unit': unit,
+        })
+    
+    return dimensions
+
+
+def analyze_cad_document(file_path: str, max_pages: int = 3) -> Dict[str, Any]:
+    """Complete CAD analysis: extract metadata, BOM, dimensions."""
+    if not file_path.lower().endswith('.pdf'):
+        return {'is_cad': False, 'error': 'Only PDF files supported for CAD analysis'}
+    
+    # Extract text
+    text = _extract_pdf_text(file_path, max_pages)
+    
+    # Check if it's a CAD document
+    if not is_cad_document(text):
+        return {
+            'is_cad': False,
+            'file': file_path,
+        }
+    
+    # Extract CAD-specific data
+    return {
+        'is_cad': True,
+        'file': file_path,
+        'extracted_text': text[:2000],  # First 2000 chars
+        'metadata': extract_cad_metadata(text),
+        'bom': extract_cad_bom(text),
+        'dimensions': extract_cad_dimensions(text),
+    }
+
 

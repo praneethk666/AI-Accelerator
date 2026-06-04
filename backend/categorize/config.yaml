@@ -28,12 +28,13 @@ type_to_route:
 #   2) fitz raw-text scan (first 3 pages)
 #   3) deployment default
 industry_keywords:
-  automotive: [toyota, vehicle, wiring, harness, chassis, ecu]
-  pharma: [clinical trial, dosage, fda, adverse event, compound]
-  finance: [ebitda, balance sheet, quarterly, revenue, p&l]
-  legal: [agreement, whereas, indemnify, jurisdiction, governing law]
-  manufacturing: [production, assembly, tolerance, qc, iso, bom]
-  engineering: [voltage, resistor, schematic, pcb, torque]
+  automotive: [toyota, vehicle, wiring, harness, chassis, ecu, motor, engine, transmission, drive, wheel, honda, nissan, bmw, mercedes]
+  pharma: [clinical trial, dosage, fda, adverse event, compound, pharmaceutical, drug, medical device, validation, batch]
+  finance: [ebitda, balance sheet, quarterly, revenue, p&l, financial statement, invoice, expense, asset]
+  legal: [agreement, whereas, indemnify, jurisdiction, governing law, contract, terms, conditions]
+  manufacturing: [production, assembly, tolerance, qc, iso, bom, bill of materials, fixture, jig, bore, machine]
+  engineering: [voltage, resistor, schematic, pcb, torque, bearing, shaft, bolt, washer, dimension, drawing, scale, detail, view, section]
+  aerospace: [aircraft, avionics, flight, fuselage, landing gear, wingfuselage]
 
 # Vision confidence cutoff. If below this, engine must flag for review
 # and fall back to `text_default`.

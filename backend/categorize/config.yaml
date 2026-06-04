@@ -1,0 +1,48 @@
+# Vision-first document categorization configuration.
+#
+# IMPORTANT:
+# - The vision model is responsible for predicting ONLY `document_type`.
+# - The engine maps `document_type` -> `route` using `type_to_route`.
+#
+# Routes supported by the graph wiring downstream:
+#   diagram_heavy, table_heavy, text_default, presentation_route
+
+type_to_route:
+  circuit_diagram: diagram_heavy
+  cad_drawing: diagram_heavy
+  schematic: diagram_heavy
+
+  invoice: table_heavy
+  financial_statement: table_heavy
+  purchase_order: table_heavy
+
+  contract: text_default
+  policy: text_default
+  research_paper: text_default
+  report: text_default
+  manual: text_default
+  presentation: presentation_route
+
+# Industry keyword scoring is intentionally lightweight and uses:
+#   1) filename match
+#   2) fitz raw-text scan (first 3 pages)
+#   3) deployment default
+industry_keywords:
+  automotive: [toyota, vehicle, wiring, harness, chassis, ecu]
+  pharma: [clinical trial, dosage, fda, adverse event, compound]
+  finance: [ebitda, balance sheet, quarterly, revenue, p&l]
+  legal: [agreement, whereas, indemnify, jurisdiction, governing law]
+  manufacturing: [production, assembly, tolerance, qc, iso, bom]
+  engineering: [voltage, resistor, schematic, pcb, torque]
+
+# Vision confidence cutoff. If below this, engine must flag for review
+# and fall back to `text_default`.
+confidence_thresholds:
+  categorization_low_confidence: 0.5
+
+deployment:
+  # Used as signal #3 when industry can't be determined from filename/text.
+  default_industry: automotive
+  # Optional client label to make debugging clearer.
+  client: toyota
+

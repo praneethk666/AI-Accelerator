@@ -2,11 +2,18 @@
 pyyaml
 pytest
 
-# Add yours in your PR, e.g.:
-# langgraph
-# pymupdf
-# openpyxl
-# pandas
-# python-pptx
+# Document Processing
+pymupdf>=1.24.0
+openpyxl>=3.1.0
+python-pptx>=0.6.23
+Pillow>=10.0.0
+
+# Vision & AI
+google-generativeai>=0.3.0
+
+# Optional: OCR support (uncomment if needed)
+# pytesseract>=0.3.10
+
+# Optional Web Framework
 # fastapi
 # uvicorn

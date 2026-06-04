@@ -1,0 +1,78 @@
+[
+  {
+    "block_id": "1ec65594-8a22-4aea-8db0-d59272929132",
+    "document_id": "test_scanned",
+    "type": "page_metrics",
+    "text": "Page 1 metrics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Expansion Motor_1pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {
+      "text_length": 0,
+      "raster_images_total": 2,
+      "significant_images": 2,
+      "vector_drawings_total": 0,
+      "significant_vectors": 0,
+      "has_table": false
+    }
+  },
+  {
+    "block_id": "b0a5882b-92f6-45be-9a96-fc5ccc765fb4",
+    "document_id": "test_scanned",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Expansion Motor_1pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        5021.279922425607,
+        2123.999930393008,
+        5052.959921936178,
+        2331.71992358568
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false,
+      "detected_region": true
+    }
+  },
+  {
+    "block_id": "46bb6888-4970-4a5e-9336-47f72f849d51",
+    "document_id": "test_scanned",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Expansion Motor_1pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0.0,
+        0.0,
+        5056.919921875,
+        2383.919921875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false,
+      "detected_region": true
+    }
+  }
+]

@@ -16,7 +16,7 @@ from dataclasses import asdict
 
 
 def test_digital():
-    pdf = "test-data/Digital_40pages.pdf"
+    pdf = "test-data/Mixed.pdf"
 
     overall, per_page = detect_pdf_type(pdf)
 
@@ -44,7 +44,7 @@ def test_digital():
 
 
 def test_page_profile():
-    pdf = "test-data/Digital_40pages.pdf"
+    pdf = "test-data/Mixed.pdf"
 
     profiles = page_profile(pdf)
 

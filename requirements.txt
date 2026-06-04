@@ -2,18 +2,16 @@
 pyyaml
 pytest
 
-# Add yours in your PR, e.g.:
-# langgraph
-# pymupdf
-# openpyxl
-# pandas
-# python-pptx
-# fastapi
-# uvicorn
-
-#For Digital and Scanned PDF 
+# PDF handling
 PyMuPDF==1.24.12
-paddleocr==2.7.3
+
+# OCR
 paddlepaddle==2.6.2
+paddleocr==2.7.3
+
+# Image processing
 Pillow==10.1.0
 numpy==1.24.3
+
+# YOLO (optional)
+ultralytics==8.2.0

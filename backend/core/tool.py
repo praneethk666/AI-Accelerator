@@ -9,14 +9,31 @@ from typing import Protocol, TypedDict
 
 
 class PipelineState(TypedDict, total=False):
+    # ── ingestion ──────────────────────────────────────────────────
     document_id: str
     file_path: str
-    file_type: str        # "pdf" | "excel" | "ppt" | "image"
-    route: str            # set by categorize; drives the graph
-    page_profiles: list   # PageProfile[]
-    blocks: list          # NormalizedBlock[]
-    chunks: list          # Chunk[]
-    errors: list          # append problems here; never raise to kill the run
+    file_type: str           # "pdf" | "excel" | "ppt" | "image"
+    document_type: str       # set by categorize
+    industry: str            # set by categorize
+    confidence: float        # categorize confidence score
+    route: str               # set by categorize; drives the graph
+    page_profiles: list      # PageProfile[]
+    blocks: list             # NormalizedBlock[]
+    chunks: list             # Chunk[]
+    errors: list             # append problems here; never raise to kill the run
+
+    # ── query time ─────────────────────────────────────────────────
+    query: str               # raw user question
+    session_id: str          # conversation session
+    document_scope: list     # document_ids to search; empty = whole collection
+    conversation_history: list  # loaded by run_query before the graph starts
+    standalone_query: str    # contextualised query (after follow-up rewrite)
+    sub_questions: list      # decomposed sub-questions for retrieval
+    skip_retrieval: bool     # set by adaptive_router when corpus fits in context
+    retrieval_retry: bool    # set by retrieval_judge to trigger one re-retrieval
+    retrieved_chunks: list   # Chunk[] returned by retrieval / rerank
+    answer: str              # final answer text
+    citations: list          # citation dicts (filename, page, snippet, image_path, table_data)
 
 
 class Tool(Protocol):

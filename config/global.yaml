@@ -1,0 +1,107 @@
+# Global pipeline configuration.
+# Override per-deployment by copying this file and passing the new path to load_config().
+# Secrets (API keys, DB passwords) go in .env — never in this file.
+# Database connection strings use ${VAR} substitution resolved from the environment.
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+llm:
+  provider: groq            # groq | ollama | openai
+  model: llama-3.1-8b-instant
+  # base_url:               # uncomment for OpenAI-compatible endpoints
+
+# ── Vision (Gemma) ────────────────────────────────────────────────────────────
+vision:
+  provider: google          # google (AI Studio) | ollama (self-hosted)
+  model: gemma-3-27b-it
+  enabled: true
+  dpi: 150                  # render resolution for PDF image regions
+  min_image_px: 150         # images smaller than this (each side) are skipped
+  timeout_s: 45
+  max_concurrency: 4        # parallel Gemma calls per document
+  prompt:
+    default: >
+      Describe what this image shows in 2–3 sentences. Be specific about
+      diagrams, charts, component labels, dimensions, and any text visible.
+    cad_route: >
+      Describe all visible circuit components, reference designators (R1, C4),
+      net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
+      visible dimensions or tolerances. Be precise — this is used for search.
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+embeddings:
+  dense_model: BAAI/bge-large-en-v1.5   # 1024-dim; leads MTEB retrieval benchmark
+  sparse_model: Qdrant/bm25             # keyword matching for hybrid search
+  reranker_model: BAAI/bge-reranker-large
+
+# ── Chunking ──────────────────────────────────────────────────────────────────
+chunking:
+  strategy: semantic        # semantic | recursive
+  size: 400                 # tokens (not characters)
+  overlap: 50               # tokens
+
+# ── Query pipeline ────────────────────────────────────────────────────────────
+query:
+  small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
+  max_context_tokens: 3000      # answer_tool context budget
+  hyde:
+    enabled: false              # generate hypothetical answer before encoding
+  retrieval:
+    top_n: 20                   # candidates from Qdrant before reranking
+    rerank_top_k: 5             # kept after reranking
+  agent:
+    max_iterations: 5
+
+# ── Document taxonomy ─────────────────────────────────────────────────────────
+document_types:
+  - invoice
+  - report
+  - circuit_diagram
+  - assembly_drawing
+  - datasheet
+  - presentation
+  - spreadsheet
+  - image
+  - unknown
+
+industries:
+  - automotive
+  - electronics
+  - manufacturing
+  - finance
+  - legal
+  - healthcare
+  - general
+
+default_industry: general
+
+# ── Routing ───────────────────────────────────────────────────────────────────
+# Maps document_type → route name. The route selects which pipeline steps run.
+type_to_route:
+  circuit_diagram: cad_route
+  assembly_drawing: cad_route
+  datasheet: diagram_heavy
+  report: text_default
+  invoice: text_default
+  presentation: text_default
+  spreadsheet: text_default
+  image: image_route
+  unknown: text_default
+
+# Steps listed here are resolved by the graph at runtime.
+# "extract" is a placeholder — the graph replaces it with the right
+# extractor(s) based on state["file_type"] (pdf/excel/ppt/image).
+routes:
+  text_default:
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+  diagram_heavy:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  cad_route:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  image_route:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+
+# ── Database (connection strings from environment) ────────────────────────────
+database:
+  postgres_url: ${POSTGRES_URL}
+  qdrant_url: ${QDRANT_URL}
+  qdrant_collection: chunks

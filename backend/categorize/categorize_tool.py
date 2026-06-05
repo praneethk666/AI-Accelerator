@@ -1,43 +1,101 @@
-"""Pipeline tool entrypoint for document categorization.
-
-This module provides a stable `run()` function consumed by the pipeline graph.
+"""
+Pipeline tool entrypoint for document categorization.
 
 Contract:
-- Accept: file_path, state, deployment(optional) depending on pipeline wiring.
+- Pipeline calls: tool.run(state, config)
+- file_path is read from state["file_path"]
 - Always write the following state fields:
     - state["route"]
     - state["document_type"]
     - state["industry"]
-    - state["categorization_confidence"]
-- Keep `state["reasoning"]` and `state["errors"]`.
-- Never crash: wrap run() in try/except and fall back to route=text_default.
+    - state["confidence"]
+- Keep state["reasoning"] and state["errors"]
+- Never crash: wrap run() in try/except and fall back to route=text_default
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from .classifier import categorize
 
 
-def run(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    # Ensure error list exists.
+def run(self, state: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pipeline entrypoint.
+
+    Args:
+        state: Shared pipeline state. Must contain:
+            state["file_path"]
+
+        config: Global configuration loaded by the pipeline
+            (config/global.yaml)
+
+    Returns:
+        Updated state dictionary.
+    """
+
     state.setdefault("errors", [])
+
+    file_path = state.get("file_path")
+
+    if not file_path:
+        state["errors"].append(
+            "categorize_tool: missing file_path in state"
+        )
+
+        state.setdefault("route", "text_default")
+        state.setdefault("document_type", "report")
+        state.setdefault(
+            "industry",
+            config.get("deployment", {}).get(
+                "default_industry",
+                "automotive"
+            )
+        )
+        state.setdefault("confidence", 0.0)
+        state.setdefault(
+            "reasoning",
+            "missing file_path; returning safe fallback"
+        )
+
+        return state
+
     try:
-        return categorize(file_path=file_path, state=state, deployment=deployment)
+        # Extract categorization config from global config
+        categorization_config = config.get("categorization", {})
+        
+        return categorize(
+            file_path=file_path,
+            state=state,
+            config=categorization_config,
+            deployment=config.get("deployment", {})
+        )
+
     except Exception as e:
-        state["errors"].append(f"categorize_tool: exception {type(e).__name__}: {e}")
-        # Minimal guaranteed fields
+        state["errors"].append(
+            f"categorize_tool: exception {type(e).__name__}: {e}"
+        )
+
         state["route"] = "text_default"
         state["document_type"] = "report"
-        state["industry"] = (deployment or {}).get("default_industry", "automotive")
-        state["categorization_confidence"] = 0.0
-        state["reasoning"] = "categorize failed; returning safe fallback"
+
+        state["industry"] = (
+            config.get("deployment", {})
+            .get("default_industry", "automotive")
+        )
+
+        state["confidence"] = 0.0
+
+        state["reasoning"] = (
+            "categorize failed; returning safe fallback"
+        )
+
         return {
             "route": state["route"],
             "document_type": state["document_type"],
             "industry": state["industry"],
-            "confidence": state["categorization_confidence"],
+            "confidence": state["confidence"],
             "reasoning": state["reasoning"],
+            "errors": state.get("errors", []),
         }
-

@@ -1,0 +1,252 @@
+# AI-Accelerator Global Configuration
+# Centralizes all configuration for document categorization, routing, and pipeline execution
+
+# Document Categorization Configuration
+categorization:
+  # Type-to-route mapping for document categorization
+  # Routes: diagram_heavy, table_heavy, text_default, presentation_route
+  type_to_route:
+    # Diagram/Technical Documents
+    circuit_diagram: diagram_heavy
+    cad_drawing: diagram_heavy
+    schematic: diagram_heavy
+    
+    # Table-Heavy Documents
+    invoice: table_heavy
+    financial_statement: table_heavy
+    purchase_order: table_heavy
+    spreadsheet: table_heavy
+    budget: table_heavy
+    forecast: table_heavy
+    report: table_heavy
+    
+    # Text-Heavy Documents
+    contract: text_default
+    policy: text_default
+    research_paper: text_default
+    manual: text_default
+    
+    # Presentation
+    presentation: presentation_route
+
+  # Industry keyword detection (for industry classification)
+  industry_keywords:
+    automotive:
+      - toyota
+      - vehicle
+      - wiring
+      - harness
+      - chassis
+      - ecu
+      - motor
+      - engine
+      - transmission
+      - drive
+      - wheel
+      - honda
+      - nissan
+      - bmw
+      - mercedes
+    pharma:
+      - clinical trial
+      - dosage
+      - fda
+      - adverse event
+      - compound
+      - pharmaceutical
+      - drug
+      - medical device
+      - validation
+      - batch
+    finance:
+      - ebitda
+      - balance sheet
+      - quarterly
+      - revenue
+      - p&l
+      - financial statement
+      - invoice
+      - expense
+      - asset
+      - profit
+      - cost
+      - budget
+      - forecast
+      - quarter
+      - fiscal
+    legal:
+      - agreement
+      - whereas
+      - indemnify
+      - jurisdiction
+      - governing law
+      - contract
+      - terms
+      - conditions
+    manufacturing:
+      - production
+      - assembly
+      - tolerance
+      - qc
+      - iso
+      - bom
+      - bill of materials
+      - fixture
+      - jig
+      - bore
+      - machine
+    engineering:
+      - voltage
+      - resistor
+      - schematic
+      - pcb
+      - torque
+      - bearing
+      - shaft
+      - bolt
+      - washer
+      - dimension
+      - drawing
+      - scale
+      - detail
+      - view
+      - section
+    aerospace:
+      - aircraft
+      - avionics
+      - flight
+      - fuselage
+      - landing gear
+      - wing
+
+  # Excel document type detection keywords
+  excel_document_types:
+    invoice:
+      - invoice
+      - inv-
+      - bill to
+      - amount due
+      - total
+    financial_statement:
+      - balance sheet
+      - income statement
+      - p&l
+      - profit loss
+      - assets
+      - liabilities
+    purchase_order:
+      - purchase order
+      - po
+      - vendor
+      - supplier
+      - quantity
+      - unit price
+    budget:
+      - budget
+      - budgeted
+      - variance
+      - monthly
+      - annual
+    forecast:
+      - forecast
+      - projected
+      - projection
+      - estimate
+      - scenario
+    spreadsheet:
+      - data
+      - calculation
+      - analysis
+      - report
+
+  # Confidence thresholds for categorization
+  confidence_thresholds:
+    categorization_low_confidence: 0.5
+
+# Deployment Configuration
+deployment:
+  # Default industry when unable to detect from document
+  default_industry: automotive
+  # Optional client label for debugging and tracing
+  client: toyota
+
+# Document Types Configuration (reference documentation)
+document_types:
+  # Technical/Diagram Documents
+  - id: circuit_diagram
+    name: Circuit Diagram
+    route: diagram_heavy
+    confidence_threshold: 0.75
+    
+  - id: cad_drawing
+    name: CAD Drawing
+    route: diagram_heavy
+    confidence_threshold: 0.75
+    
+  - id: schematic
+    name: Schematic
+    route: diagram_heavy
+    confidence_threshold: 0.75
+  
+  # Financial/Table Documents
+  - id: invoice
+    name: Invoice
+    route: table_heavy
+    confidence_threshold: 0.85
+    
+  - id: financial_statement
+    name: Financial Statement
+    route: table_heavy
+    confidence_threshold: 0.85
+    
+  - id: purchase_order
+    name: Purchase Order
+    route: table_heavy
+    confidence_threshold: 0.80
+    
+  - id: spreadsheet
+    name: Spreadsheet
+    route: table_heavy
+    confidence_threshold: 0.70
+    
+  - id: budget
+    name: Budget
+    route: table_heavy
+    confidence_threshold: 0.80
+    
+  - id: forecast
+    name: Forecast
+    route: table_heavy
+    confidence_threshold: 0.75
+    
+  - id: report
+    name: Report
+    route: table_heavy
+    confidence_threshold: 0.75
+  
+  # Text-Based Documents
+  - id: contract
+    name: Contract
+    route: text_default
+    confidence_threshold: 0.85
+    
+  - id: policy
+    name: Policy
+    route: text_default
+    confidence_threshold: 0.85
+    
+  - id: research_paper
+    name: Research Paper
+    route: text_default
+    confidence_threshold: 0.80
+    
+  - id: manual
+    name: Manual
+    route: text_default
+    confidence_threshold: 0.80
+  
+  # Presentation Documents
+  - id: presentation
+    name: Presentation
+    route: presentation_route
+    confidence_threshold: 0.90

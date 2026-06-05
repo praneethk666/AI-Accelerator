@@ -350,6 +350,88 @@ def extract_cad_dimensions(text: str) -> List[Dict[str, Any]]:
     return dimensions
 
 
+def detect_excel_document_type(file_path: str) -> tuple:
+    """
+    Detect the document type of an Excel file.
+    
+    Returns: (document_type, confidence, details)
+    - document_type: invoice, financial_statement, purchase_order, budget, forecast, report (data analysis), spreadsheet
+    - confidence: 0.0-1.0
+    - details: dict with reasoning
+    """
+    if not HAS_OPENPYXL:
+        return ("spreadsheet", 0.5, {"error": "openpyxl not available"})
+    
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        all_text = []
+        header_row = []
+        sheet_names_lower = []
+        
+        # Scan all sheets for content patterns
+        for sheet_idx, sheet_name in enumerate(wb.sheetnames[:3]):  # Check first 3 sheets
+            ws = wb[sheet_name]
+            sheet_names_lower.append(sheet_name.lower())
+            
+            # Get header row and content
+            for idx, row in enumerate(ws.iter_rows(values_only=True)):
+                if idx == 0:
+                    header_row = [str(v).lower() if v else "" for v in row]
+                all_text.append(" ".join(str(v).lower() if v else "" for v in row if v))
+                if idx > 10:  # Sample first 10 rows
+                    break
+        
+        wb.close()
+        
+        full_text = " ".join(all_text).lower()
+        all_sheet_info = " ".join(sheet_names_lower + all_text).lower()
+        
+        # Excel document type keywords - enhanced
+        doc_types = {
+            "invoice": ["invoice", "inv-", "bill to", "amount due", "total amount", "payment", "customer"],
+            "financial_statement": ["balance sheet", "income statement", "p&l", "profit", "loss", "assets", "liabilities", "equity", "fiscal"],
+            "purchase_order": ["purchase order", "po ", "vendor", "supplier"],
+            "budget": ["budget", "budgeted", "variance", "allocated"],
+            "forecast": ["forecast", "projected", "projection", "estimate", "scenario"],
+            "report": ["sales", "revenue", "quarterly", "monthly", "annual", "performance", "analysis"],
+        }
+        
+        # Score each type
+        scores = {}
+        for doc_type, keywords in doc_types.items():
+            matches = sum(1 for kw in keywords if kw in full_text or any(kw in h for h in header_row))
+            scores[doc_type] = matches
+        
+        # Find best match with priority: prefer specific types over report
+        best_type = None
+        best_score = 0
+        type_priority = ["invoice", "financial_statement", "purchase_order", "budget", "forecast", "report", "spreadsheet"]
+        
+        for doc_type in type_priority:
+            if scores.get(doc_type, 0) > best_score:
+                best_score = scores[doc_type]
+                best_type = doc_type
+        
+        if best_type is None or best_score == 0:
+            best_type = "spreadsheet"
+        
+        # Calculate confidence
+        if best_score >= 3:
+            confidence = 0.85
+        elif best_score >= 2:
+            confidence = 0.75
+        elif best_score >= 1:
+            confidence = 0.65
+        else:
+            best_type = "spreadsheet"
+            confidence = 0.55  # Slightly better than fallback
+        
+        return (best_type, confidence, {"matches": best_score, "header_keywords": header_row[:5], "score_details": scores})
+    
+    except Exception as e:
+        return ("spreadsheet", 0.5, {"error": str(e)})
+
+
 def analyze_cad_document(file_path: str, max_pages: int = 3) -> Dict[str, Any]:
     """Complete CAD analysis: extract metadata, BOM, dimensions."""
     if not file_path.lower().endswith('.pdf'):

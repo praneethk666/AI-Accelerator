@@ -9,7 +9,7 @@ Primary outputs to state:
 - state["route"]
 - state["document_type"]
 - state["industry"]
-- state["categorization_confidence"]
+- state["confidence"]
 - state["reasoning"]
 - state["errors"] (on failure or low confidence)
 """
@@ -22,16 +22,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import fitz
 
-import yaml
-
-from .text_extractor import extract_text, extract_toc_text, analyze_cad_document, is_cad_document_by_filename
+from .text_extractor import extract_text, extract_toc_text, analyze_cad_document, is_cad_document_by_filename, detect_excel_document_type
 from .vision import run_vision
 
 
-def _load_config() -> Dict[str, Any]:
-    cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-    with open(cfg_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+
 
 
 def _normalize_filename(s: str) -> str:
@@ -116,8 +111,13 @@ def _render_pdf_pages_to_stitched_image_bytes(file_path: str, pages: list[int], 
         doc.close()
 
 
-def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    config = _load_config()
+def categorize(
+    file_path: str,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+    deployment: Optional[Dict[str, Any]] = None
+):
+    
     deployment_cfg = deployment or config.get("deployment", {})
 
     # Initialize state error list
@@ -165,7 +165,7 @@ def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[
                         state["route"] = best["route"]
                         state["document_type"] = best["document_type"]
                         state["industry"] = best["industry"]
-                        state["categorization_confidence"] = best["confidence"]
+                        state["confidence"] = best["confidence"]
                         state["reasoning"] = best["reasoning"]
                         state.setdefault("errors", [])
                         
@@ -173,12 +173,43 @@ def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[
                             "route": state["route"],
                             "document_type": state["document_type"],
                             "industry": state["industry"],
-                            "confidence": state["categorization_confidence"],
+                            "confidence": state["confidence"],
                             "reasoning": state["reasoning"],
                         }
             except Exception as e:
                 # If CAD analysis fails, continue with normal flow
                 pass
+
+        # ---- Excel Document Detection ----
+        if lowered.endswith(('.xlsx', '.xls')):
+            excel_type, excel_confidence, excel_details = detect_excel_document_type(file_path)
+            if excel_confidence >= 0.60:
+                # High confidence detection from Excel content
+                best["document_type"] = excel_type
+                best["confidence"] = excel_confidence
+                best["route"] = config["type_to_route"].get(excel_type, "table_heavy")
+                reasoning_parts = [
+                    f"Excel document type detected: {excel_type}",
+                    f"Confidence: {excel_confidence:.2f} from content analysis",
+                ]
+                best["reasoning"] = "\n".join(reasoning_parts).strip()
+                
+                # Write to state and return early
+                state["route"] = best["route"]
+                state["document_type"] = best["document_type"]
+                state["industry"] = best["industry"]
+                state["confidence"] = best["confidence"]
+                state["reasoning"] = best["reasoning"]
+                state.setdefault("errors", [])
+                
+                return {
+                    "route": state["route"],
+                    "document_type": state["document_type"],
+                    "industry": state["industry"],
+                    "confidence": state["confidence"],
+                    "reasoning": state["reasoning"],
+                }
+
 
         # ---- Document type: filename-first ----
         type_to_route: Dict[str, str] = config["type_to_route"]
@@ -288,13 +319,14 @@ def categorize(file_path: str, state: Dict[str, Any], deployment: Optional[Dict[
     state["route"] = best["route"]
     state["document_type"] = best["document_type"]
     state["industry"] = best["industry"]
-    state["categorization_confidence"] = best["confidence"]
+    state["confidence"] = best["confidence"]
     state["reasoning"] = best["reasoning"]
 
     return {
         "route": state["route"],
         "document_type": state["document_type"],
         "industry": state["industry"],
-        "confidence": state["categorization_confidence"],
+        "confidence": state["confidence"],
         "reasoning": state["reasoning"],
+        "errors": state.get("errors", []),
     }

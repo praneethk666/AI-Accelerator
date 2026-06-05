@@ -35,10 +35,33 @@ class SourceRef:
 
 @dataclass
 class NormalizedBlock:
-    """The common output of every extractor/enricher."""
+    """The common output of every extractor/enricher.
+
+    Valid types:
+      "text"          — a paragraph or heading of text
+      "heading"       — a heading (will be merged into the next text block by chunk_tool)
+      "table"         — structured data; text = markdown repr, table_data = structured dict
+      "image"         — a visual region not yet described; text is empty until vision_enrichment runs
+      "image_caption" — a visual region that has been described by the vision model
+
+    image block convention (Excel / PPT / standalone image files):
+      Extractors cannot use fitz to render images from Excel/PPT.
+      Save the raw image bytes to disk and set metadata["raw_image_path"].
+      vision_enrichment_tool reads that path, gets the description, then sets
+      metadata["image_path"] (the final served path) and block.text (the caption).
+
+      metadata["raw_image_path"]  = "uploads/images/<doc_id>/<block_id>_raw.png"  ← extractor sets
+      metadata["image_path"]      = "uploads/images/<doc_id>/<block_id>.jpg"      ← vision sets
+
+    Cell references from Excel (Dhimanth's question):
+      Cell references are internal to extraction — they are NOT a dedicated schema
+      field. If you need to carry them for debugging or citation purposes, store them
+      in metadata["cell_range"] (e.g. "Sheet1!A1:D20"). They do not travel downstream
+      past the extractor.
+    """
     block_id: str
     document_id: str
-    type: str  # "text" | "table" | "heading" | "image_caption"
+    type: str
     text: Optional[str] = None
     table_data: Optional[dict] = None
     source_ref: Optional[SourceRef] = None

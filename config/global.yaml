@@ -43,13 +43,36 @@ chunking:
 query:
   small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
   max_context_tokens: 3000      # answer_tool context budget
+
   hyde:
     enabled: false              # generate hypothetical answer before encoding
+
+  # ── Retrieval settings (Vinod's tools read these) ─────────────────────────
+  # These are accessed as config["query"]["retrieval"]["..."] in tool code.
+  # Vector DB = Qdrant (see database.qdrant_url).
+  # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
   retrieval:
-    top_n: 20                   # candidates from Qdrant before reranking
-    rerank_top_k: 5             # kept after reranking
+    method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
+    top_n: 20                   # candidates fetched from Qdrant before reranking
+    candidate_k: 80             # wider pool for reranking (typically top_n * 4)
+    rerank_top_k: 5             # chunks kept after reranking
+    dense_weight: 0.6           # RRF weight for dense leg (hybrid methods)
+    sparse_weight: 0.4          # RRF weight for sparse/BM25 leg
+
   agent:
     max_iterations: 5
+
+# ── Notes for Vinod ───────────────────────────────────────────────────────────
+# config passed to your tool is the full dict from load_config("config/global.yaml").
+# Read your settings with:
+#   config["query"]["retrieval"]["method"]
+#   config["query"]["retrieval"]["top_n"]
+#   config["embeddings"]["dense_model"]     ← shared with Manoj's embed_tool
+#   config["embeddings"]["sparse_model"]
+#   config["embeddings"]["reranker_model"]
+#   config["database"]["qdrant_url"]
+#   config["database"]["postgres_url"]
+# Never use os.getenv() for model names — keep them in config so they're swappable.
 
 # ── Document taxonomy ─────────────────────────────────────────────────────────
 document_types:

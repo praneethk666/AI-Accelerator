@@ -1,11 +1,14 @@
 """
 backend/retrieval/answerer.py
 ──────────────────────────────
-Generates a grounded, cited answer from retrieved chunks.
-LLM comes from get_llm(config) — provider and model are set in global.yaml,
-not hardcoded here.
+Generates a grounded, cited answer from retrieved chunks and logs
+the Q&A turn to PostgreSQL (conversations table in init_db.sql).
 
-Separate from retrieval so each can be tested in isolation.
+Schema used:
+    conversations(session_id UUID, turn INTEGER, question TEXT, answer TEXT)
+
+Called after RetrievalTool — reads state["retrieved_chunks"] + state["query"]
+and writes state["answer"] + state["citations"].
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from typing import Optional
 
 from backend.core.schemas import Chunk
 from backend.core.llm_client import get_llm
+from backend.retrieval.pg_store import PGStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +35,30 @@ def answer(
     query: str,
     chunks: list[Chunk],
     config: dict,
+    session_id: Optional[str] = None,
+    turn: int = 1,
     max_tokens: int = 512,
 ) -> dict:
     """
+    Generate grounded answer and log to Postgres.
+
     Parameters
     ----------
-    query     : the user's question
-    chunks    : retrieved passages (output of RetrievalTool)
-    config    : full pipeline config — LLM provider/model read from here
-    max_tokens: max answer tokens
+    query      : user's question (state["standalone_query"] or state["query"])
+    chunks     : state["retrieved_chunks"]
+    config     : full pipeline config
+    session_id : state["session_id"] — used for conversations table
+    turn       : conversation turn number
+    max_tokens : max LLM output tokens
 
     Returns
     -------
-    dict: { answer, sources, model }
+    dict: { answer, sources, citations, model }
     """
     if not chunks:
-        return {"answer": "No relevant passages found.", "sources": [], "model": "n/a"}
+        answer_text = "No relevant passages found in the provided documents."
+        _log(session_id, turn, query, answer_text)
+        return {"answer": answer_text, "sources": [], "citations": [], "model": "n/a"}
 
     context_blocks = []
     for i, chunk in enumerate(chunks, start=1):
@@ -54,17 +66,44 @@ def answer(
         label = f"{ref.get('filename', 'unknown')}, p.{ref.get('page', '?')}"
         context_blocks.append(f"[{i}] ({label})\n{chunk.get('text', '')}")
 
-    user_msg = f"Context:\n\n" + "\n\n".join(context_blocks) + f"\n\nQuestion: {query}"
+    user_msg = "Context:\n\n" + "\n\n".join(context_blocks) + f"\n\nQuestion: {query}"
 
     llm      = get_llm(config)
     response = llm.invoke([
         {"role": "system", "content": _ANSWER_SYSTEM},
         {"role": "user",   "content": user_msg},
     ])
-    answer_text = response.content or ""
+    answer_text = (response.content or "").strip()
+
+    # Build citations list (matches state["citations"] shape in tool.py)
+    citations = []
+    for chunk in chunks:
+        ref  = chunk.get("source_ref") or {}
+        meta = chunk.get("metadata") or {}
+        citations.append({
+            "filename":   ref.get("filename"),
+            "page":       ref.get("page"),
+            "snippet":    (chunk.get("text") or "")[:200],
+            "image_path": meta.get("image_path"),
+            "table_data": meta.get("table_data"),
+        })
+
+    # Log to Postgres conversations table
+    _log(session_id, turn, query, answer_text)
 
     return {
-        "answer":  answer_text.strip(),
-        "sources": [c.get("source_ref", {}) for c in chunks],
-        "model":   getattr(llm, "model_name", str(llm)),
+        "answer":    answer_text,
+        "sources":   [c.get("source_ref", {}) for c in chunks],
+        "citations": citations,
+        "model":     getattr(llm, "model_name", str(llm)),
     }
+
+
+def _log(session_id: Optional[str], turn: int, question: str, answer: str) -> None:
+    """Write to conversations table — silently skip if session_id is missing."""
+    if not session_id:
+        return
+    try:
+        PGStore.get().log_conversation(session_id, turn, question, answer)
+    except Exception as exc:
+        logger.warning("Failed to log conversation to Postgres: %s", exc)

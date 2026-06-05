@@ -34,6 +34,18 @@ class KeywordIndex:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+    
+    def build_from_pg(self, document_scope: Optional[list[str]] = None) -> None:
+        """
+        Production build — loads chunks from Postgres.
+        Joins documents.status = 'ready' so in-progress ingestion
+        jobs don't pollute the index.
+        Re-call after new documents finish ingestion.
+        """
+        from backend.retrieval.pg_store import PGStore
+        chunks = PGStore.get().fetch_all_ready_chunks(document_scope)
+        self.build(chunks)
+        logger.info("KeywordIndex.build_from_pg: %d chunks loaded", len(chunks))
 
     def build(self, chunks: list[Chunk]) -> None:
         """

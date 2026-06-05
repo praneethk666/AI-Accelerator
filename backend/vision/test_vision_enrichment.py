@@ -89,70 +89,64 @@ def generate_blocks_from_json(page_profiles, document_id="doc123", filename="unk
             blocks.append(block)
 
     return blocks
+# backend/vision/test_vision_enrichment.py
 
 def main():
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     output_folder = os.path.join(project_root, "output")
-    profiles_subfolder = os.path.join(output_folder, "page_profiles")   
-    os.makedirs(output_folder, exist_ok=True)
+    profiles_subfolder = os.path.join(output_folder, "page_profiles")
+    os.makedirs(profiles_subfolder, exist_ok=True)
 
-    # ------------------------------------------------------------
-    # 1. DIRECTLY LOAD YOUR EXISTING JSON – NO GENERATION
-    # ------------------------------------------------------------
-    json_filename = "Digital_40pages_page_profiles.json"   # your existing JSON file
-    json_path = os.path.join(profiles_subfolder, json_filename)   
+    # Adjust these filenames to your actual PDF and JSON
+    json_filename = "Digital_40pages_page_profiles.json"
+    json_path = os.path.join(profiles_subfolder, json_filename)
 
     if not os.path.exists(json_path):
-        print(f"❌ JSON file not found: {json_path}")
-        print("Please place your existing page_profiles.json in the 'output' folder.")
+        print(f"❌ JSON not found: {json_path}")
         return
 
     print(f"📂 Loading page profiles from: {json_path}")
     with open(json_path, "r", encoding="utf-8") as f:
         page_profiles = json.load(f)
 
-    # ------------------------------------------------------------
-    # 2. PDF is still required for cropping (must match the JSON)
-    # ------------------------------------------------------------
-    pdf_filename = "Digital_40pages.pdf"   # same PDF that the JSON refers to
+    pdf_filename = "Digital_40pages.pdf"
     pdf_path = os.path.join(project_root, "test-data", pdf_filename)
 
     if not os.path.exists(pdf_path):
         print(f"❌ PDF not found: {pdf_path}")
-        print("The PDF is needed to crop images for Gemini.")
         return
 
-    # ------------------------------------------------------------
-    # 3. Run vision enrichment (calls Gemini)
-    # ------------------------------------------------------------
     state = {
         "document_id": "doc123",
         "file_path": pdf_path,
         "page_profiles": page_profiles,
     }
 
+    # Config for the shared vision client
+    # provider: "google" (default) or "ollama"
+    # model: use the team's standard Gemma model
     config = {
         "vision": {
-            "timeout_s": 45,
+            "provider": "google",
+            "model": "gemma-4-26b-a4b-it",    # or "gemini-1.5-flash" if allowed
+            "timeout_s": 90,
             "dpi": 150,
         }
     }
 
-    tool = VisionEnrichmentTool(model_name="gemma-4-26b-a4b-it")  # or "gemini-3.5-flash"
-    result = tool.run(state, config)
+    tool = VisionEnrichmentTool(config=config)
+    result = tool.run(state)
 
-    # ------------------------------------------------------------
-    # 4. Save blocks
-    # ------------------------------------------------------------
     blocks = result.get("blocks", [])
-    blocks_path = os.path.join(output_folder, "Dgital_40pages_vision_blocks1.json")
+    blocks_path = os.path.join(output_folder, "vision_blocks_output.json")
     with open(blocks_path, "w", encoding="utf-8") as f:
         json.dump(blocks, f, indent=2)
 
     print(f"\n✅ Done. {len(blocks)} blocks saved to {blocks_path}")
     if result.get("errors"):
-        print("Errors:", result["errors"])
-
+        print("\nErrors:")
+        for err in result["errors"]:
+            print(f"  - {err}")
 
 if __name__ == "__main__":
     main()

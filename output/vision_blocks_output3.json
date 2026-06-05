@@ -1,0 +1,342 @@
+[
+  {
+    "block_id": "06757e63-79e8-410f-9c7e-6e65cff9177b",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "An educational document explaining mathematical averages and average speed. It features several boxed formulas, mathematical derivations, and line diagrams illustrating distance segments divided by speed and time.\n\nEntities: AVERAGES, Average Speed, Sum of all observations, No. of observations, D, S1, S2, S3, T1, T2, T3, mathematical formulas, line diagrams",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "AVERAGES",
+        "Average Speed",
+        "Sum of all observations",
+        "No. of observations",
+        "D",
+        "S1",
+        "S2",
+        "S3",
+        "T1",
+        "T2",
+        "T3",
+        "mathematical formulas",
+        "line diagrams"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "d6ba6f02-44b4-4e0c-a255-7487d5c3909c",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "An educational page containing various mathematical formulas related to average speed, sums of natural numbers, and properties of averages. It includes a small line segment diagram and uses green checkmarks as bullet points for organized sections.\n\nEntities: Average Speed, Sum of n natural numbers, Sum of squares, Sum of cubes, D1, D2, D3, S1, S2, S3, T1, T2, T3, Average of odd numbers, Average of even numbers",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 2,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Average Speed",
+        "Sum of n natural numbers",
+        "Sum of squares",
+        "Sum of cubes",
+        "D1",
+        "D2",
+        "D3",
+        "S1",
+        "S2",
+        "S3",
+        "T1",
+        "T2",
+        "T3",
+        "Average of odd numbers",
+        "Average of even numbers"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "44c20050-8327-4d9c-96ab-7dd96672fc37",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A document page titled 'SOLVED EXAMPLES' containing three mathematical problems and their detailed solutions. The page uses text, mathematical formulas, and a decorative box to present calculations for finding averages.\n\nEntities: SOLVED EXAMPLES, Q - 1, Q - 2, Q - 3, Average, Sum of observations, No. of observations, Alternate method, Shortcut",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "SOLVED EXAMPLES",
+        "Q - 1",
+        "Q - 2",
+        "Q - 3",
+        "Average",
+        "Sum of observations",
+        "No. of observations",
+        "Alternate method",
+        "Shortcut"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "6ddd97a5-e670-4114-9a05-08b23f93f048",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A structured educational page containing several mathematical word problems and their step-by-step solutions. The layout features question numbers in small boxes on the left, with problem statements and mathematical formulas presented on the right, including some formulas enclosed in rectangular boxes.\n\nEntities: Q - 10, Q - 11, Q - 12, Q - 13, Average, Sum of observations, Sum of 'n' natural numbers, First number, Last number, New average, Average weight of entire class, Total strength",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 5,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Q - 10",
+        "Q - 11",
+        "Q - 12",
+        "Q - 13",
+        "Average",
+        "Sum of observations",
+        "Sum of 'n' natural numbers",
+        "First number",
+        "Last number",
+        "New average",
+        "Average weight of entire class",
+        "Total strength"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "6eb4f87e-e0a3-4570-ba21-bb2bc86e10ac",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page containing mathematical problems and their step-by-step solutions. It features a 'Note' box at the top, two numbered questions (Q-20 and Q-21), and a table used to represent consecutive odd numbers.\n\nEntities: Q - 20, Q - 21, Sol:, Note:, A, B, C, D, E, x-4, x-2, x, x+2, x+4, 155 cm, 162 cm, 170 cm, 53, 51, 57, 2907",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 8,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Q - 20",
+        "Q - 21",
+        "Sol:",
+        "Note:",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "x-4",
+        "x-2",
+        "x",
+        "x+2",
+        "x+4",
+        "155 cm",
+        "162 cm",
+        "170 cm",
+        "53",
+        "51",
+        "57",
+        "2907"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "17ec369f-8091-435a-bfdc-6e884f776a17",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "API call failed",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 10,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.0,
+    "language": "en",
+    "metadata": {
+      "vision_type": "error",
+      "entities": [],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "b42d89d0-0b03-4821-b553-0a614fb312da",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A textbook page featuring mathematical problems and solutions related to calculating averages. It includes a structured diagram at the top illustrating a shortcut method and several boxed notes and instructions throughout the page.\n\nEntities: Shortcut, First 16 students, Last 16 students, Overall average, Distributed value, Q-27, Q-28, New Average, Sum, Average",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 11,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Shortcut",
+        "First 16 students",
+        "Last 16 students",
+        "Overall average",
+        "Distributed value",
+        "Q-27",
+        "Q-28",
+        "New Average",
+        "Sum",
+        "Average"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "d2f9f6e7-109a-4fcc-95c5-016d152b6503",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A mathematical educational page containing a word problem about averages, its step-by-step solution, and visual shortcut diagrams. The page uses tables, arrows, and equations to explain concepts like distributed value and changes in averages.\n\nEntities: average, innings, runs, highest, lowest, shortcut, distributed value, H, L, Q - 33, sum",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 14,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "average",
+        "innings",
+        "runs",
+        "highest",
+        "lowest",
+        "shortcut",
+        "distributed value",
+        "H",
+        "L",
+        "Q - 33",
+        "sum"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "db009a3b-ff86-4f03-a68f-183f02f0072b",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A text-heavy page containing multiple mathematical word problems and their step-by-step solutions, labeled Q-45, Q-46, and Q-47. Key formulas are highlighted within rectangular boxes.\n\nEntities: Q - 45, Q - 46, Q - 47, Sol:, Runs scored, Bowling Average, Average wickets per match",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Digital_25pages.pdf",
+      "page": 19,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        612.0,
+        792.0
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Q - 45",
+        "Q - 46",
+        "Q - 47",
+        "Sol:",
+        "Runs scored",
+        "Bowling Average",
+        "Average wickets per match"
+      ],
+      "enrichment_failed": false
+    }
+  }
+]

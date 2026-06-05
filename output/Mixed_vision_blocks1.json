@@ -1,0 +1,451 @@
+[
+  {
+    "block_id": "f692beb2-871a-475c-bef1-6a4ced70eecf",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "Title page of a Quick Start Guide for the LG G Pad 8.3 Google Play edition. It includes a support URL and a highlighted note section containing important information regarding device contents and accessories.\n\nEntities: LG G Pad 8.3, Google Play edition, Quick Start Guide, support.google.com/playedition, LG accessories, ENGLISH",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "LG G Pad 8.3",
+        "Google Play edition",
+        "Quick Start Guide",
+        "support.google.com/playedition",
+        "LG accessories",
+        "ENGLISH"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "d897116b-46fc-408c-a87f-44225043e9fd",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A technical diagram illustrating the hardware components of a mobile device from four perspectives: top, bottom, front, and back. Each component is clearly labeled with pink text boxes and leader lines pointing to its location.\n\nEntities: microSD Card Slot, Earphone Jack, Microphone, Charger/USB Port, Front-Facing Camera Lens, Ambient Light Sensor, Power/Lock Key, Volume Keys, Back-Facing Camera Lens, Speakers, TOP, BOTTOM, FRONT, BACK, Overview",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "microSD Card Slot",
+        "Earphone Jack",
+        "Microphone",
+        "Charger/USB Port",
+        "Front-Facing Camera Lens",
+        "Ambient Light Sensor",
+        "Power/Lock Key",
+        "Volume Keys",
+        "Back-Facing Camera Lens",
+        "Speakers",
+        "TOP",
+        "BOTTOM",
+        "FRONT",
+        "BACK",
+        "Overview"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "66b51170-e4ae-477e-970b-02d70aefa704",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "Instructional diagram showing the process of installing a micro SD card into a tablet's memory card slot. It features step-by-step visual guides, technical specifications for the card, and a warning regarding safe removal procedures.\n\nEntities: memory card, micro SD card, tablet, memory card slot, memory card tray, 64 GB, Speed Class 10, Settings, Storage, Unmount SD card",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 5,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "memory card",
+        "micro SD card",
+        "tablet",
+        "memory card slot",
+        "memory card tray",
+        "64 GB",
+        "Speed Class 10",
+        "Settings",
+        "Storage",
+        "Unmount SD card"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "098d38ab-cff8-43bf-ae64-dbbee1a5687c",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "An instructional page from a user manual for a tablet, detailing how to charge the device and turn it on. It features technical illustrations of the tablet, charging cable, and power button, accompanied by safety warnings and usage tips.\n\nEntities: Charging the tablet, Turning on your tablet, Charger/USB Port, charging cable, charger adapter, electrical socket, LG Electronics, LG-approved charging accessories, Power/Lock Key, battery, tablet",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 6,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Charging the tablet",
+        "Turning on your tablet",
+        "Charger/USB Port",
+        "charging cable",
+        "charger adapter",
+        "electrical socket",
+        "LG Electronics",
+        "LG-approved charging accessories",
+        "Power/Lock Key",
+        "battery",
+        "tablet"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "37fef1aa-f648-47ff-ab32-ebb820ab4832",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A safety information page from a user manual, likely for an LG tablet. It contains warnings and cautions regarding battery handling, replacement, and general device safety.\n\nEntities: For Your Safety, Safety Information, Caution, WARNING, Notice for Battery replacement, LG Electronics, Li-Ion Battery, IEEE-Std-1725-200x, tablet, battery",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 7,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "For Your Safety",
+        "Safety Information",
+        "Caution",
+        "WARNING",
+        "Notice for Battery replacement",
+        "LG Electronics",
+        "Li-Ion Battery",
+        "IEEE-Std-1725-200x",
+        "tablet",
+        "battery"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "5929a2a8-4da1-4112-814b-49b01dcda28a",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A safety information page containing regulatory contact details, Wi-Fi usage warnings, a chemical warning box for California, and information on Specific Absorption Rate (SAR) compliance.\n\nEntities: For Your Safety, International Commission on Non-Ionizing Radiation Protection, Wi-Fi Caution, Nickel, Toluene, Methyl isobutyl ketone, Carbon particles of respirable size, Engineering in Medicine and Biology Society, COMAR, IEEE, Consumer Information on SAR, Specific Absorption Rate",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 16,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "For Your Safety",
+        "International Commission on Non-Ionizing Radiation Protection",
+        "Wi-Fi Caution",
+        "Nickel",
+        "Toluene",
+        "Methyl isobutyl ketone",
+        "Carbon particles of respirable size",
+        "Engineering in Medicine and Biology Society",
+        "COMAR",
+        "IEEE",
+        "Consumer Information on SAR",
+        "Specific Absorption Rate"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "61770ff6-cc66-4dac-96f0-3fee5c6e7424",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "The cover page of a Spanish quick start guide for the LG G Pad 8.3 Google Play edition. It includes a support website URL and a note section with important information.\n\nEntities: LG G Pad 8.3, Google Play edition, Gu\u00eda de inicio r\u00e1pido, support.google.com/playedition, ESPA\u00d1OL, NOTA",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 25,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "LG G Pad 8.3",
+        "Google Play edition",
+        "Gu\u00eda de inicio r\u00e1pido",
+        "support.google.com/playedition",
+        "ESPA\u00d1OL",
+        "NOTA"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "9ac14337-c04a-4a47-981e-c9ecee00c7d9",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A technical diagram in Spanish illustrating the various components and ports of a tablet device from multiple perspectives: top, bottom, front, and back. It uses callout lines to label parts such as the camera lenses, buttons, ports, and sensors.\n\nEntities: Ranura para la tarjeta microSD, Conector del auricular, Lente delantera de la c\u00e1mara, Sensor de luz ambiental, Tecla Encender/Bloquear, Teclas de Volumen, Micr\u00f3fono, Puerto para Cargador/USB, Lente posterior de la c\u00e1mara, Altavoz, PARTE SUPERIOR, PARTE INFERIOR, FRENTE, POSTERIOR, Generalidades",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 26,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Ranura para la tarjeta microSD",
+        "Conector del auricular",
+        "Lente delantera de la c\u00e1mara",
+        "Sensor de luz ambiental",
+        "Tecla Encender/Bloquear",
+        "Teclas de Volumen",
+        "Micr\u00f3fono",
+        "Puerto para Cargador/USB",
+        "Lente posterior de la c\u00e1mara",
+        "Altavoz",
+        "PARTE SUPERIOR",
+        "PARTE INFERIOR",
+        "FRENTE",
+        "POSTERIOR",
+        "Generalidades"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "c4e7e2de-3dc3-43ab-ae02-5cb85773c379",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "An instructional diagram in Spanish detailing the steps to install a microSD memory card into a tablet. It features line drawings of the tablet's edge, a close-up of the card tray insertion, and text instructions with notes and warnings.\n\nEntities: Instalaci\u00f3n de la tarjeta de memoria, microSD, 64 GB, clase de velocidad 10, Configuraci\u00f3n, Espacio de almacenamiento, Desmontar la tarjeta SD, tablet, bandeja de la tarjeta de memoria",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 27,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Instalaci\u00f3n de la tarjeta de memoria",
+        "microSD",
+        "64 GB",
+        "clase de velocidad 10",
+        "Configuraci\u00f3n",
+        "Espacio de almacenamiento",
+        "Desmontar la tarjeta SD",
+        "tablet",
+        "bandeja de la tarjeta de memoria"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "514c6bc5-a3d6-47a2-a592-8f5a0325f45a",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A page from a user manual providing instructions in Spanish for charging and turning on a tablet. It includes technical diagrams showing the charging port connection and the location of the power button.\n\nEntities: Charging the tablet, Encender su tablet, LG Electronics, Puerto para Cargador/USB, cable de carga, cargador, tomacorriente, Encender/Bloquear, Tecla Encender/Bloquear, bater\u00eda, ADVERTENCIA, NOTA, SUGERENCIA",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 28,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.98,
+    "language": "en",
+    "metadata": {
+      "vision_type": "diagram",
+      "entities": [
+        "Charging the tablet",
+        "Encender su tablet",
+        "LG Electronics",
+        "Puerto para Cargador/USB",
+        "cable de carga",
+        "cargador",
+        "tomacorriente",
+        "Encender/Bloquear",
+        "Tecla Encender/Bloquear",
+        "bater\u00eda",
+        "ADVERTENCIA",
+        "NOTA",
+        "SUGERENCIA"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "da7f7bce-c559-4c3a-af76-f15d60bc569c",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A safety instruction page in Spanish for a tablet device, featuring caution and warning sections. It provides detailed guidelines on battery handling, charging, and device maintenance to ensure user safety and prevent damage.\n\nEntities: Para su seguridad, Precauci\u00f3n, ADVERTENCIA, Aviso de cambio de bater\u00eda, LG Electronics, bater\u00eda de i\u00f3n-litio, IEEE-Std-1725-200x, tablet",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 29,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Para su seguridad",
+        "Precauci\u00f3n",
+        "ADVERTENCIA",
+        "Aviso de cambio de bater\u00eda",
+        "LG Electronics",
+        "bater\u00eda de i\u00f3n-litio",
+        "IEEE-Std-1725-200x",
+        "tablet"
+      ],
+      "enrichment_failed": false
+    }
+  },
+  {
+    "block_id": "31876b42-30d0-4c35-8dbe-974284e9cee3",
+    "document_id": "doc123",
+    "type": "image_caption",
+    "text": "A document page in Spanish containing contact information for various health and radiation protection organizations, Wi-Fi usage precautions, and a chemical warning box.\n\nEntities: Real Sociedad de Canad\u00e1, Organizaci\u00f3n Mundial de la Salud, Comisi\u00f3n internacional para la protecci\u00f3n contra radiaci\u00f3n no ionizante, 802.11a/n, 5.15 \u2013 5.25 GHz, Niquel, Tolueno, Metil-isobutil-cetona, Part\u00edculas de carbono de tama\u00f1o respirable, \u00a1ADVERTENCIA!",
+    "table_data": null,
+    "source_ref": {
+      "filename": "C:\\Users\\visha\\OneDrive\\Desktop\\AI-Accelerator-vishal\\test-data\\Mixed.pdf",
+      "page": 39,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        0,
+        0,
+        340.1570129394531,
+        283.4649963378906
+      ]
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {
+      "vision_type": "other",
+      "entities": [
+        "Real Sociedad de Canad\u00e1",
+        "Organizaci\u00f3n Mundial de la Salud",
+        "Comisi\u00f3n internacional para la protecci\u00f3n contra radiaci\u00f3n no ionizante",
+        "802.11a/n",
+        "5.15 \u2013 5.25 GHz",
+        "Niquel",
+        "Tolueno",
+        "Metil-isobutil-cetona",
+        "Part\u00edculas de carbono de tama\u00f1o respirable",
+        "\u00a1ADVERTENCIA!"
+      ],
+      "enrichment_failed": false
+    }
+  }
+]

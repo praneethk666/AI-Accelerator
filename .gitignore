@@ -223,3 +223,42 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── Project-specific ──────────────────────────────────────────
+# Secrets — never commit these
+.env
+.env.local
+
+# Uploaded files (runtime data, not source)
+uploads/
+
+# Local data and sample files
+data/
+
+# Model weights and caches (bge-large, YOLO, etc.)
+models/
+.cache/
+*.bin
+*.safetensors
+*.pt
+*.onnx
+yolov8*.pt
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/.nuxt/
+
+# Database files
+*.db
+*.sqlite
+
+# Docker volumes (if accidentally created locally)
+postgres_data/
+qdrant_data/
+grafana_data/
+
+# macOS
+.DS_Store

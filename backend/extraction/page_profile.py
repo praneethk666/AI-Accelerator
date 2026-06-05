@@ -6,8 +6,8 @@ from typing import List
 from backend.core.schemas import PageProfile, ImageRegion
 from backend.utils.save_json import save_page_profiles
 
-# For scanned page image detection
-from backend.extraction.ocr.scanned import page_to_pil, extract_ocr_text_and_boxes, detect_visual_regions
+# For scanned page image detection – updated import
+from backend.extraction.scanned_pdf.scanned import page_to_pil, extract_ocr_text_and_boxes, detect_visual_regions
 
 # ===== CONFIGURATION =====
 MIN_IMAGE_PX = 150

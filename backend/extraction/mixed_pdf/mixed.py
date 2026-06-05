@@ -8,9 +8,9 @@ from typing import List
 import fitz
 
 from backend.core.schemas import NormalizedBlock, SourceRef
-from backend.extraction.pdf.detector import detect_pdf_type
-from backend.extraction.ocr.scanned import extract_scanned
-from backend.extraction.pdf.digital import extract_digital
+from backend.extraction.detector import detect_pdf_type
+from backend.extraction.scanned_pdf.scanned import extract_scanned
+from backend.extraction.digital_pdf.digital import extract_digital
 from backend.utils.save_json import save_blocks
 
 

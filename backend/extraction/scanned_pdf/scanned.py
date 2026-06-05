@@ -209,7 +209,7 @@ def extract_scanned(
         List[NormalizedBlock] containing:
         - text blocks (type="text" or "heading") from OCR
         - image_caption blocks for each detected visual region (with bbox)
-        - page_metrics blocks (per page)
+        - (page_metrics block removed – handled by page_profile)
     """
     doc = fitz.open(pdf_path)
     blocks: List[NormalizedBlock] = []
@@ -235,24 +235,7 @@ def extract_scanned(
                 min_area=min_visual_area
             )
 
-            # ---- Page metrics block ----
-            metrics_block = NormalizedBlock(
-                block_id=str(uuid.uuid4()),
-                document_id=document_id,
-                type="page_metrics",
-                text=f"Page {page_number} metrics",
-                source_ref=SourceRef(filename=filename, page=page_number),
-                confidence=1.0,
-                metadata={
-                    "text_length": len(ocr_text),          # OCR text length
-                    "raster_images_total": len(visual_regions),
-                    "significant_images": len(visual_regions),
-                    "vector_drawings_total": 0,
-                    "significant_vectors": 0,
-                    "has_table": False,
-                }
-            )
-            blocks.append(metrics_block)
+            # ---- Page metrics block REMOVED (handled by page_profile) ----
 
             # ---- Convert OCR text to NormalizedBlock (text/heading) ----
             # Simple grouping into paragraphs by empty lines

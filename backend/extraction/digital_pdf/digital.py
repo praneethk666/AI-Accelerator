@@ -30,84 +30,13 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             page_number = page_num + 1
             page_area = page.rect.width * page.rect.height
 
-            # ---- 1. Page metrics ----
-            text = page.get_text().strip()
-            text_len = len(text)
-            raster_images = page.get_images(full=True)
-            significant_image_count = 0
-            for img in raster_images:
-                rects = page.get_image_rects(img)
-                if rects:
-                    bbox = rects[0]
-                    area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                    if area >= MIN_IMAGE_AREA:
-                        significant_image_count += 1
+            # ---- (page_metrics removed – handled by page_profile) ----
 
-            drawings = page.get_drawings()
-            vector_count = len(drawings)
-
-            # Detect tables and collect their bounding boxes
-            tables_found = page.find_tables()
-            table_bboxes = [t.bbox for t in tables_found.tables] if tables_found.tables else []
-            has_table = len(table_bboxes) > 0
-
-            # Count significant vectors (area + complexity + table overlap filter)
-            significant_vector_count = 0
-            vector_bboxes_for_placeholders = []  # store rects that pass filters
-            for dr in drawings:
-                rect = dr.get("rect")
-                if not rect:
-                    continue
-                area = (rect[2] - rect[0]) * (rect[3] - rect[1])
-                # Area threshold
-                if area / page_area < MIN_DRAWING_AREA_RATIO:
-                    continue   # too small – ignore
-
-                # Complexity filter: skip simple drawings (e.g., single rectangle)
-                items = dr.get("items", [])
-                if len(items) < MIN_VECTOR_COMPLEXITY:
-                    continue
-
-                # Check overlap with any table
-                skip = False
-                for t_bbox in table_bboxes:
-                    # intersection area
-                    ix1 = max(rect[0], t_bbox[0])
-                    iy1 = max(rect[1], t_bbox[1])
-                    ix2 = min(rect[2], t_bbox[2])
-                    iy2 = min(rect[3], t_bbox[3])
-                    if ix2 > ix1 and iy2 > iy1:
-                        inter_area = (ix2 - ix1) * (iy2 - iy1)
-                        if inter_area / area > TABLE_OVERLAP_THRESHOLD:
-                            skip = True
-                            break
-                if not skip:
-                    significant_vector_count += 1
-                    vector_bboxes_for_placeholders.append(rect)
-
-            metrics_block = NormalizedBlock(
-                block_id=str(uuid.uuid4()),
-                document_id=document_id,
-                type="page_metrics",
-                text=f"Page {page_number} metrics",
-                source_ref=SourceRef(filename=filename, page=page_number),
-                confidence=1.0,
-                metadata={
-                    "text_length": text_len,
-                    "raster_images_total": len(raster_images),
-                    "significant_images": significant_image_count,
-                    "vector_drawings_total": vector_count,
-                    "significant_vectors": significant_vector_count,
-                    "has_table": has_table,
-                }
-            )
-            blocks.append(metrics_block)
-
-            # ---- 2. Text as paragraphs (merged) ----
+            # ---- 1. Text as paragraphs (merged) ----
             para_blocks = _extract_paragraphs(page, page_number, filename, document_id)
             blocks.extend(para_blocks)
 
-            # ---- 3. Tables ----
+            # ---- 2. Tables ----
             try:
                 tables = page.find_tables()
                 for table in tables.tables:
@@ -129,7 +58,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             except Exception as e:
                 print(f"Table extraction failed on page {page_number}: {e}")
 
-            # ---- 4. Image placeholders (significant only) WITH BBOX ----
+            # ---- 3. Image placeholders (significant only) WITH BBOX ----
             try:
                 for img in page.get_images(full=True):
                     rects = page.get_image_rects(img)
@@ -158,7 +87,41 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             except Exception as e:
                 print(f"Image extraction failed on page {page_number}: {e}")
 
-            # ---- 5. Vector drawing placeholders (filtered: area + complexity + table overlap) ----
+            # ---- 4. Vector drawing placeholders (filtered: area + complexity + table overlap) ----
+            # Detect tables for vector overlap filter
+            try:
+                tables_found = page.find_tables()
+                table_bboxes = [t.bbox for t in tables_found.tables] if tables_found.tables else []
+            except Exception:
+                table_bboxes = []
+
+            drawings = page.get_drawings()
+            vector_bboxes_for_placeholders = []
+            for dr in drawings:
+                rect = dr.get("rect")
+                if not rect:
+                    continue
+                area = (rect[2] - rect[0]) * (rect[3] - rect[1])
+                if area / page_area < MIN_DRAWING_AREA_RATIO:
+                    continue
+                items = dr.get("items", [])
+                if len(items) < MIN_VECTOR_COMPLEXITY:
+                    continue
+                # Check overlap with any table
+                skip = False
+                for t_bbox in table_bboxes:
+                    ix1 = max(rect[0], t_bbox[0])
+                    iy1 = max(rect[1], t_bbox[1])
+                    ix2 = min(rect[2], t_bbox[2])
+                    iy2 = min(rect[3], t_bbox[3])
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_area = (ix2 - ix1) * (iy2 - iy1)
+                        if inter_area / area > TABLE_OVERLAP_THRESHOLD:
+                            skip = True
+                            break
+                if not skip:
+                    vector_bboxes_for_placeholders.append(rect)
+
             try:
                 for rect in vector_bboxes_for_placeholders:
                     blocks.append(

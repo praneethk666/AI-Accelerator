@@ -223,3 +223,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Models downloaded at runtime
+*.pt
+
+# Generated output
+output/

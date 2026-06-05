@@ -1,19 +1,51 @@
-# Base
+# ── Core ──────────────────────────────────────────────────────────────────────
 pyyaml
 pytest
+python-dotenv
 
-# Add yours in your PR, e.g.:
-# langgraph
-# pymupdf
-# openpyxl
-# pandas
-# python-pptx
-# fastapi
-# uvicorn
+# ── LangChain / LangGraph ─────────────────────────────────────────────────────
+langchain
+langchain-core
+langchain-groq
+langchain-ollama
+langchain-openai
+langgraph
+langchain-mcp-adapters
 
-#For Digital and Scanned PDF 
-PyMuPDF==1.24.12
-paddleocr==2.7.3
-paddlepaddle==2.6.2
-Pillow==10.1.0
-numpy==1.24.3
+# ── Observability ─────────────────────────────────────────────────────────────
+langfuse
+
+# ── PDF extraction ────────────────────────────────────────────────────────────
+pymupdf              # fitz — PDF rendering and text extraction
+paddleocr            # OCR for scanned pages
+paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
+
+# ── Vision / image processing ─────────────────────────────────────────────────
+ultralytics          # YOLO — object detection for significant image regions
+Pillow               # image manipulation
+google-generativeai  # Gemma via Google AI Studio (vision.provider: google)
+ollama               # Gemma via local Ollama (vision.provider: ollama)
+
+# ── Excel / PowerPoint extraction ─────────────────────────────────────────────
+openpyxl
+pandas
+tabulate             # df.to_markdown() for table text
+python-pptx
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+sentence-transformers    # bge-large dense embedder + bge-reranker
+fastembed                # BM25 sparse embedder
+chonkie[semantic]        # semantic + token-aware chunking
+
+# ── Vector + relational storage ───────────────────────────────────────────────
+qdrant-client
+sqlalchemy
+psycopg2-binary
+
+# ── API layer ─────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart         # file uploads
+
+# ── MCP connector stubs ───────────────────────────────────────────────────────
+mcp

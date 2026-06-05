@@ -1,196 +1,257 @@
 """
 backend/retrieval/retrieval.py
 ──────────────────────────────
-Five RAG retrieval methods, all behind the same signature:
+RetrievalTool — implements the Tool Protocol from backend/core/tool.py.
 
-    retrieve(query, config) -> list[Chunk]
+  run(state, config)
+    reads  : state["sub_questions"]    list[str]  — from query-decomposer
+             state["document_scope"]   list[str]  — optional doc_id filter
+    writes : state["retrieved_chunks"] list[Chunk] — flat, deduped, best-first
+    errors : appends to state["errors"] on failure; never raises
 
-Methods
--------
-1. naive          — pure dense (cosine) vector search
-2. hybrid         — dense + BM25 keyword, score-fused (RRF)
-3. hybrid_rerank  — hybrid + cross-encoder reranker
-4. hyde           — HyDE: embed a hypothetical answer, then dense search
-5. enriched       — hybrid_rerank on chunks that carry topic/keyword tags
-                    (same algorithm as 3, but chunk corpus has richer metadata)
+Five methods (config["query"]["retrieval"]["method"]):
+  naive          — dense cosine search
+  hybrid         — dense + BM25, fused with RRF
+  hybrid_rerank  — hybrid + cross-encoder reranker
+  hyde           — embed a hypothetical answer, then dense search
+  enriched       — hybrid_rerank on topic/keyword-tagged corpus
 
-The active method is chosen by config["method"]; all other knobs
-(top_k, model names, weights, …) also come from config, never hardcoded.
-
-How it plugs in
----------------
-Karthii's ingestion step writes chunks + embeddings to the vector store and
-the relational DB.  This module only *reads* from those stores at query time.
-Swap the storage back-end by changing the `VectorStore` / `KeywordIndex`
-factories below without touching any retrieval logic.
+All knobs live under config["query"]["retrieval"][...].
+LLM, embedder, reranker come from backend/core/models.py factories:
+  get_llm(config)          — LangChain chat model (Groq or Gemini)
+  get_dense_model(config)  — SentenceTransformer
+  get_reranker(config)     — CrossEncoder
 """
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
-import os
+from typing import Optional
+
+from backend.core.tool import PipelineState   # Tool is a Protocol — implement, don't subclass
 from backend.core.schemas import Chunk
+from backend.core.models import get_dense_model, get_reranker
+from backend.core.llm_client import get_llm
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
-from backend.retrieval.embedder import embed_text
-from backend.retrieval.reranker import rerank
-from backend.retrieval.llm_client import generate_hypothetical_answer
 
 logger = logging.getLogger(__name__)
 
 
-# ── public entry point ──────────────────────────────────────────────────────
-
-def retrieve(query: str, config: dict) -> dict:
+class RetrievalTool:
     """
-    Retrieve the top-k most relevant chunks for *query*.
+    Implements the Tool Protocol (backend/core/tool.py).
 
-    Parameters
-    ----------
-    query   : the user's question
-    config  : dict with at least:
-        method          : str  — naive | hybrid | hybrid_rerank | hyde | enriched
-        top_k           : int  — number of chunks to return
-        filters         : dict — optional metadata filters (industry, doc_type, …)
-        embedding_model : str  — sentence-transformers model id
-        reranker_model  : str  — cross-encoder model id (for hybrid_rerank / enriched)
-        dense_weight    : float — RRF weight for dense leg (hybrid methods)
-        sparse_weight   : float — RRF weight for sparse leg (hybrid methods)
-        hyde_model      : str  — LLM used to generate hypothetical answer
+    Tool is a Protocol, not a base class — Python structural subtyping means
+    this class satisfies it as long as it has `name: str` and
+    `run(self, state, config) -> PipelineState`.
+
+    State contract (matches tool.py PipelineState exactly):
+        READS  state["sub_questions"]    list[str]   queries to retrieve for
+               state["document_scope"]   list[str]   doc ids to restrict search (optional)
+        WRITES state["retrieved_chunks"] list[Chunk] flat, deduped, scored desc
+        ERRORS state["errors"]           list        append only, never raise
+    """
+
+    name: str = "retrieval"
+
+    def run(self, state: PipelineState, config: dict) -> PipelineState:
+        """
+        Retrieve relevant chunks for all sub_questions and write
+        a single flat, deduplicated list to state["retrieved_chunks"].
+
+        De-duplication: if the same chunk_id appears across multiple
+        sub-question result sets, keep the copy with the highest rank
+        (i.e. first occurrence after per-method ordering).
+        """
+        sub_questions: list[str] = state.get("sub_questions") or []
+        if not sub_questions:
+            logger.warning("RetrievalTool: no sub_questions in state — skipping")
+            state["retrieved_chunks"] = []
+            return state
+
+        retrieval_cfg = config.get("query", {}).get("retrieval", {})
+
+        # Build filters: document_scope from state + any config-level filters
+        base_filters: dict = dict(retrieval_cfg.get("filters") or {})
+        doc_scope: list[str] = state.get("document_scope") or []
+        # (doc_scope filtering is applied inside VectorStore.search via payload match)
+
+        all_chunks: list[Chunk] = []
+        seen_ids: set[str] = set()
+
+        for query in sub_questions:
+            try:
+                result = _retrieve_one(
+                    query=query,
+                    retrieval_cfg=retrieval_cfg,
+                    full_config=config,
+                    extra_filters=base_filters,
+                    doc_scope=doc_scope,
+                )
+                logger.debug(
+                    "RetrievalTool q=%r method=%s n=%d %.1fms",
+                    query[:60], result["method"],
+                    len(result["chunks"]), result["latency_ms"],
+                )
+                for chunk in result["chunks"]:
+                    cid = chunk.get("chunk_id", "")
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        all_chunks.append(chunk)
+
+            except Exception as exc:
+                logger.error("RetrievalTool failed for %r: %s", query[:60], exc)
+                errors: list = state.get("errors") or []
+                errors.append({
+                    "tool":  "retrieval",
+                    "query": query,
+                    "error": str(exc),
+                })
+                state["errors"] = errors
+
+        state["retrieved_chunks"] = all_chunks
+        return state
+
+
+# ── internal dispatcher ───────────────────────────────────────────────────────
+
+def _retrieve_one(
+    query: str,
+    retrieval_cfg: dict,
+    full_config: dict,
+    extra_filters: Optional[dict] = None,
+    doc_scope: Optional[list[str]] = None,
+) -> dict:
+    """
+    Run one query through the chosen method.
 
     Returns
     -------
-    dict with keys:
-        chunks   : list[Chunk]   — retrieved chunks (ordered by score desc)
-        latency_ms : float       — wall-clock time for this call
-        method   : str           — which method was used
+    dict: { "chunks": list[Chunk], "latency_ms": float, "method": str }
     """
-    method = config.get("method", "naive")
+    method  = retrieval_cfg.get("method", "hybrid_rerank")
+    filters = dict(extra_filters or {})
+    # doc_scope is passed through to vector_store for payload filtering
+    if doc_scope:
+        filters["document_id"] = doc_scope   # VectorStore handles list vs scalar
+
     start = time.perf_counter()
 
     if method == "naive":
-        chunks = _naive(query, config)
+        chunks = _naive(query, retrieval_cfg, full_config, filters)
     elif method == "hybrid":
-        chunks = _hybrid(query, config)
+        chunks = _hybrid(query, retrieval_cfg, full_config, filters)
     elif method == "hybrid_rerank":
-        chunks = _hybrid_rerank(query, config)
+        chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
     elif method == "hyde":
-        chunks = _hyde(query, config)
+        chunks = _hyde(query, retrieval_cfg, full_config, filters)
     elif method == "enriched":
-        # Same algo as hybrid_rerank but relies on enriched chunk metadata.
-        # The "enriched" flag is a corpus property, not a retrieval algorithm change.
-        # We keep it as a separate method name so the benchmark can compare
-        # unenriched vs enriched corpora on the same algorithm.
-        chunks = _hybrid_rerank(query, config)
+        # "enriched" = same algorithm as hybrid_rerank but run on a corpus that
+        # was tagged with topic/keywords before embedding. The algorithm itself
+        # doesn't change; the benchmark compares unenriched vs enriched corpora.
+        chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
     else:
-        raise ValueError(f"Unknown retrieval method: {method!r}")
+        raise ValueError(
+            f"Unknown retrieval method: {method!r}. "
+            "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
+        )
 
     latency_ms = (time.perf_counter() - start) * 1000
-    logger.debug("retrieve method=%s top=%d latency=%.1f ms", method, len(chunks), latency_ms)
-
-    return {
-        "chunks": chunks,
-        "latency_ms": round(latency_ms, 2),
-        "method": method,
-    }
+    return {"chunks": chunks, "latency_ms": round(latency_ms, 2), "method": method}
 
 
-# ── method implementations ───────────────────────────────────────────────────
+# ── method implementations ────────────────────────────────────────────────────
 
-def _naive(query: str, config: dict) -> list[Chunk]:
+def _naive(query: str, cfg: dict, full_config: dict, filters: dict) -> list[Chunk]:
     """Dense cosine similarity search only."""
-    top_k = config.get("top_k", 5)
-    filters = config.get("filters", {})
-    q_emb = embed_text(query, config["embedding_model"])
-    store = VectorStore.get()
-    return store.search(q_emb, top_k=top_k, filters=filters)
+    embedder = get_dense_model(full_config)
+    q_emb    = embedder.encode(query, normalize_embeddings=True).tolist()
+    return VectorStore.get().search(
+        q_emb, top_k=cfg.get("top_k", 5), filters=filters
+    )
 
 
-def _hybrid(query: str, config: dict) -> list[Chunk]:
+def _hybrid(query: str, cfg: dict, full_config: dict, filters: dict) -> list[Chunk]:
+    """Dense + BM25, scores fused with Reciprocal Rank Fusion."""
+    top_k         = cfg.get("top_k", 5)
+    dense_weight  = cfg.get("dense_weight", 0.6)
+    sparse_weight = cfg.get("sparse_weight", 0.4)
+
+    embedder    = get_dense_model(full_config)
+    q_emb       = embedder.encode(query, normalize_embeddings=True).tolist()
+    dense_hits  = VectorStore.get().search(q_emb, top_k=top_k * 2, filters=filters)
+    sparse_hits = KeywordIndex.get().search(query, top_k=top_k * 2, filters=filters)
+
+    return _rrf_fuse(
+        dense_hits, sparse_hits,
+        w_dense=dense_weight, w_sparse=sparse_weight,
+        top_k=top_k,
+    )
+
+
+def _hybrid_rerank(query: str, cfg: dict, full_config: dict, filters: dict) -> list[Chunk]:
+    """Hybrid + cross-encoder reranker. Fetches a wider candidate pool first."""
+    top_k       = cfg.get("top_k", 5)
+    candidate_k = cfg.get("candidate_k", top_k * 4)
+
+    candidates = _hybrid(query, {**cfg, "top_k": candidate_k}, full_config, filters)
+
+    reranker = get_reranker(full_config)
+    pairs    = [(query, c.get("text") or "") for c in candidates]
+    scores   = reranker.predict(pairs)
+
+    ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    return [chunk for _, chunk in ranked[:top_k]]
+
+
+def _hyde(query: str, cfg: dict, full_config: dict, filters: dict) -> list[Chunk]:
     """
-    Dense + BM25 keyword search, fused with Reciprocal Rank Fusion (RRF).
-    RRF score = Σ  1 / (k + rank_i)  for each retrieval leg.
+    HyDE (Hypothetical Document Embeddings).
+    Ask the LLM for a hypothetical answer, embed that instead of the raw query.
+    The hypothetical text sits closer in embedding space to real answer passages.
     """
-    top_k = config.get("top_k", 5)
-    dense_weight = config.get("dense_weight", 0.6)
-    sparse_weight = config.get("sparse_weight", 0.4)
-    filters = config.get("filters", {})
+    top_k = cfg.get("top_k", 5)
 
-    q_emb = embed_text(query, config["embedding_model"])
-    store = VectorStore.get()
-    idx = KeywordIndex.get()
+    llm          = get_llm(full_config)
+    hypothetical = llm.invoke(
+        "Write a short factual paragraph that directly answers this question. "
+        "Reply with ONLY the paragraph, no preamble.\n\nQuestion: " + query
+    ).content
 
-    dense_hits = store.search(q_emb, top_k=top_k * 2, filters=filters)
-    sparse_hits = idx.search(query, top_k=top_k * 2, filters=filters)
+    embedder = get_dense_model(full_config)
+    hyp_emb  = embedder.encode(hypothetical, normalize_embeddings=True).tolist()
 
-    return _rrf_fuse(dense_hits, sparse_hits,
-                     w_dense=dense_weight, w_sparse=sparse_weight,
-                     top_k=top_k)
+    return VectorStore.get().search(hyp_emb, top_k=top_k, filters=filters)
 
 
-def _hybrid_rerank(query: str, config: dict) -> list[Chunk]:
-    """
-    Hybrid retrieval followed by a cross-encoder reranker.
-    Fetch a wider candidate set, then rerank and return top_k.
-    """
-    top_k = config.get("top_k", 5)
-    candidate_k = config.get("candidate_k", top_k * 4)
-    reranker_model = config.get("reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-    # Widen the candidate pool before reranking
-    wide_config = {**config, "top_k": candidate_k}
-    candidates = _hybrid(query, wide_config)
-
-    reranked = rerank(query, candidates, model_name=reranker_model)
-    return reranked[:top_k]
-
-
-def _hyde(query: str, config: dict) -> list[Chunk]:
-    """
-    HyDE — Hypothetical Document Embeddings.
-    1. Ask the LLM for a hypothetical answer to the query.
-    2. Embed that hypothetical answer (not the query itself).
-    3. Search with that embedding — it's closer to real answer passages.
-    """
-    top_k = config.get("top_k", 5)
-    filters = config.get("filters", {})
-    hyde_model = config.get("hyde_model",os.getenv("HYDE_MODEL", "llama-3.1-8b-instant"))
-
-    hypothetical = generate_hypothetical_answer(query, model=hyde_model)
-    hyp_emb = embed_text(hypothetical, config["embedding_model"])
-
-    store = VectorStore.get()
-    return store.search(hyp_emb, top_k=top_k, filters=filters)
-
-
-# ── RRF fusion helper ────────────────────────────────────────────────────────
+# ── RRF ───────────────────────────────────────────────────────────────────────
 
 def _rrf_fuse(
-    dense_hits: list[Chunk],
+    dense_hits:  list[Chunk],
     sparse_hits: list[Chunk],
-    w_dense: float = 0.6,
+    w_dense:  float = 0.6,
     w_sparse: float = 0.4,
-    top_k: int = 5,
-    k: int = 60,
+    top_k: int  = 5,
+    k:     int  = 60,
 ) -> list[Chunk]:
     """
     Reciprocal Rank Fusion.
-    score(d) = w_dense * 1/(k + rank_dense) + w_sparse * 1/(k + rank_sparse)
-    Chunks that only appear in one leg get a score of 0 for the missing leg.
+    score(d) = w_dense/(k + rank_dense) + w_sparse/(k + rank_sparse)
+    Chunks in only one leg still get a partial score for that leg.
     """
-    scores: dict[str, float] = {}
+    scores:    dict[str, float] = {}
     chunk_map: dict[str, Chunk] = {}
 
     for rank, chunk in enumerate(dense_hits, start=1):
         cid = chunk["chunk_id"]
-        scores[cid] = scores.get(cid, 0.0) + w_dense * (1.0 / (k + rank))
+        scores[cid]    = scores.get(cid, 0.0) + w_dense * (1.0 / (k + rank))
         chunk_map[cid] = chunk
 
     for rank, chunk in enumerate(sparse_hits, start=1):
         cid = chunk["chunk_id"]
-        scores[cid] = scores.get(cid, 0.0) + w_sparse * (1.0 / (k + rank))
+        scores[cid]    = scores.get(cid, 0.0) + w_sparse * (1.0 / (k + rank))
         chunk_map[cid] = chunk
 
-    ranked = sorted(scores.keys(), key=lambda cid: scores[cid], reverse=True)
+    ranked = sorted(scores, key=lambda cid: scores[cid], reverse=True)
     return [chunk_map[cid] for cid in ranked[:top_k]]

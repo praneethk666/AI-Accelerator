@@ -1,9 +1,7 @@
 """
 backend/retrieval/keyword_index.py
-───────────────────────────────────
-BM25 keyword search — the sparse leg of hybrid retrieval.
-Uses rank_bm25 (pure-Python, no external service needed for the benchmark).
-In production this would be backed by Elasticsearch/OpenSearch.
+──────────────────────────────────────────────────────────────────────────────
+FastEmbed sparse keyword index — the sparse leg of hybrid retrieval.
 
 The index is built once from the chunk corpus and cached in memory.
 For the benchmark we build it from a list of Chunk objects; in production
@@ -12,8 +10,9 @@ Karthii's ingestion step would populate an external index.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Optional
+
+from fastembed import SparseEmbedding, SparseTextEmbedding
 
 from backend.core.schemas import Chunk
 
@@ -21,13 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 class KeywordIndex:
-    """Singleton BM25 index over the loaded chunk corpus."""
+    """Singleton sparse index over the loaded chunk corpus."""
 
     _instance: Optional["KeywordIndex"] = None
 
     def __init__(self) -> None:
         self._chunks: list[Chunk] = []
-        self._bm25 = None
+        self._sparse_model: Optional[SparseTextEmbedding] = None
+        self._chunk_vectors: list[dict[int, float]] = []
 
     @classmethod
     def get(cls) -> "KeywordIndex":
@@ -37,17 +37,15 @@ class KeywordIndex:
 
     def build(self, chunks: list[Chunk]) -> None:
         """
-        Build the BM25 index from a list of Chunk objects.
+        Build the sparse index from a list of Chunk objects.
         Call once per corpus; re-call if the corpus changes.
         """
-        try:
-            from rank_bm25 import BM25Okapi
-        except ImportError as e:
-            raise ImportError("rank-bm25 required: pip install rank-bm25") from e
-
         self._chunks = chunks
-        tokenized = [_tokenize(c.get("text") or "") for c in chunks]
-        self._bm25 = BM25Okapi(tokenized)
+        self._sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+
+        texts = [c.get("text") or "" for c in chunks]
+        embeddings = list(self._sparse_model.passage_embed(texts))
+        self._chunk_vectors = [_sparse_to_dict(embedding) for embedding in embeddings]
         logger.info("KeywordIndex built: %d chunks", len(chunks))
 
     def search(
@@ -57,7 +55,7 @@ class KeywordIndex:
         filters: Optional[dict] = None,
     ) -> list[Chunk]:
         """
-        BM25 keyword search.
+        Sparse keyword search.
 
         Parameters
         ----------
@@ -69,14 +67,16 @@ class KeywordIndex:
         -------
         list[Chunk] ordered best-first
         """
-        if self._bm25 is None or not self._chunks:
+        if self._sparse_model is None or not self._chunks:
             logger.warning("KeywordIndex is empty — call build() first")
             return []
 
-        tokens = _tokenize(query)
-        scores = self._bm25.get_scores(tokens)
+        query_vec = _sparse_to_dict(next(self._sparse_model.query_embed(query)))
+        scores = [
+            _dot_product(query_vec, chunk_vec)
+            for chunk_vec in self._chunk_vectors
+        ]
 
-        # Pair (score, chunk) and apply metadata filters
         scored = [
             (scores[i], self._chunks[i])
             for i in range(len(self._chunks))
@@ -86,18 +86,27 @@ class KeywordIndex:
         return [chunk for _, chunk in scored[:top_k]]
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+def _sparse_to_dict(embedding: SparseEmbedding) -> dict[int, float]:
+    """Convert a FastEmbed sparse vector into a plain index -> weight map."""
+    return {
+        int(index): float(value)
+        for index, value in zip(embedding.indices, embedding.values)
+    }
 
-def _tokenize(text: str) -> list[str]:
-    """Lowercase + split on non-alphanumeric — simple but effective for BM25."""
-    return re.findall(r"\w+", text.lower())
+
+def _dot_product(left: dict[int, float], right: dict[int, float]) -> float:
+    """Compute sparse dot product for FastEmbed sparse vectors."""
+    if len(left) > len(right):
+        left, right = right, left
+
+    return sum(weight * right.get(index, 0.0) for index, weight in left.items())
 
 
 def _passes_filter(chunk: Chunk, filters: Optional[dict]) -> bool:
     if not filters:
         return True
     tags = chunk.get("tags") or {}
-    for key, val in filters.items():
-        if val is not None and tags.get(key) != val:
+    for k, v in filters.items():
+        if v is not None and tags.get(k) != v:
             return False
     return True

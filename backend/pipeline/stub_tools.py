@@ -65,7 +65,7 @@ class ChunkStub:
 
 
 class EnrichChunksStub:
-    # Vinod's tool': tag each chunk (topic/section/keywords).
+    # Vinod's tool': tag each chunk.
     name = "enrich_chunks"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -79,7 +79,7 @@ class EmbedStub:
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         for c in state.get("chunks", []):
-            c["embedding"] = [0.0]  # placeholder vector
+            c["embedding"] = [0.0]  # placeholder
         return state
 
 

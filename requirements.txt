@@ -3,6 +3,11 @@ pyyaml
 pytest
 langgraph>=1.2,<2.0
 
+# Storage (Phase 3): Postgres+pgvector + MinIO/S3
+psycopg[binary]
+pgvector
+boto3
+
 # Dev: format with black, lint with ruff (see CONTRIBUTING.md)
 black
 ruff

@@ -22,6 +22,7 @@ paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
 # ── Vision / image processing ─────────────────────────────────────────────────
 ultralytics          # YOLO — object detection for significant image regions
+opencv-python-headless  # cv2 — used by scanned PDF pipeline (contour detection, morphology)
 Pillow               # image manipulation
 google-generativeai  # Gemma via Google AI Studio (vision.provider: google)
 ollama               # Gemma via local Ollama (vision.provider: ollama)

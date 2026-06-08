@@ -1,0 +1,153 @@
+# Global pipeline configuration.
+# Override per-deployment by copying this file and passing the new path to load_config().
+# Secrets (API keys, DB passwords) go in .env — never in this file.
+# Database connection strings use ${VAR} substitution resolved from the environment.
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+llm:
+  provider: groq            # groq | ollama | openai
+  model: llama-3.1-8b-instant
+  # base_url:               # uncomment for OpenAI-compatible endpoints
+
+# ── Vision (Gemma) ────────────────────────────────────────────────────────────
+vision:
+  provider: google          # google (AI Studio) | ollama (self-hosted)
+  model: gemma-3-27b-it
+  enabled: true
+  dpi: 150                  # render resolution for PDF image regions
+  min_image_px: 150         # images smaller than this (each side) are skipped
+  timeout_s: 45
+  max_concurrency: 4        # parallel Gemma calls per document
+  prompt:
+    default: >
+      Describe what this image shows in 2–3 sentences. Be specific about
+      diagrams, charts, component labels, dimensions, and any text visible.
+    cad_route: >
+      Describe all visible circuit components, reference designators (R1, C4),
+      net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
+      visible dimensions or tolerances. Be precise — this is used for search.
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+embeddings:
+  dense_model: BAAI/bge-large-en-v1.5   # 1024-dim; leads MTEB retrieval benchmark
+  sparse_model: Qdrant/bm25             # keyword matching for hybrid search
+  reranker_model: BAAI/bge-reranker-large
+
+# ── Chunking ──────────────────────────────────────────────────────────────────
+chunking:
+  strategy: semantic        # semantic | recursive
+  size: 400                 # tokens (not characters)
+  overlap: 50               # tokens
+
+# ── Query pipeline ────────────────────────────────────────────────────────────
+query:
+  small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
+  max_context_tokens: 3000      # answer_tool context budget
+
+  hyde:
+    enabled: false              # generate hypothetical answer before encoding
+
+  # ── Retrieval settings (Vinod's tools read these) ─────────────────────────
+  # These are accessed as config["query"]["retrieval"]["..."] in tool code.
+  # Vector DB = Qdrant (see database.qdrant_url).
+  # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
+  retrieval:
+    method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
+    top_n: 20                   # candidates fetched from Qdrant before reranking
+    candidate_k: 80             # wider pool for reranking (typically top_n * 4)
+    rerank_top_k: 5             # chunks kept after reranking
+    dense_weight: 0.6           # RRF weight for dense leg (hybrid methods)
+    sparse_weight: 0.4          # RRF weight for sparse/BM25 leg
+
+  agent:
+    max_iterations: 5
+
+# ── Notes for Vinod ───────────────────────────────────────────────────────────
+# config passed to your tool is the full dict from load_config("config/global.yaml").
+# Read your settings with:
+#   config["query"]["retrieval"]["method"]
+#   config["query"]["retrieval"]["top_n"]
+#   config["embeddings"]["dense_model"]     ← shared with Manoj's embed_tool
+#   config["embeddings"]["sparse_model"]
+#   config["embeddings"]["reranker_model"]
+#   config["database"]["qdrant_url"]
+#   config["database"]["postgres_url"]
+# Never use os.getenv() for model names — keep them in config so they're swappable.
+
+# ── Document taxonomy ─────────────────────────────────────────────────────────
+document_types:
+  - invoice
+  - report
+  - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
+  - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
+  - datasheet
+  - presentation
+  - spreadsheet
+  - image
+  - unknown
+
+industries:
+  - automotive
+  - electronics
+  - manufacturing
+  - finance
+  - legal
+  - healthcare
+  - general
+
+default_industry: general
+
+# ── Categorization ────────────────────────────────────────────────────────────
+# Used by CategorizeTool (owner: Abhishek).
+# config["categorization"]["industry_keywords"] — keyword lists per industry
+# config["categorization"]["confidence_thresholds"] — when to flag low confidence
+categorization:
+  confidence_thresholds:
+    categorization_low_confidence: 0.5
+
+  industry_keywords:
+    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
+    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
+    manufacturing:[assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
+    finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
+    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
+    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
+    general:      []
+
+# ── Routing ───────────────────────────────────────────────────────────────────
+# Maps document_type → route name. The route selects which pipeline steps run.
+# cad_drawing and circuit_diagram are separate routes — same steps but different
+# vision prompts and retrieval strategy (owner: Vinod). Karthii wires both in the graph.
+type_to_route:
+  cad_drawing:     cad_route      # mechanical drawings → CADExtractionTool with mechanical prompt
+  circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
+  datasheet:       diagram_heavy
+  report:          text_default
+  invoice:         text_default
+  presentation:    text_default
+  spreadsheet:     text_default
+  image:           image_route
+  unknown:         text_default
+
+# Steps listed here are resolved by the graph at runtime.
+# "extract" is a placeholder — the graph replaces it with the right
+# extractor(s) based on state["file_type"] (pdf/excel/ppt/image).
+routes:
+  text_default:
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+  diagram_heavy:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  cad_route:
+    # Mechanical CAD drawings — Vinod's CADExtractionTool uses a mechanical diagram prompt
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+  circuit_route:
+    # Electrical circuit diagrams — Vinod's CADExtractionTool uses an electrical/schematic prompt
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+  image_route:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+
+# ── Database (connection strings from environment) ────────────────────────────
+database:
+  postgres_url: ${POSTGRES_URL}
+  qdrant_url: ${QDRANT_URL}
+  qdrant_collection: chunks

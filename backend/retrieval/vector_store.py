@@ -32,43 +32,25 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Singleton Qdrant adapter. Call VectorStore.get() everywhere."""
 
-    _instance: Optional["VectorStore"] = None
+    @staticmethod
+    def get_client(config: dict):
 
-    def __init__(self, config: Optional[dict] = None) -> None:
-        try:
-            from qdrant_client import QdrantClient
-        except ImportError as e:
-            raise ImportError("qdrant-client required: pip install qdrant-client") from e
+        from qdrant_client import QdrantClient
 
-        config = config or {}
-        database = config.get("database", {})
-        qdrant_url = database.get("qdrant_url")
-        collection = database.get("qdrant_collection", "chunks")
+        qdrant_url = config["database"]["qdrant_url"]
 
         if qdrant_url:
-            self._client = QdrantClient(url=qdrant_url)
-            parsed = urlparse(qdrant_url)
-            host = parsed.hostname or qdrant_url
-            port = parsed.port or ""
-        else:
-            host = "localhost"
-            port = 6333
-            self._client = QdrantClient(host=host, port=port)
+            return QdrantClient(url=qdrant_url)
 
-        self._collection = collection
-        logger.info("VectorStore -> %s:%s / %s", host, port, self._collection)
-
-    @classmethod
-    def get(cls, config: Optional[dict] = None) -> "VectorStore":
-        if cls._instance is None:
-            cls._instance = cls(config)
-        return cls._instance
+        return QdrantClient(
+            host=config["database"]["qdrant_host"],
+            port=config["database"]["qdrant_port"],
+        )
 
     def search(
-        self,
         query_vector: list[float],
+        config: dict,
         top_k: int = 5,
         filters: Optional[dict] = None,
     ) -> list[Chunk]:
@@ -84,16 +66,16 @@ class VectorStore:
         """
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue, MatchAny
  
-        qdrant_filter = _build_qdrant_filter(filters)
+        client = VectorStore.get_client(config)
  
-        hits = self._client.search(
-            collection_name=self._collection,
-            query_vector   =query_vector,
-            limit          =top_k,
-            query_filter   =qdrant_filter,
-            with_payload   =False,   # only need IDs; text comes from Postgres
-            with_vectors   =False,
-        )
+        hits = client.search(
+        collection_name=config["database"]["qdrant_collection"],
+        query_vector=query_vector,
+        limit=top_k,
+        query_filter=_build_qdrant_filter(filters),
+        with_payload=False,
+        with_vectors=False,
+    )
  
         if not hits:
             return []

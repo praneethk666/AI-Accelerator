@@ -1,40 +1,62 @@
-# Creds come from .env (copy .env.example). 
-
-# postgres (relational db for rows)
-# pgvector [postgres extension] (vector search for chunk embeddings)
-# minio (for original uploaded files)
 services:
+
+  # ── Vector database (Qdrant) ─────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ── Relational database (PostgreSQL) ─────────────────────────────────────
   postgres:
-    image: pgvector/pgvector:pg16 # Postgres 16 with pgvector preinstalled
-    env_file: .env # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    image: postgres:15
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: accelerator
     volumes:
-      - pgdata:/var/lib/postgresql/data # persistent DB files
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro # runs once on first init
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    restart: unless-stopped
     healthcheck:
-      # $$ escapes compose interpolation -> expanded inside the container
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio
-    env_file: .env # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
-    command: server /data --console-address ":9001"
+  # ── Observability: LLM call tracing (Langfuse) ───────────────────────────
+  langfuse:
+    image: langfuse/langfuse:latest
     ports:
-      - "9000:9000" # S3 API (code talks here)
-      - "9001:9001" # web console (browse at localhost:9001)
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      NEXTAUTH_SECRET: changeme-local-dev
+      SALT: changeme-local-dev
+      NEXTAUTH_URL: http://localhost:3001
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Observability: system metrics (Grafana) ──────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - miniodata:/data
-    healthcheck:
-      # adjust if curl is missing in the image; verified at boot
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
 
 volumes:
-  pgdata:
-  miniodata:
+  qdrant_data:
+  postgres_data:
+  grafana_data:

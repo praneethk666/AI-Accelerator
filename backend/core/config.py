@@ -1,4 +1,19 @@
+"""Load a pipeline config into a plain dict.
+
+Supports ${VAR_NAME} substitution in YAML values — resolved from the
+environment. Missing vars are left as the literal ${VAR_NAME} string so
+the caller can detect and report them.
+
+Usage:
+    from backend.core.config import load_config, PipelineConfig
+    config = load_config("config/global.yaml")
+    pc = PipelineConfig.from_yaml("config/pipeline.example.yaml")
+"""
+
 from __future__ import annotations
+
+import os
+import re
 from dataclasses import dataclass, field
 
 # Safe-state default when route is not declared. Matches the .md rules:
@@ -7,11 +22,12 @@ DEFAULT_ROUTE = "text_default"
 
 
 def load_config(path: str) -> dict:
-    # Load a pipeline profile YML into a plain dict.
     import yaml
 
     with open(path) as f:
-        return yaml.safe_load(f)
+        raw = f.read()
+    raw = re.sub(r"\$\{([^}]+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), raw)
+    return yaml.safe_load(raw)
 
 
 @dataclass

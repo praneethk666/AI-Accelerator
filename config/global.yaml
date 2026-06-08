@@ -78,8 +78,8 @@ query:
 document_types:
   - invoice
   - report
-  - circuit_diagram
-  - assembly_drawing
+  - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
+  - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
   - datasheet
   - presentation
   - spreadsheet
@@ -116,16 +116,18 @@ categorization:
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.
+# cad_drawing and circuit_diagram are separate routes — same steps but different
+# vision prompts and retrieval strategy (owner: Vinod). Karthii wires both in the graph.
 type_to_route:
-  circuit_diagram: cad_route
-  assembly_drawing: cad_route
-  datasheet: diagram_heavy
-  report: text_default
-  invoice: text_default
-  presentation: text_default
-  spreadsheet: text_default
-  image: image_route
-  unknown: text_default
+  cad_drawing:     cad_route      # mechanical drawings → CADExtractionTool with mechanical prompt
+  circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
+  datasheet:       diagram_heavy
+  report:          text_default
+  invoice:         text_default
+  presentation:    text_default
+  spreadsheet:     text_default
+  image:           image_route
+  unknown:         text_default
 
 # Steps listed here are resolved by the graph at runtime.
 # "extract" is a placeholder — the graph replaces it with the right
@@ -136,7 +138,11 @@ routes:
   diagram_heavy:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
   cad_route:
-    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+    # Mechanical CAD drawings — Vinod's CADExtractionTool uses a mechanical diagram prompt
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+  circuit_route:
+    # Electrical circuit diagrams — Vinod's CADExtractionTool uses an electrical/schematic prompt
+    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   image_route:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
 

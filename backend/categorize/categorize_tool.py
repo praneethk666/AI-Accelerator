@@ -19,83 +19,85 @@ from typing import Any, Dict
 
 from .classifier import categorize
 
+class CategorizeTool:
+    name = "categorize"
 
-def run(self, state: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Pipeline entrypoint.
+    def run(self, state: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Pipeline entrypoint.
 
-    Args:
-        state: Shared pipeline state. Must contain:
-            state["file_path"]
+        Args:
+            state: Shared pipeline state. Must contain:
+                state["file_path"]
 
-        config: Global configuration loaded by the pipeline
-            (config/global.yaml)
+            config: Global configuration loaded by the pipeline
+                (config/global.yaml)
 
-    Returns:
-        Updated state dictionary.
-    """
+        Returns:
+            Updated state dictionary.
+        """
 
-    state.setdefault("errors", [])
+        state.setdefault("errors", [])
 
-    file_path = state.get("file_path")
+        file_path = state.get("file_path")
 
-    if not file_path:
-        state["errors"].append(
-            "categorize_tool: missing file_path in state"
-        )
-
-        state.setdefault("route", "text_default")
-        state.setdefault("document_type", "report")
-        state.setdefault(
-            "industry",
-            config.get("deployment", {}).get(
-                "default_industry",
-                "automotive"
+        if not file_path:
+            state["errors"].append(
+                "categorize_tool: missing file_path in state"
             )
-        )
-        state.setdefault("confidence", 0.0)
-        state.setdefault(
-            "reasoning",
-            "missing file_path; returning safe fallback"
-        )
 
-        return state
+            state.setdefault("route", "text_default")
+            state.setdefault("document_type", "report")
+            state.setdefault(
+                "industry",
+                config.get("deployment", {}).get(
+                    "default_industry",
+                    "automotive"
+                )
+            )
+            state.setdefault("confidence", 0.0)
+            state.setdefault(
+                "reasoning",
+                "missing file_path; returning safe fallback"
+            )
 
-    try:
-        # Extract categorization config from global config
-        categorization_config = config.get("categorization", {})
-        
-        return categorize(
-            file_path=file_path,
-            state=state,
-            config=categorization_config,
-            deployment=config.get("deployment", {})
-        )
+            return state
 
-    except Exception as e:
-        state["errors"].append(
-            f"categorize_tool: exception {type(e).__name__}: {e}"
-        )
+        try:
+            # Extract categorization config from global config
+            categorization_config = config.get("categorization", {})
+            
+            return categorize(
+                file_path=file_path,
+                state=state,
+                config=categorization_config,
+                deployment=config.get("deployment", {})
+            )
 
-        state["route"] = "text_default"
-        state["document_type"] = "report"
+        except Exception as e:
+            state["errors"].append(
+                f"categorize_tool: exception {type(e).__name__}: {e}"
+            )
 
-        state["industry"] = (
-            config.get("deployment", {})
-            .get("default_industry", "automotive")
-        )
+            state["route"] = "text_default"
+            state["document_type"] = "report"
 
-        state["confidence"] = 0.0
+            state["industry"] = (
+                config.get("deployment", {})
+                .get("default_industry", "automotive")
+            )
 
-        state["reasoning"] = (
-            "categorize failed; returning safe fallback"
-        )
+            state["confidence"] = 0.0
 
-        return {
-            "route": state["route"],
-            "document_type": state["document_type"],
-            "industry": state["industry"],
-            "confidence": state["confidence"],
-            "reasoning": state["reasoning"],
-            "errors": state.get("errors", []),
-        }
+            state["reasoning"] = (
+                "categorize failed; returning safe fallback"
+            )
+
+            return {
+                "route": state["route"],
+                "document_type": state["document_type"],
+                "industry": state["industry"],
+                "confidence": state["confidence"],
+                "reasoning": state["reasoning"],
+                "errors": state.get("errors", []),
+            }

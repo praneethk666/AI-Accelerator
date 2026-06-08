@@ -11,7 +11,7 @@ Tests verify:
 
 import pytest
 from tests.fixtures import sample_global_config, sample_query_response
-from backend.categorize.categorize_tool import run
+from backend.categorize.categorize_tool import CategorizeTool
 
 
 class TestNewInterface:
@@ -22,7 +22,8 @@ class TestNewInterface:
         state = {"file_path": "Invoice_Q4_2024.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "route" in result
         assert "document_type" in result
@@ -35,7 +36,8 @@ class TestNewInterface:
         state = {"file_path": "Contract_2025.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "confidence" in state
         assert "categorization_confidence" not in state
@@ -45,7 +47,8 @@ class TestNewInterface:
         state = {}  # No file_path
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert state["route"] == "text_default"
         assert state["confidence"] == 0.0
@@ -58,7 +61,8 @@ class TestNewInterface:
         config = sample_global_config()
         config["deployment"]["default_industry"] = "pharma"
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         # When file_path doesn't exist, should use deployment default
         assert state["industry"] == "pharma"
@@ -68,7 +72,8 @@ class TestNewInterface:
         state = {"file_path": "Invoice_Test.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         # Verify config was used
         assert "categorization" in config
@@ -81,7 +86,8 @@ class TestNewInterface:
         state = {"file_path": "Invoice_Q4_2024.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["document_type"] == "invoice"
         assert result["route"] == "table_heavy"
@@ -92,7 +98,8 @@ class TestNewInterface:
         state = {"file_path": "Hydraulic_Circuit_Diagram.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["document_type"] == "circuit_diagram"
         assert result["route"] == "diagram_heavy"
@@ -103,7 +110,8 @@ class TestNewInterface:
         state = {"file_path": "Legal_Contract_2025.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["document_type"] == "contract"
         assert result["route"] == "text_default"
@@ -114,7 +122,8 @@ class TestNewInterface:
         state = {"file_path": "unknown.xyz"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "route" in state
         assert "document_type" in state
@@ -132,7 +141,8 @@ class TestConfigFromGlobalYaml:
         state = {"file_path": "Financial_Statement_2024.xlsx"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["route"] == "table_heavy"
         assert config["categorization"]["type_to_route"]["financial_statement"] == "table_heavy"
@@ -142,7 +152,8 @@ class TestConfigFromGlobalYaml:
         state = {"file_path": "Toyota_Motor_Vehicle.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["industry"] == "automotive"
         assert "toyota" in [kw.lower() for kw in config["categorization"]["industry_keywords"]["automotive"]]
@@ -151,6 +162,9 @@ class TestConfigFromGlobalYaml:
         """confidence_thresholds should be used."""
         state = {"file_path": "Generic_Document.pdf"}
         config = sample_global_config()
+        
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         # Should have threshold defined
         assert "confidence_thresholds" in config["categorization"]
@@ -166,7 +180,8 @@ class TestErrorHandling:
         config = sample_global_config()
         
         try:
-            result = run(None, state, config)
+            tool = CategorizeTool()
+            result = tool.run(state, config)
             assert "route" in result
             assert result["route"] == "text_default"
         except Exception as e:
@@ -177,7 +192,8 @@ class TestErrorHandling:
         state = {"file_path": "/does/not/exist/doc.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert len(state["errors"]) > 0
         assert "exception" in state["errors"][0].lower() or "not" in state["errors"][0].lower()
@@ -187,7 +203,8 @@ class TestErrorHandling:
         state = {"file_path": "/invalid/path/doc.xyz"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["route"] == "text_default"
         assert result["document_type"] == "report"
@@ -226,7 +243,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/Task 5 Equality Table.xlsx"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         # Verify structure
         assert "route" in result
@@ -240,7 +258,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/TIGG300_OP200_HYDRAULIC,PNEUMATIC CIRCUIT DIAGRAM.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         # Should detect circuit diagram
         assert result["document_type"] in ["circuit_diagram", "schematic", "cad_drawing"]
@@ -252,7 +271,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/MS03AAA981AA-Expansion Motor.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "confidence" in result
         assert result["industry"] is not None
@@ -262,7 +282,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/Multisystem thromboembolism in a COVID-19 patient  a case report.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert result["document_type"] is not None
         assert result["route"] is not None
@@ -273,7 +294,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/SampleContract-Shuttle.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "confidence" in result
         assert result["route"] in config["categorization"]["type_to_route"].values()
@@ -283,7 +305,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/test.pptx"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "confidence" in result
         assert "document_type" in result
@@ -293,7 +316,8 @@ class TestIntegrationWithTestData:
         state = {"file_path": "test-data/test.xlsx"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "confidence" in result
         assert "document_type" in result
@@ -363,7 +387,8 @@ class TestStateConsistency:
         required_fields = ["route", "document_type", "industry", "confidence", "reasoning", "errors"]
         
         for state in test_cases:
-            result = run(None, state, config)
+            tool = CategorizeTool()
+            result = tool.run(state, config)
             for field in required_fields:
                 assert field in result, f"Field '{field}' missing for state: {state}"
 
@@ -378,7 +403,8 @@ class TestStateConsistency:
         config = sample_global_config()
         
         for state in test_cases:
-            result = run(None, state, config)
+            tool = CategorizeTool()
+            result = tool.run(state, config)
             assert isinstance(result["confidence"], (int, float))
             assert 0.0 <= result["confidence"] <= 1.0, \
                 f"Confidence {result['confidence']} out of range for state: {state}"
@@ -395,7 +421,8 @@ class TestStateConsistency:
         valid_routes = ["diagram_heavy", "table_heavy", "text_default", "presentation_route"]
         
         for state in test_cases:
-            result = run(None, state, config)
+            tool = CategorizeTool()
+            result = tool.run(state, config)
             assert result["route"] in valid_routes, \
                 f"Invalid route '{result['route']}' for state: {state}"
 
@@ -410,7 +437,8 @@ class TestStateConsistency:
         config = sample_global_config()
         
         for state in test_cases:
-            result = run(None, state, config)
+            tool = CategorizeTool()
+            result = tool.run(state, config)
             # Document type should be in type_to_route or be a default fallback
             valid_types = list(config["categorization"]["type_to_route"].keys())
             assert result["document_type"] in valid_types or result["document_type"] == "report"
@@ -424,7 +452,8 @@ class TestErrorMessages:
         state = {"file_path": "Invoice.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert "errors" in result
         assert isinstance(result["errors"], list)
@@ -434,7 +463,8 @@ class TestErrorMessages:
         state = {}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert len(result["errors"]) > 0
         assert "file_path" in result["errors"][0].lower()
@@ -444,7 +474,8 @@ class TestErrorMessages:
         state = {"file_path": "/definitely/does/not/exist.pdf"}
         config = sample_global_config()
         
-        result = run(None, state, config)
+        tool = CategorizeTool()
+        result = tool.run(state, config)
         
         assert len(result["errors"]) > 0
         assert result["route"] == "text_default"

@@ -16,6 +16,7 @@ class PipelineState(TypedDict, total=False):
     document_type: str       # set by categorize
     industry: str            # set by categorize
     confidence: float        # categorize confidence score
+    reasoning: str           # categorize: why it picked this type/route (debug/observability)
     route: str               # set by categorize; drives the graph
     page_profiles: list      # PageProfile[]
     blocks: list             # NormalizedBlock[]

@@ -36,7 +36,40 @@ class PdfExtractionStub:
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         state.setdefault("blocks", []).append(
-            {"type": "text", "text": "stub body text"}
+            {"type": "text", "text": "stub body text", "via": "pdf"}
+        )
+        return state
+
+
+class ExcelExtractionStub:
+    # Dhimanth's tool: sheets/tables -> NormalizedBlock[].
+    name = "excel_extraction"
+
+    def run(self, state: PipelineState, config: dict) -> PipelineState:
+        state.setdefault("blocks", []).append(
+            {"type": "table", "text": "stub sheet text", "via": "excel"}
+        )
+        return state
+
+
+class PptExtractionStub:
+    # Dhimanth's tool: slide text/notes -> NormalizedBlock[].
+    name = "ppt_extraction"
+
+    def run(self, state: PipelineState, config: dict) -> PipelineState:
+        state.setdefault("blocks", []).append(
+            {"type": "text", "text": "stub slide text", "via": "ppt"}
+        )
+        return state
+
+
+class ImageExtractionStub:
+    # Vishal's tool: standalone image -> NormalizedBlock[] (raw image for vision).
+    name = "image_extraction"
+
+    def run(self, state: PipelineState, config: dict) -> PipelineState:
+        state.setdefault("blocks", []).append(
+            {"type": "image", "text": "", "via": "image"}
         )
         return state
 
@@ -96,6 +129,9 @@ STUB_NAMES = [
     CategorizeStub(),
     PageProfileStub(),
     PdfExtractionStub(),
+    ExcelExtractionStub(),
+    PptExtractionStub(),
+    ImageExtractionStub(),
     VisionEnrichmentStub(),
     ChunkStub(),
     EnrichChunksStub(),

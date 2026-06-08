@@ -110,9 +110,15 @@ type_to_route:
   image: image_route
   unknown: text_default
 
-# Steps listed here are resolved by the graph at runtime.
-# "extract" is a placeholder — the graph replaces it with the right
-# extractor(s) based on state["file_type"] (pdf/excel/ppt/image).
+# "extract" is a placeholder in the steps below. At build time the graph expands
+# it into the extractor matching state["file_type"]; the others are skipped.
+# One schema, file-type-specific extraction — add a row to plug in a new extractor.
+extractors:
+  pdf: pdf_extraction
+  excel: excel_extraction
+  ppt: ppt_extraction
+  image: image_extraction
+
 routes:
   text_default:
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]

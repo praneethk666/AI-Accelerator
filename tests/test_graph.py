@@ -74,6 +74,49 @@ def test_route_branches_on_gate():
     )
 
 
+EXTRACTORS = {
+    "pdf": "pdf_extraction",
+    "excel": "excel_extraction",
+    "ppt": "ppt_extraction",
+    "image": "image_extraction",
+}
+
+
+def _vias(state: PipelineState) -> list:
+    return [b.get("via") for b in state.get("blocks", [])]
+
+
+def test_extract_placeholder_dispatches_on_file_type():
+    # `extract` expands to all extractors; only the one matching file_type runs
+    cfg = PipelineConfig.from_dict(
+        {
+            "route": "text_default",
+            "steps": ["categorize", "extract", "chunk"],
+            "extractors": EXTRACTORS,
+        }
+    )
+    graph = build_pipeline(_registry(), cfg)
+    for file_type, _ in EXTRACTORS.items():
+        out = graph.invoke({"document_id": "d1", "file_type": file_type})
+        assert _vias(out) == [file_type]  # exactly the matching extractor ran
+
+
+def test_extract_skips_all_when_file_type_unknown():
+    # no extractor matches -> none run, graph still completes (graceful)
+    cfg = PipelineConfig.from_dict(
+        {
+            "route": "text_default",
+            "steps": ["categorize", "extract", "chunk"],
+            "extractors": EXTRACTORS,
+        }
+    )
+    out = build_pipeline(_registry(), cfg).invoke(
+        {"document_id": "d1", "file_type": "cad"}
+    )
+    assert _vias(out) == []
+    assert out["errors"] == []
+
+
 def test_failing_tool_degrades_gracefully():
     class Boom:
         name = "boom"
@@ -97,5 +140,7 @@ if __name__ == "__main__":
     test_runs_end_to_end()
     test_steps_toggle_via_config()
     test_route_branches_on_gate()
+    test_extract_placeholder_dispatches_on_file_type()
+    test_extract_skips_all_when_file_type_unknown()
     test_failing_tool_degrades_gracefully()
     print("graph tests passed")

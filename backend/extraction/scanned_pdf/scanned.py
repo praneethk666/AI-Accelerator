@@ -12,7 +12,6 @@ from paddleocr import PaddleOCR
 from typing import List, Optional, Tuple
 
 from backend.core.schemas import NormalizedBlock, SourceRef
-from backend.utils.save_json import save_blocks
 
 # ------------------------------------------------------------------
 # Global models (loaded once)
@@ -304,11 +303,4 @@ def extract_scanned(
 
     finally:
         doc.close()
-
-    # Auto-save JSON
-    try:
-        save_blocks(blocks, pdf_path)
-    except Exception as e:
-        print(f"Failed to save blocks JSON: {e}")
-
     return blocks

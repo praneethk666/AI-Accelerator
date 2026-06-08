@@ -11,7 +11,6 @@ from backend.core.schemas import NormalizedBlock, SourceRef
 from backend.extraction.detector import detect_pdf_type
 from backend.extraction.scanned_pdf.scanned import extract_scanned
 from backend.extraction.digital_pdf.digital import extract_digital
-from backend.utils.save_json import save_blocks
 
 
 def extract_mixed(
@@ -60,19 +59,8 @@ def extract_mixed(
                         block.source_ref.page = page_number
                 all_blocks.extend(page_blocks)
 
-                # ----- DELETE the per‑page JSON file created by the extractor -----
-                expected_json = os.path.join("output", "blocks", f"page_{page_number}_blocks.json")
-                if os.path.exists(expected_json):
-                    os.remove(expected_json)
-                    print(f"Removed per‑page JSON: {expected_json}")
-
         finally:
             doc.close()
 
-    # Save the final combined JSON (only one file for the whole mixed PDF)
-    try:
-        save_blocks(all_blocks, pdf_path)
-    except Exception as e:
-        print(f"Failed to save blocks JSON: {e}")
-
+    # No disk writes – just return the merged blocks
     return all_blocks

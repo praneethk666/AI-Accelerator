@@ -4,7 +4,6 @@ import fitz
 from typing import List
 
 from backend.core.schemas import PageProfile, ImageRegion
-from backend.utils.save_json import save_page_profiles
 
 # For scanned page image detection – updated import
 from backend.extraction.scanned_pdf.scanned import page_to_pil, extract_ocr_text_and_boxes, detect_visual_regions
@@ -163,6 +162,4 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
 
     finally:
         doc.close()
-
-    save_page_profiles(profiles, pdf_path)
     return profiles

@@ -9,7 +9,6 @@ import uuid
 from typing import List
 
 from backend.core.schemas import NormalizedBlock, SourceRef
-from backend.utils.save_json import save_blocks
 
 # Configuration (move to config later)
 MIN_IMAGE_AREA = 1000               # ignore logos/icons smaller than ~32x32 px
@@ -145,11 +144,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
     finally:
         doc.close()
 
-    try:
-        save_blocks(blocks, pdf_path)
-    except Exception as e:
-        print(f"Failed to save blocks JSON: {e}")
-
+    # REMOVED save_blocks() – no disk side effect
     return blocks
 
 

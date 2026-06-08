@@ -46,7 +46,7 @@ class PGStore:
                 raise ImportError("psycopg2 required: pip install psycopg2-binary") from e
 
             db_cfg = config["database"]
-            postgres_url = db_cfg.get("postgres_url")
+            postgres_url = db_cfg["postgres_url"]
 
             if postgres_url:
                 cls._conn = psycopg2.connect(postgres_url)
@@ -86,19 +86,21 @@ class PGStore:
         import psycopg2.extras
         cur = cls._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            """
-            SELECT chunk_id::text,
-                   document_id::text,
-                   text,
-                   tags,
-                   source_ref,
-                   table_data,
-                   image_path
-            FROM   chunks
-            WHERE  chunk_id = ANY(%s::uuid[])
-            """,
-            (chunk_ids,),
-        )
+        """
+        SELECT c.chunk_id::text,
+               c.document_id::text,
+               c.text,
+               c.tags,
+               c.source_ref,
+               c.table_data,
+               c.image_path
+        FROM   chunks c
+        JOIN   documents d ON d.document_id = c.document_id
+        WHERE  c.chunk_id = ANY(%s::uuid[])
+          AND  d.status = 'ready'
+        """,
+        (chunk_ids,),
+    )
         rows = cur.fetchall()
         cur.close()
         return [dict(row) for row in rows]
@@ -166,18 +168,20 @@ class PGStore:
         import psycopg2.extras
         cur = cls._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            """
-            SELECT chunk_id::text,
-                   document_id::text,
-                   text,
-                   tags,
-                   source_ref,
-                   table_data,
-                   image_path
-            FROM   chunks
-            WHERE  document_id = ANY(%s::uuid[])
-            ORDER BY created_at
-            """,
+        """
+        SELECT c.chunk_id::text,
+               c.document_id::text,
+               c.text,
+               c.tags,
+               c.source_ref,
+               c.table_data,
+               c.image_path
+        FROM   chunks c
+        JOIN   documents d ON d.document_id = c.document_id
+        WHERE  c.document_id = ANY(%s::uuid[])
+          AND  d.status = 'ready'
+        ORDER BY c.created_at
+        """,
             (document_ids,),
         )
         rows = cur.fetchall()

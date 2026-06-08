@@ -148,6 +148,8 @@ def _hybrid_rerank(query, cfg, full_config, filters):
     candidate_k  = cfg["candidate_k"]
     rerank_top_k = cfg["rerank_top_k"]
     candidates   = _hybrid(query, cfg, full_config, filters)[:candidate_k]
+    if not candidates:
+        return []
 
     reranker = get_reranker(full_config)
     scores   = reranker.predict([(query, c["text"] or "") for c in candidates])

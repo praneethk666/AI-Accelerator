@@ -1,19 +1,52 @@
-# Base
+# ── Core ──────────────────────────────────────────────────────────────────────
 pyyaml
 pytest
+python-dotenv
 
-# Document Processing
-pymupdf>=1.24.0
-openpyxl>=3.1.0
-python-pptx>=0.6.23
-Pillow>=10.0.0
+# ── LangChain / LangGraph ─────────────────────────────────────────────────────
+langchain
+langchain-core
+langchain-groq
+langchain-ollama
+langchain-openai
+langgraph
+langchain-mcp-adapters
 
-# Vision & AI
-google-generativeai>=0.3.0
+# ── Observability ─────────────────────────────────────────────────────────────
+langfuse
 
-# Optional: OCR support (uncomment if needed)
-# pytesseract>=0.3.10
+# ── PDF extraction ────────────────────────────────────────────────────────────
+pymupdf              # fitz — PDF rendering and text extraction
+paddleocr            # OCR for scanned pages
+paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
-# Optional Web Framework
-# fastapi
-# uvicorn
+# ── Vision / image processing ─────────────────────────────────────────────────
+ultralytics          # YOLO — object detection for significant image regions
+opencv-python-headless  # cv2 — used by scanned PDF pipeline (contour detection, morphology)
+Pillow               # image manipulation
+google-generativeai  # Gemma via Google AI Studio (vision.provider: google)
+ollama               # Gemma via local Ollama (vision.provider: ollama)
+
+# ── Excel / PowerPoint extraction ─────────────────────────────────────────────
+openpyxl
+pandas
+tabulate             # df.to_markdown() for table text
+python-pptx
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+sentence-transformers    # bge-large dense embedder + bge-reranker
+fastembed                # BM25 sparse embedder
+chonkie[semantic]        # semantic + token-aware chunking
+
+# ── Vector + relational storage ───────────────────────────────────────────────
+qdrant-client
+sqlalchemy
+psycopg2-binary
+
+# ── API layer ─────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart         # file uploads
+
+# ── MCP connector stubs ───────────────────────────────────────────────────────
+mcp

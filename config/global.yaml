@@ -97,6 +97,23 @@ industries:
 
 default_industry: general
 
+# ── Categorization ────────────────────────────────────────────────────────────
+# Used by CategorizeTool (owner: Abhishek).
+# config["categorization"]["industry_keywords"] — keyword lists per industry
+# config["categorization"]["confidence_thresholds"] — when to flag low confidence
+categorization:
+  confidence_thresholds:
+    categorization_low_confidence: 0.5
+
+  industry_keywords:
+    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
+    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
+    manufacturing:[assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
+    finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
+    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
+    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
+    general:      []
+
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.
 type_to_route:

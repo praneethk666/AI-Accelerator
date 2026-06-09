@@ -53,12 +53,21 @@ class CategorizeTool:
                 config.get("default_industry", "automotive")
             )
             state.setdefault("confidence", 0.0)
+            state.setdefault("file_type", "unknown")
             state.setdefault(
                 "reasoning",
                 "missing file_path; returning safe fallback"
             )
 
-            return state
+            return {
+                "route": state["route"],
+                "document_type": state["document_type"],
+                "industry": state["industry"],
+                "confidence": state["confidence"],
+                "file_type": state["file_type"],
+                "reasoning": state["reasoning"],
+                "errors": state.get("errors", []),
+            }
 
         try:
             # Pass full config to categorize; it handles structure internally
@@ -82,6 +91,7 @@ class CategorizeTool:
             )
 
             state["confidence"] = 0.0
+            state["file_type"] = "unknown"
 
             state["reasoning"] = (
                 "categorize failed; returning safe fallback"
@@ -92,6 +102,7 @@ class CategorizeTool:
                 "document_type": state["document_type"],
                 "industry": state["industry"],
                 "confidence": state["confidence"],
+                "file_type": state["file_type"],
                 "reasoning": state["reasoning"],
                 "errors": state.get("errors", []),
             }

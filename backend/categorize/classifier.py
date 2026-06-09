@@ -27,7 +27,40 @@ from .text_extractor import extract_text, extract_toc_text, analyze_cad_document
 from backend.core.vision_client import describe_image
 
 
-
+def detect_file_type(file_path: str) -> str:
+    """Detect file type based on extension.
+    
+    Returns one of:
+    - 'pdf' for .pdf files
+    - 'excel' for .xlsx, .xls files
+    - 'spreadsheet' for .csv files
+    - 'powerpoint' for .pptx, .ppt files
+    - 'word' for .docx, .doc files
+    - 'image' for .png, .jpg, .jpeg, .bmp, .gif files
+    - 'diagram' for .dwg, .dxf, .svg files
+    - 'archive' for .zip, .rar, .7z files
+    - 'unknown' for other types
+    """
+    filename = os.path.basename(file_path).lower()
+    
+    if filename.endswith('.pdf'):
+        return 'pdf'
+    elif filename.endswith(('.xlsx', '.xls')):
+        return 'excel'
+    elif filename.endswith('.csv'):
+        return 'spreadsheet'
+    elif filename.endswith(('.pptx', '.ppt')):
+        return 'powerpoint'
+    elif filename.endswith(('.docx', '.doc')):
+        return 'word'
+    elif filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff')):
+        return 'image'
+    elif filename.endswith(('.dwg', '.dxf', '.svg')):
+        return 'diagram'
+    elif filename.endswith(('.zip', '.rar', '.7z')):
+        return 'archive'
+    else:
+        return 'unknown'
 
 
 def _normalize_filename(s: str) -> str:
@@ -386,6 +419,7 @@ Respond with ONLY the JSON object, no other text, no markdown."""
     state["industry"] = best["industry"]
     state["confidence"] = best["confidence"]
     state["reasoning"] = best["reasoning"]
+    state["file_type"] = detect_file_type(file_path)
 
     return {
         "route": state["route"],
@@ -393,5 +427,6 @@ Respond with ONLY the JSON object, no other text, no markdown."""
         "industry": state["industry"],
         "confidence": state["confidence"],
         "reasoning": state["reasoning"],
+        "file_type": state["file_type"],
         "errors": state.get("errors", []),
     }

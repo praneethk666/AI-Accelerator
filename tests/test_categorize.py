@@ -91,7 +91,7 @@ class TestNewInterface:
         result = tool.run(state, config)
         
         assert result["document_type"] == "invoice"
-        assert result["route"] == "text_default"  # invoice maps to text_default in config
+        assert result["route"] == "text_default"  # invoice maps to text_default in global.yaml
         assert result["confidence"] == 0.90  # Filename match confidence
 
     def test_circuit_diagram_detection(self):
@@ -103,7 +103,7 @@ class TestNewInterface:
         result = tool.run(state, config)
         
         assert result["document_type"] == "circuit_diagram"
-        assert result["route"] == "circuit_route"
+        assert result["route"] == "circuit_route"  # circuit_diagram maps to circuit_route in global.yaml
         assert result["industry"] == "electronics"  # "circuit" is an electronics keyword
 
     def test_contract_detection(self):
@@ -267,7 +267,7 @@ class TestIntegrationWithTestData:
         
         # Should strictly detect circuit diagram (filename contains "CIRCUIT DIAGRAM")
         assert result["document_type"] == "circuit_diagram", f"Expected circuit_diagram but got {result['document_type']}"
-        assert result["route"] == "circuit_route", f"Expected circuit_route but got {result['route']}"
+        assert result["route"] == "circuit_route", f"Expected circuit_route but got {result['route']}"  # from global.yaml type_to_route
         assert "confidence" in result
 
     def test_cad_motor_file(self):
@@ -347,8 +347,8 @@ class TestConfigGlobalYamlIntegration:
     def test_routes_are_valid(self):
         """All routes should be valid route names."""
         config = sample_global_config()
-        # These routes are defined in config/global.yaml routes section
-        valid_routes = {"diagram_heavy", "table_heavy", "text_default", "cad_route", "circuit_route", "image_route"}
+        # These routes are defined in the new 5-route design
+        valid_routes = {"text_default", "diagram_heavy", "cad_route", "circuit_route", "image_route", "presentation_route"}
         
         for route in config["type_to_route"].values():
             assert route in valid_routes, f"Invalid route: {route}"
@@ -424,7 +424,7 @@ class TestStateConsistency:
             {},
         ]
         config = sample_global_config()
-        valid_routes = ["diagram_heavy", "table_heavy", "text_default", "presentation_route"]
+        valid_routes = ["text_default", "diagram_heavy", "cad_route", "circuit_route", "image_route", "presentation_route"]
         
         for state in test_cases:
             tool = CategorizeTool()

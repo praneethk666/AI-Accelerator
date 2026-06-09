@@ -9,10 +9,10 @@ llm:
   model: llama-3.1-8b-instant
   # base_url:               # uncomment for OpenAI-compatible endpoints
 
-# ── Vision (Gemini) ────────────────────────────────────────────────────────
+# ── Vision (Gemma) ────────────────────────────────────────────────────────────
 vision:
   provider: google          # google (AI Studio) | ollama (self-hosted)
-  model: gemini-2.0-flash
+  model: gemma-3-27b-it
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
@@ -124,7 +124,7 @@ type_to_route:
   datasheet:       diagram_heavy
   report:          text_default
   invoice:         text_default
-  presentation:    text_default
+  presentation:    presentation_route
   spreadsheet:     text_default
   image:           image_route
   unknown:         text_default
@@ -144,6 +144,10 @@ routes:
     # Electrical circuit diagrams — Vinod's CADExtractionTool uses an electrical/schematic prompt
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   image_route:
+    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  presentation_route:
+    # PowerPoint presentations — handles both image-heavy (with diagrams/charts) and text-heavy (bullet points, content)
+    # Vision enrichment enabled for extracting diagrams, charts, and visual content from slides
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
 
 # ── Database (connection strings from environment) ────────────────────────────

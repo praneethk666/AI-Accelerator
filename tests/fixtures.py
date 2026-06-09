@@ -258,13 +258,19 @@ def sample_global_config() -> dict:
             "cad_drawing": "cad_route",
             "circuit_diagram": "circuit_route",
             "datasheet": "diagram_heavy",
-            "report": "text_default",
             "invoice": "text_default",
-            "presentation": "text_default",
             "spreadsheet": "text_default",
+            "report": "text_default",
+            "contract": "text_default",
+            "presentation": "presentation_route",
+            "manual": "text_default",
+            "policy": "text_default",
+            "research_paper": "text_default",
+            "purchase_order": "text_default",
+            "financial_statement": "text_default",
+            "resume": "text_default",
             "image": "image_route",
             "unknown": "text_default",
-            "contract": "text_default",
         },
         "vision": {
             "provider": "google",
@@ -285,6 +291,9 @@ def sample_global_config() -> dict:
                 "steps": ["categorize", "extract", "chunk", "enrich_chunks", "embed", "index"]
             },
             "image_route": {
+                "steps": ["categorize", "extract", "vision_enrichment", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "presentation_route": {
                 "steps": ["categorize", "extract", "vision_enrichment", "chunk", "enrich_chunks", "embed", "index"]
             },
         },

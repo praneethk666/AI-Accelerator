@@ -4,6 +4,7 @@ Includes bounding boxes for image and vector placeholders.
 Vector drawings that overlap tables (by >50% area) are ignored.
 Vector drawings with low complexity (few drawing items) are also ignored.
 """
+import os
 import fitz
 import uuid
 from typing import List
@@ -21,7 +22,7 @@ TABLE_OVERLAP_THRESHOLD = 0.5       # skip vector if >50% of its area overlaps a
 def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
     doc = fitz.open(pdf_path)
     blocks: List[NormalizedBlock] = []
-    filename = pdf_path.split("/")[-1]
+    filename = os.path.basename(pdf_path)
 
     try:
         for page_num in range(len(doc)):
@@ -44,11 +45,17 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
                         continue
                     headers = [str(h) for h in table.header.names] if table.header else []
                     rows = [[str(cell) for cell in row] for row in extracted]
+                    header_row = "| " + " | ".join(headers) + " |" if headers else ""
+                    separator = "| " + " | ".join(["---"] * len(headers)) + " |" if headers else ""
+                    data_rows = ["| " + " | ".join(r) + " |" for r in rows]
+                    md_parts = [p for p in [header_row, separator] + data_rows if p]
+                    markdown_text = "\n".join(md_parts)
                     blocks.append(
                         NormalizedBlock(
                             block_id=str(uuid.uuid4()),
                             document_id=document_id,
                             type="table",
+                            text=markdown_text,
                             table_data={"headers": headers, "rows": rows},
                             source_ref=SourceRef(filename=filename, page=page_number),
                             confidence=0.95,

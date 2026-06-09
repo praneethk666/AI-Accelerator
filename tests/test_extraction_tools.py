@@ -36,7 +36,9 @@ def mock_yolo():
 
 # Test all three PDF types automatically
 @pytest.mark.parametrize("pdf_path", [
-    "test-data/Digital_25pages.pdf",
+    "test-data/digital_25pages.pdf",
+    "test-data/Scanned_8pages.pdf",
+    "test-data/Mixed.pdf",
 ])
 def test_pdf_extraction(pdf_path):
     tool = get_tool_for_pdf(pdf_path)

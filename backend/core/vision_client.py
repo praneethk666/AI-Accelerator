@@ -11,6 +11,10 @@ Usage:
 """
 from __future__ import annotations
 import os
+from dotenv import load_dotenv
+
+# Load .env file to ensure environment variables are available
+load_dotenv()
 
 
 def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:

@@ -9,10 +9,10 @@ llm:
   model: llama-3.1-8b-instant
   # base_url:               # uncomment for OpenAI-compatible endpoints
 
-# ── Vision (Gemma) ────────────────────────────────────────────────────────────
+# ── Vision (Gemini) ────────────────────────────────────────────────────────
 vision:
   provider: google          # google (AI Studio) | ollama (self-hosted)
-  model: gemma-3-27b-it
+  model: gemini-2.0-flash
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped

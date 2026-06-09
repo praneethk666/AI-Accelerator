@@ -168,7 +168,6 @@ backend/categorize/
 ├── taxonomy.py       # My document types, industries, routes
 ├── classifier.py     # My scoring logic
 ├── categorize_tool.py # My Tool interface (connects to pipeline)
-├── config.yaml       # My keywords, thresholds, settings
 └── README.md         # How to use my module
 ```
 
@@ -271,8 +270,6 @@ def test_speed():
 
 ✅ **Test Results**: Tested on 15+ sample documents with results
 
-✅ **Config File**: All keywords, thresholds in config.yaml
-
 ✅ **README**: How to use my module + examples
 
 ✅ **Demo Script**: Show document → categorize → route works
@@ -337,7 +334,6 @@ No fixed dates. Quality over speed.
 | `backend/categorize/taxonomy.py` | Document types, industries, routes |
 | `backend/categorize/classifier.py` | Scoring logic |
 | `backend/categorize/categorize_tool.py` | Tool interface |
-| `backend/categorize/config.yaml` | Keywords, thresholds |
 | `backend/categorize/README.md` | How to use |
 | `tests/test_categorize.py` | My tests |
 | `tests/categorization_results.json` | Results on 15 docs |

@@ -5,7 +5,7 @@ Contract:
 - Pipeline calls: tool.run(state, config)
 - file_path is read from state["file_path"]
 - Always write the following state fields:
-    - state["route"]
+    - state["route"]   #what is the exact state field written : route,document_type,industry,confidence,reasoning,errors
     - state["document_type"]
     - state["industry"]
     - state["confidence"]
@@ -50,10 +50,7 @@ class CategorizeTool:
             state.setdefault("document_type", "report")
             state.setdefault(
                 "industry",
-                config.get("deployment", {}).get(
-                    "default_industry",
-                    "automotive"
-                )
+                config.get("default_industry", "automotive")
             )
             state.setdefault("confidence", 0.0)
             state.setdefault(
@@ -64,13 +61,11 @@ class CategorizeTool:
             return state
 
         try:
-            # Extract categorization config from global config
-            categorization_config = config.get("categorization", {})
-            
+            # Pass full config to categorize; it handles structure internally
             return categorize(
                 file_path=file_path,
                 state=state,
-                config=categorization_config,
+                config=config,
                 deployment=config.get("deployment", {})
             )
 
@@ -83,8 +78,7 @@ class CategorizeTool:
             state["document_type"] = "report"
 
             state["industry"] = (
-                config.get("deployment", {})
-                .get("default_industry", "automotive")
+                config.get("default_industry", "automotive")
             )
 
             state["confidence"] = 0.0

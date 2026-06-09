@@ -16,6 +16,7 @@ Primary outputs to state:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any, Dict, Optional, Tuple
@@ -23,7 +24,7 @@ from typing import Any, Dict, Optional, Tuple
 import fitz
 
 from .text_extractor import extract_text, extract_toc_text, analyze_cad_document, is_cad_document_by_filename, detect_excel_document_type
-from .vision import run_vision
+from backend.core.vision_client import describe_image
 
 
 
@@ -127,7 +128,7 @@ def categorize(
     best = {
         "route": "text_default",
         "document_type": "report",
-        "industry": deployment_cfg.get("default_industry", "automotive"),
+        "industry": config.get("default_industry") or deployment_cfg.get("default_industry", "automotive"),
         "confidence": 0.0,
         "reasoning": "",
     }
@@ -153,7 +154,7 @@ def categorize(
                         best["industry"] = cad_metadata['industry']
                         best["document_type"] = "cad_drawing"
                         best["confidence"] = 0.85
-                        best["route"] = config["type_to_route"].get("cad_drawing", "diagram_heavy")
+                        best["route"] = config["type_to_route"].get("cad_drawing", "cad_route")
                         reasoning_parts = [
                             f"CAD document detected from engineering metadata.",
                             f"Drawing#: {cad_metadata.get('drawing_number', 'N/A')}",
@@ -187,7 +188,7 @@ def categorize(
                 # High confidence detection from Excel content
                 best["document_type"] = excel_type
                 best["confidence"] = excel_confidence
-                best["route"] = config["type_to_route"].get(excel_type, "table_heavy")
+                best["route"] = config["type_to_route"].get(excel_type, "text_default")
                 reasoning_parts = [
                     f"Excel document type detected: {excel_type}",
                     f"Confidence: {excel_confidence:.2f} from content analysis",
@@ -256,16 +257,80 @@ def categorize(
 
             stitched_bytes = _render_pdf_pages_to_stitched_image_bytes(file_path, pages_1_3)
 
-            vision_res = run_vision(
-                combined_image_bytes=stitched_bytes,
-                filename=filename,
-                toc_text=toc_text,
-                midpage_text="",
-            )
+            # Build classification prompt with CAD detection hints
+            extra_context = ""
+            cad_hint = ""
+            
+            if filename:
+                extra_context += f"\nFilename: {filename}"
+                # Check if filename looks like CAD (part number pattern, mechanical keywords)
+                lower_fn = filename.lower()
+                cad_patterns = [
+                    r'^[A-Z]{1,3}\d{2}[A-Z]{3}\d{6}',  # MS03AAA981AA
+                    r'dwg[-_]?\d{4}',  # DWG-0001
+                    r'\d{2}y[-_]?[a-z]{3}\d{7}',  # 99Y_MKR2002100AB
+                    'motor', 'engine', 'assembly', 'drawing', 'schematic'
+                ]
+                if any(re.search(p, lower_fn) if isinstance(p, str) and p.startswith('^') or p.startswith(r'\\') else p in lower_fn for p in cad_patterns):
+                    cad_hint = "\n⚠️ FILENAME HINT: This looks like an engineering drawing or CAD document based on the filename.\nIf this is a technical/mechanical document with engineering indicators, classify as cad_drawing or circuit_diagram."
+            
+            if toc_text:
+                extra_context += f"\nTable of Contents excerpt:\n{toc_text[:500]}"
 
-            doc_type = vision_res.get("document_type")
-            conf = float(vision_res.get("confidence", 0.0) or 0.0)
-            reasoning = vision_res.get("reasoning", "")
+            prompt = f"""Analyze this document image and classify its document_type.
+
+IMPORTANT CAD DETECTION:
+- CAD/Engineering drawings have: title blocks, revision blocks, part numbers, scales, dimensions (mm/inch)
+- CAD drawings show: mechanical views, sections, details, BOM tables, technical notations
+- If you see ANY of these CAD indicators, classify as cad_drawing or circuit_diagram{cad_hint}
+
+DOCUMENT TYPES:
+- circuit_diagram: electrical schematics, circuit boards, wiring diagrams
+- cad_drawing: mechanical CAD drawings, 3D design blueprints, engineering drawings (IF NOT circuit/schematic)
+- schematic: technical diagrams, flow diagrams
+- invoice: bills, receipts, payment documents
+- financial_statement: balance sheets, P&L, financial reports
+- purchase_order: POs, shipping documents
+- contract: legal agreements, terms & conditions
+- policy: company policies, procedures
+- research_paper: academic papers, technical papers
+- report: general reports, analyses, white papers
+- manual: user guides, instruction manuals
+- presentation: slides, PowerPoint decks
+
+Return ONLY a JSON object with these exact keys:
+- "document_type": exactly one of the types above
+- "confidence": a float between 0 and 1
+- "reasoning": a short explanation (mention CAD indicators if present)
+
+Document context:{extra_context}
+
+Respond with ONLY the JSON object, no other text, no markdown."""
+
+            # Call vision_client.describe_image() and parse the response
+            try:
+                response_text = describe_image(stitched_bytes, prompt, config).strip()
+                
+                # Try to extract JSON from response
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    doc_type = result.get("document_type", "report")
+                    conf = float(result.get("confidence", 0.0) or 0.0)
+                    reasoning = result.get("reasoning", "Vision classification completed.")
+                else:
+                    # Fallback if JSON extraction fails
+                    doc_type = "report"
+                    conf = 0.3
+                    reasoning = f"Vision response parsing failed: {response_text[:100]}"
+            except json.JSONDecodeError as e:
+                doc_type = "report"
+                conf = 0.0
+                reasoning = f"Vision JSON parse error: {e}"
+            except Exception as e:
+                doc_type = "report"
+                conf = 0.0
+                reasoning = f"Vision inference failed: {type(e).__name__}: {str(e)[:100]}"
 
             if not doc_type:
                 doc_type = "report"
@@ -285,7 +350,7 @@ def categorize(
                 reasoning_parts.append(f"Vision reasoning: {reasoning}")
 
         # ---- Industry detection (3 signals order) ----
-        industry_kw = config.get("industry_keywords", {})
+        industry_kw = config.get("categorization", {}).get("industry_keywords", {})
 
         industry = None
         industry = _score_industry_from_filename(filename, industry_kw)
@@ -297,14 +362,14 @@ def categorize(
             if industry:
                 reasoning_parts.append(f"Industry inferred from extracted text: '{industry}'.")
             else:
-                industry = deployment_cfg.get("default_industry", "automotive")
-                reasoning_parts.append(f"Industry defaulted from deployment config: '{industry}'.")
+                industry = config.get("default_industry") or deployment_cfg.get("default_industry", "automotive")
+                reasoning_parts.append(f"Industry defaulted to: '{industry}'.")
 
         best["industry"] = industry
         best["reasoning"] = "\n".join(reasoning_parts).strip()
 
         # ---- Confidence cutoff + fail gracefully ----
-        low_thr = float(config.get("confidence_thresholds", {}).get("categorization_low_confidence", 0.5))
+        low_thr = float(config.get("categorization", {}).get("confidence_thresholds", {}).get("categorization_low_confidence", 0.5))
         if best["confidence"] < low_thr:
             best["route"] = "text_default"
             state["errors"].append(

@@ -154,7 +154,7 @@ def categorize(
                         best["industry"] = cad_metadata['industry']
                         best["document_type"] = "cad_drawing"
                         best["confidence"] = 0.85
-                        best["route"] = config["type_to_route"].get("cad_drawing", "cad_route")
+                        best["route"] = config["type_to_route"].get("cad_drawing", "cad_route")   #to-do: route name in config
                         reasoning_parts = [
                             f"CAD document detected from engineering metadata.",
                             f"Drawing#: {cad_metadata.get('drawing_number', 'N/A')}",
@@ -188,7 +188,7 @@ def categorize(
                 # High confidence detection from Excel content
                 best["document_type"] = excel_type
                 best["confidence"] = excel_confidence
-                best["route"] = config["type_to_route"].get(excel_type, "text_default")
+                best["route"] = config["type_to_route"].get(excel_type, "text_default") #todo: route name in config
                 reasoning_parts = [
                     f"Excel document type detected: {excel_type}",
                     f"Confidence: {excel_confidence:.2f} from content analysis",
@@ -213,7 +213,7 @@ def categorize(
 
 
         # ---- Document type: filename-first ----
-        type_to_route: Dict[str, str] = config["type_to_route"]
+        type_to_route: Dict[str, str] = config["type_to_route"] #todo: ensure this is in config and has all expected types; otherwise default to text_default route
         supported_types = list(type_to_route.keys())
 
         # simple filename match -> document_type

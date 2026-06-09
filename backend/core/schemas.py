@@ -1,5 +1,6 @@
 """Shared data contracts. Every tool reads/writes these shapes.
 Keep field names stable — changing them is a team decision, not a solo one."""
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
@@ -16,6 +17,7 @@ class ImageRegion:
 @dataclass
 class PageProfile:
     """Per-page x-ray of a PDF (owner: Manoj)."""
+
     page_number: int
     kind: str  # "digital" | "scanned" | "mixed"
     text_len: int = 0
@@ -59,6 +61,7 @@ class NormalizedBlock:
       in metadata["cell_range"] (e.g. "Sheet1!A1:D20"). They do not travel downstream
       past the extractor.
     """
+
     block_id: str
     document_id: str
     type: str
@@ -67,19 +70,28 @@ class NormalizedBlock:
     source_ref: Optional[SourceRef] = None
     confidence: float = 1.0
     language: str = "en"
+    pending_vision: bool = (
+        False  # extractor sets True; vision_enrichment reads + clears
+    )
+    raw_image_path: Optional[str] = None  # saved raw image for vision (PPT/Excel/image)
     metadata: dict = field(default_factory=dict)
 
 
 @dataclass
 class Chunk:
     """A retrieval-ready unit. tags carry category + text-enrichment."""
+
     chunk_id: str
     document_id: str
     text: str
     token_count: int = 0
-    tags: dict = field(default_factory=dict)   # industry, doc_type, topic, section, keywords
+    tags: dict = field(
+        default_factory=dict
+    )  # industry, doc_type, topic, section, keywords
     source_ref: Optional[SourceRef] = None
-    vector: Optional[list] = None              # dense embedding — length 1024 (bge-large)
-    sparse_vector: Optional[dict] = None       # {"indices": [...], "values": [...]} for BM25
-    table_data: Optional[dict] = None          # {"headers": [...], "rows": [...]} for table chunks
-    image_path: Optional[str] = None           # set for image_caption chunks
+    vector: Optional[list] = None  # dense embedding — length 1024 (bge-large)
+    sparse_vector: Optional[dict] = None  # {"indices": [...], "values": [...]} for BM25
+    table_data: Optional[dict] = (
+        None  # {"headers": [...], "rows": [...]} for table chunks
+    )
+    image_path: Optional[str] = None  # set for image_caption chunks

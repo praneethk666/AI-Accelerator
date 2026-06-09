@@ -112,7 +112,7 @@ class EmbedStub:
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         for c in state.get("chunks", []):
-            c["embedding"] = [0.0]  # placeholder
+            c["vector"] = [0.0]  # placeholder
         return state
 
 

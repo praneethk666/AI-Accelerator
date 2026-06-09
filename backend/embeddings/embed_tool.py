@@ -1,7 +1,7 @@
 """embed tool — chunk text -> embedding vector. Replaces EmbedStub.
 
 - reads embeddings.dim/model from config (config-driven, swappable)
-- writes chunk["embedding"] in place
+- writes chunk["vector"] in place (matches the Chunk.vector schema field)
 """
 
 from __future__ import annotations
@@ -17,5 +17,5 @@ class EmbedTool:
         dim = config.get("embeddings", {}).get("dim", DEFAULT_DIM)
         embedder = LocalEmbedder(dim)  # model switch goes here later
         for chunk in state.get("chunks", []):
-            chunk["embedding"] = embedder.embed(chunk.get("text", ""))
+            chunk["vector"] = embedder.embed(chunk.get("text", ""))
         return state

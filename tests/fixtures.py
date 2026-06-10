@@ -1,3 +1,4 @@
+
 """Shared test fixtures. Every intern imports from here instead of
 hand-rolling fake data. This ensures all tests work against the same shapes.
 
@@ -195,6 +196,14 @@ def sample_query_response() -> dict:
     """A sample /query API response. Use this as mock data in frontend tests
     and to validate that the answer_tool produces the right shape."""
     return {
+        "file_path": "sample.pdf",
+        "document_type": "report",
+        "route": "text_default",
+        "industry": "manufacturing",
+        "confidence": 0.92,
+        "reasoning": "Detected by keyword matching.",
+        "status": "success",
+        "errors": [],
         "answer": (
             "The M6 bolt should be torqued to 12 Nm. "
             "Apply thread-locking compound before installation (sample.pdf, p.1)."
@@ -228,4 +237,78 @@ def sample_query_response() -> dict:
                 "table_data": None,
             },
         ],
+    }
+
+
+# ── Global Config ──────────────────────────────────────────────────────────────
+
+def sample_global_config() -> dict:
+    """A sample global configuration matching config/global.yaml structure
+    for use in categorization tests."""
+    return {
+        "document_types": [
+            "invoice", "report", "cad_drawing", "circuit_diagram", "datasheet",
+            "presentation", "spreadsheet", "image", "unknown"
+        ],
+        "industries": [
+            "automotive", "electronics", "manufacturing", "finance", "legal", "healthcare", "general"
+        ],
+        "default_industry": "general",
+        "type_to_route": {
+            "cad_drawing": "cad_route",
+            "circuit_diagram": "circuit_route",
+            "datasheet": "diagram_heavy",
+            "invoice": "text_default",
+            "spreadsheet": "text_default",
+            "report": "text_default",
+            "contract": "text_default",
+            "presentation": "presentation_route",
+            "manual": "text_default",
+            "policy": "text_default",
+            "research_paper": "text_default",
+            "purchase_order": "text_default",
+            "financial_statement": "text_default",
+            "resume": "text_default",
+            "image": "image_route",
+            "unknown": "text_default",
+        },
+        "vision": {
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+            "enabled": True,
+        },
+        "routes": {
+            "text_default": {
+                "steps": ["categorize", "extract", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "diagram_heavy": {
+                "steps": ["categorize", "extract", "vision_enrichment", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "cad_route": {
+                "steps": ["categorize", "extract", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "circuit_route": {
+                "steps": ["categorize", "extract", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "image_route": {
+                "steps": ["categorize", "extract", "vision_enrichment", "chunk", "enrich_chunks", "embed", "index"]
+            },
+            "presentation_route": {
+                "steps": ["categorize", "extract", "vision_enrichment", "chunk", "enrich_chunks", "embed", "index"]
+            },
+        },
+        "categorization": {
+            "confidence_thresholds": {
+                "categorization_low_confidence": 0.5
+            },
+            "industry_keywords": {
+                "automotive": ["toyota", "ford", "bmw", "vehicle", "engine", "torque", "transmission", "chassis", "automotive", "motor"],
+                "electronics": ["circuit", "pcb", "schematic", "voltage", "resistor", "capacitor", "signal", "semiconductor"],
+                "manufacturing": ["assembly", "drawing", "tolerance", "weld", "machining", "fixture", "jig", "bom", "part number"],
+                "finance": ["invoice", "balance sheet", "revenue", "profit", "ledger", "audit", "fiscal", "equity"],
+                "legal": ["contract", "agreement", "clause", "liability", "indemnity", "arbitration", "jurisdiction"],
+                "healthcare": ["patient", "diagnosis", "clinical", "pharma", "dosage", "trial", "medical", "drug", "therapy"],
+                "general": []
+            }
+        },
     }

@@ -44,36 +44,71 @@ def run(self, state, config):
 
 #### Changes:
 - ✅ `state["categorization_confidence"]` → `state["confidence"]`
-- ✅ Always returns 6 fields:
-  - `route` - Processing route (diagram_heavy, table_heavy, text_default, presentation_route)
-  - `document_type` - Document classification
-  - `industry` - Industry classification
+- ✅ Added `state["file_type"]` field for document format detection
+- ✅ Always returns 7 fields:
+  - `route` - Processing route (text_default, diagram_heavy, cad_route, circuit_route, image_route, presentation_route)
+  - `document_type` - Document classification (cad_drawing, circuit_diagram, presentation, invoice, contract, etc.)
+  - `industry` - Industry classification (automotive, electronics, finance, legal, healthcare, general)
+  - `file_type` - File format (pdf, powerpoint, excel, word, image, unknown)
   - `confidence` - Float 0.0-1.0
-  - `reasoning` - Explanation
-  - `errors` - Error list
+  - `reasoning` - Detailed explanation of classification decision
+  - `errors` - List of errors/warnings (may be empty)
+
+#### Example Output:
+```json
+{
+  "route": "cad_route",
+  "document_type": "cad_drawing",
+  "file_type": "pdf",
+  "industry": "automotive",
+  "confidence": 0.75,
+  "reasoning": "Filename pattern indicates CAD document...",
+  "errors": []
+}
+```
 
 #### Files Modified:
-- `backend/categorize/categorize_tool.py` (return dict now includes `errors`)
-- `backend/categorize/classifier.py` (return dict now includes `errors`)
+- `backend/categorize/categorize_tool.py` (returns 7 fields with file_type)
+- `backend/categorize/classifier.py` (detects file_type, returns 7 fields)
 
 ---
 
 ### 3. **Configuration Consolidation** ✅
 
-#### New File:
-- **`config/global.yaml`** - Centralized configuration
+#### Centralized File:
+- **`config/global.yaml`** - Single source of truth for all configuration
 
-#### Sections:
+#### Configuration Structure:
 ```yaml
-categorization:
-  type_to_route:           # Document type → route mapping
-  industry_keywords:       # Industry detection keywords
-  confidence_thresholds:   # Decision thresholds
+# Root level (for all tools)
+type_to_route:           # Document type → route mapping
+  cad_drawing: cad_route
+  circuit_diagram: circuit_route
+  presentation: presentation_route
+  # ... others
 
-deployment:              # Deployment-level config
-  default_industry: "automotive"
-  client: "company_name"
+default_industry: "automotive"  # Root level default
+
+routes:                  # Pipeline steps for each route
+  text_default: [categorize, extract, chunk, ...]
+  cad_route: [categorize, extract, ...]
+  presentation_route: [categorize, extract, vision_enrichment, ...]  # With vision for images/charts
+  # ... other routes
+
+# Nested under categorization
+categorization:
+  industry_keywords:       # Industry detection keywords per industry
+    automotive: [toyota, ford, vehicle, ...]
+    electronics: [circuit, pcb, voltage, ...]
+  confidence_thresholds:   # Decision thresholds
+    categorization_low_confidence: 0.5
 ```
+
+#### Key Changes:
+- Moved `type_to_route` to **root level** (was nested)
+- Moved `default_industry` to **root level** (was under deployment)
+- `industry_keywords` stays nested under `categorization`
+- `confidence_thresholds` stays nested under `categorization`
 
 #### Removed:
 - ❌ `backend/categorize/config.yaml` (consolidated to global)
@@ -88,16 +123,30 @@ deployment:              # Deployment-level config
 - **`tests/fixtures.py`** - Mock data and fixtures
 - **`tests/test_categorize.py`** - 35 test cases
 
-#### Test Classes:
-| Class | Purpose | Tests |
-|-------|---------|-------|
-| TestNewInterface | New run() signature | 9 |
-| TestConfigFromGlobalYaml | Config usage | 3 |
-| TestErrorHandling | Error scenarios | 3 |
-| TestSampleQueryResponse | Fixtures validation | 2 |
-| TestIntegrationWithTestData | Real documents | 7 |
-| TestConfigGlobalYamlIntegration | Config structure | 4 |
-| TestStateConsistency | State field consistency | 4 |
+#### Test Results: ✅ **35/35 PASSING**
+
+```
+tests/test_categorize.py::TestNewInterface ................. 9 PASSED
+tests/test_categorize.py::TestConfigFromGlobalYaml ........ 3 PASSED  
+tests/test_categorize.py::TestErrorHandling ............... 3 PASSED
+tests/test_categorize.py::TestSampleQueryResponse ......... 2 PASSED
+tests/test_categorize.py::TestIntegrationWithTestData ..... 7 PASSED
+tests/test_categorize.py::TestConfigGlobalYamlIntegration  4 PASSED
+tests/test_categorize.py::TestStateConsistency ............ 4 PASSED
+tests/test_categorize.py::TestErrorMessages .............. 3 PASSED
+
+Total: 35 passed in 22.25s
+```
+
+#### Key Test Coverage:
+- ✅ New `run(self, state, config)` interface
+- ✅ Route mapping for all 6 routes
+- ✅ Industry detection from filename and text
+- ✅ File type detection (pdf, powerpoint, excel, word, image)
+- ✅ Confidence scoring and thresholds
+- ✅ Error handling and fallback behavior
+- ✅ State field consistency
+- ✅ Real PDF/PPT/Excel/DOCX test documents
 | TestErrorMessages | Error handling | 3 |
 
 #### Test Results:
@@ -107,97 +156,113 @@ deployment:              # Deployment-level config
 
 ---
 
-### 5. **Documentation Updates** ✅
+---
+
+## 🚀 Routes & Document Types
+
+### 6 Processing Routes (Updated Design):
+
+| Route | Vision | Purpose | Document Types |
+|-------|--------|---------|----------------| 
+| **text_default** | No | Standard documents | contract, policy, report, invoice, resume |
+| **diagram_heavy** | Yes | Technical diagrams | datasheet |
+| **cad_route** | No | Mechanical CAD | cad_drawing |
+| **circuit_route** | No | Electrical diagrams | circuit_diagram |
+| **image_route** | Yes | Visual content | image |
+| **presentation_route** | Yes | PowerPoint (text or image-heavy) | presentation, spreadsheet |
+
+### Supported Document Types: 16 types
+- CAD & Diagrams: cad_drawing, circuit_diagram, datasheet, image
+- Presentations: presentation, spreadsheet  
+- Business: invoice, contract, report, purchase_order, financial_statement
+- General: manual, policy, research_paper, resume, unknown
+
+### Supported Industries: 7 industries
+- automotive, electronics, manufacturing, finance, legal, healthcare, general
+
+---
+
+### 5. **Vision Service Integration** ✅
+
+#### Centralized Vision Client:
+- ✅ Deleted local `backend/categorize/vision.py` 
+- ✅ Using `backend/core/vision_client.py` for all vision API calls
+- ✅ Supports Google Gemini and Ollama providers
+- ✅ Graceful fallback to filename-based detection when API unavailable
+- ✅ Environment variable loading via `dotenv`
+
+---
+
+### 6. **Documentation Updates** ✅
 
 #### Modified:
 - **`backend/categorize/README.md`** - Updated with:
-  - New `run(self, state, config)` interface documentation
-  - `config/global.yaml` structure and usage
-  - Clarified `state["confidence"]` field name
-  - Global configuration principles
+  - 6 routes with vision enrichment information
+  - New `file_type` field in state
+  - Root-level `type_to_route` and `default_industry` in config
+  - Actual route mappings from global.yaml
+
+- **`docs/DOCUMENT_CATEGORIZATION_ENGINE.md`** - Updated with:
+  - 6-route design with vision enrichment details
+  - Current document type mappings
+  - Why the 6-route design was chosen
 
 ---
 
-### 6. **Test Data Analysis Tool** ✅
+### 7. **Test Data Analysis** ✅
 
-#### New File:
-- **`tests/analyze_test_data.py`** - Analyzes all documents in test-data/
+#### Real-World Test Results:
+- **✅ 22/22 documents categorized successfully**
+- **✅ All file types detected:** PDF, PowerPoint, Excel, Word, Image
+- **✅ High confidence on real documents:** Motor CAD, Circuit diagrams, Presentations
 
-#### Features:
-- Processes 16 documents from test-data/
-- Shows categorization results for each
-- Highlights high-confidence matches (≥0.75)
-- Flags low-confidence documents for review
+#### Document Route Distribution:
+- `text_default`: 16 documents (contracts, reports, PDFs)
+- `circuit_route`: 2 documents (circuit diagrams)
+- `cad_route`: 2 documents (CAD motor drawings)
+- `presentation_route`: 2 documents (PowerPoint presentations)
 
----
-
-## 📊 Test Coverage
-
-### Document Categorization Results:
-- **✅ 7 high-confidence matches** (0.75-0.90)
-  - Circuit diagrams → `diagram_heavy`
-  - CAD drawings → `diagram_heavy`
-  - Contracts → `text_default`
-  - Presentations → `presentation_route`
-  - Annual reports → `table_heavy`
-
-- **⚠️ 8 low-confidence** (0.10-0.65)
-  - Requires vision model setup or manual review
-
-- **❌ 1 error** - README.md (not a document)
-
-### Route Distribution:
-- `text_default`: 9 documents
-- `diagram_heavy`: 3 documents
-- `table_heavy`: 3 documents
-- `presentation_route`: 2 documents
-
-### Industry Distribution:
-- automotive: 10 documents
-- legal: 3 documents
-- pharma: 2 documents
-- finance: 1 document
+#### File Type Distribution:
+- PDF: 16 documents
+- PowerPoint: 2 documents  
+- Excel: 2 documents
+- Word: 1 document
+- Image: 1 document
 
 ---
 
-## 🔍 Breaking Changes
+## 📊 Test Coverage Summary
 
-**None** - The refactoring is internal. The tool maintains backward compatibility through the Tool protocol interface.
-
----
-
-## 🧪 Testing
-
-Run tests with:
-```bash
-cd d:\AI-Accelerator\AI-Accelerator
-python -m pytest tests/test_categorize.py -v
-```
-
-Analyze test data:
-```bash
-python tests/analyze_test_data.py
-```
-
----
+### Unit Tests: ✅ 35/35 PASSING
 
 ## 📝 Files Changed Summary
 
-| File | Status | Type |
-|------|--------|------|
-| backend/categorize/categorize_tool.py | Modified | 📝 Interface update |
-| backend/categorize/classifier.py | Modified | 📝 Return dict update |
-| backend/categorize/README.md | Modified | 📚 Documentation |
-| backend/categorize/text_extractor.py | Modified | 📝 Minor fixes |
-| config/global.yaml | **New** | 📄 Centralized config |
-| tests/fixtures.py | **New** | 🧪 Test fixtures |
-| tests/test_categorize.py | **New** | 🧪 Test suite (35 tests) |
-| tests/analyze_test_data.py | **New** | 🔍 Analysis tool |
-| backend/categorize/config.yaml | **Deleted** | ❌ Consolidated |
-| backend/categorize/test_gemini.py | **Deleted** | ❌ Obsolete |
-| backend/categorize/test_integration.py | **Deleted** | ❌ Replaced |
+| File | Status | Changes |
+|------|--------|---------|
+| backend/categorize/categorize_tool.py | ✅ Modified | New `run(self, state, config)` interface; returns 7 fields with file_type |
+| backend/categorize/classifier.py | ✅ Modified | Uses root-level config; added `detect_file_type()` function; returns 7 fields |
+| backend/categorize/vision.py | ❌ Deleted | Consolidated to backend/core/vision_client.py |
+| backend/categorize/README.md | ✅ Modified | Updated with 6 routes, file_type field, root-level config structure |
+| backend/core/vision_client.py | ✅ Modified | Centralized vision API client with dotenv loading |
+| backend/categorize/text_extractor.py | ✅ Minor | Dependencies aligned with config changes |
+| config/global.yaml | ✅ New | Centralized config with 6 routes, type_to_route at root level |
+| tests/fixtures.py | ✅ New | Complete test fixtures with 6-route design |
+| tests/test_categorize.py | ✅ New | 35 comprehensive unit tests (ALL PASSING) |
+| tests/test_all_documents.py | ✅ New | Integration test categorizing 22 real documents |
+| conftest.py | ✅ Modified | Added dotenv loading for pytest environment |
+| docs/DOCUMENT_CATEGORIZATION_ENGINE.md | ✅ Updated | Changed from 5 routes to 6 routes; added vision enrichment info |
+| PR_DETAILED_SUMMARY.md | ✅ Updated | Updated with file_type, 6 routes, and current test results |
+
+### Files Removed:
+- ❌ `backend/categorize/config.yaml` - Consolidated to global.yaml
+- ❌ `backend/categorize/test_gemini.py` - Obsolete
+- ❌ `backend/categorize/test_integration.py` - Replaced by new tests
 
 ---
+
+## 🔄 Breaking Changes
+
+**None** - Internal refactoring only. The Tool protocol interface is preserved.
 
 ## ✅ Verification
 

@@ -55,42 +55,58 @@ Cost: $$$, Speed: slow, Accuracy: bad ❌
 
 **With me:**
 ```
-Invoice → [ABHISHEK] → "Route: table_heavy"
-→ Table extraction ON, Vision OFF
+Invoice → [ABHISHEK] → "Route: text_default"
+→ Smart extraction based on content, Vision optimized
 Cost: $, Speed: fast, Accuracy: good ✅
 ```
 
 ---
 
-## My 5 Routes
+## My 6 Routes (Current Design)
 
-| Route | When I Use | Example Docs |
-|-------|-----------|--------------|
-| **diagram_heavy** | Circuit diagrams, CAD, schematics | Toyota_Circuit.pdf |
-| **table_heavy** | Invoices, spreadsheets, financial reports | Invoice_Q4.pdf |
-| **text_default** | Contracts, policies, research papers | Contract_2025.pdf |
-| **ocr_heavy** | Scanned PDFs, image files, old docs | Scanned_1995.pdf |
-| **presentation_route** | PowerPoint, slide decks | Presentation.pptx |
+| Route | Vision Enrichment | Purpose | Example Docs |
+|-------|------------------|---------|---------------|
+| **text_default** | No | Standard documents (contracts, policies, reports, invoices) | Contract.pdf, Invoice.pdf |
+| **diagram_heavy** | Yes | Technical diagrams and datasheets | Datasheet.pdf |
+| **cad_route** | No | Mechanical CAD drawings (assembly, part drawings) | MotorDrawing.pdf |
+| **circuit_route** | No | Electrical schematics and PCB layouts | Circuit.pdf, Schematic.pdf |
+| **image_route** | Yes | Images and visual content | Photo.jpg, Diagram.png |
+| **presentation_route** | Yes | PowerPoint presentations (handles both text and image-heavy) | Presentation.pptx |
+
+**Key Design Principles:**
+- Separated `cad_drawing` and `circuit_diagram` into dedicated routes for specialized CAD processing
+- Consolidated table-heavy and invoice documents into `text_default` with smart content analysis
+- Enhanced `presentation_route` with vision enrichment to handle both text-heavy (bullet points) and image-heavy (charts/diagrams) presentations
 
 ---
 
-## My 15 Document Types
+## My Document Types
 
-- Invoice
-- Contract
-- Report
-- Specification
-- CAD Drawing
-- Circuit Diagram
-- Presentation
-- Spreadsheet
-- Manual
-- Policy
-- Research Paper
-- Purchase Order
-- Financial Statement
-- Resume
-- General (Unknown)
+Supported document types mapped to routes:
+
+**CAD & Diagrams:**
+- `cad_drawing` → cad_route
+- `circuit_diagram` → circuit_route
+- `datasheet` → diagram_heavy
+- `image` → image_route
+
+**Presentations & Media:**
+- `presentation` → presentation_route
+- `spreadsheet` → text_default
+
+**Business Documents:**
+- `invoice` → text_default
+- `contract` → text_default
+- `report` → text_default
+- `purchase_order` → text_default
+- `financial_statement` → text_default
+
+**General Documents:**
+- `manual` → text_default
+- `policy` → text_default
+- `research_paper` → text_default
+- `resume` → text_default
+- `unknown` → text_default
 
 ---
 

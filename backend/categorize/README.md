@@ -56,21 +56,33 @@ The categorizer uses centralized configuration from `config/global.yaml`.
 **Configuration sections used:**
 
 ```yaml
-categorization:
-  type_to_route:          # Maps document types to processing routes
-    document_type: route
-  
-  industry_keywords:      # Keywords for industry detection
-    industry:
-      - keyword1
-      - keyword2
+type_to_route:          # Maps document types to processing routes (ROOT LEVEL)
+  cad_drawing: cad_route
+  circuit_diagram: circuit_route
+  datasheet: diagram_heavy
+  presentation: presentation_route
+  image: image_route
+  invoice: text_default
+  # ... other document types
+
+categorization:         # Nested under categorization
+  industry_keywords:    # Keywords for industry detection
+    automotive: [toyota, ford, vehicle, engine, ...]
+    electronics: [circuit, pcb, voltage, ...]
+    # ... other industries
   
   confidence_thresholds:  # Confidence decision points
     categorization_low_confidence: 0.5
 
-deployment:              # Deployment-level defaults
-  default_industry: "automotive"
-  client: "company_name"
+default_industry: "automotive"  # ROOT LEVEL default
+
+routes:                 # Pipeline steps for each route
+  text_default: [categorize, extract, chunk, ...]
+  diagram_heavy: [categorize, extract, vision_enrichment, ...]
+  cad_route: [...]
+  circuit_route: [...]
+  image_route: [...]
+  presentation_route: [...]
 ```
 
 **Key Design Principle:**
@@ -86,9 +98,10 @@ The categorizer is configuration-driven.
 The categorizer always writes the following fields:
 
 ```python
-state["route"]              # Route name (e.g., "diagram_heavy")
-state["document_type"]      # Type (e.g., "cad_drawing")
-state["industry"]           # Industry (e.g., "automotive")
+state["route"]              # Route name (e.g., "cad_route", "circuit_route", "presentation_route")
+state["document_type"]      # Type (e.g., "cad_drawing", "circuit_diagram", "presentation")
+state["industry"]           # Industry (e.g., "automotive", "electronics")
+state["file_type"]          # File type (e.g., "pdf", "powerpoint", "excel", "word", "image")
 state["confidence"]         # Float 0.0-1.0 (NOT "categorization_confidence")
 state["reasoning"]          # Explanation of classification decision
 state["errors"]             # List of errors/warnings (may be empty)
@@ -113,11 +126,13 @@ Output:
 
 ```python
 {
-    "route": "diagram_heavy",
+    "route": "cad_route",
     "document_type": "cad_drawing",
+    "file_type": "pdf",
     "industry": "automotive",
-    "confidence": 0.91,
-    "reasoning": "Vision identified engineering drawing."
+    "confidence": 0.75,
+    "reasoning": "Filename pattern indicates CAD document. Vision inference failed due to quota limits, but filename hint provides confident classification.",
+    "errors": []
 }
 ```
 
@@ -125,51 +140,48 @@ Output:
 
 # Routing Strategy
 
-The model predicts a document type.
+The classifier predicts a document type.
 
-The route is determined using configuration mapping.
+The route is determined using configuration mapping from `type_to_route`.
 
 Example:
 
 ```yaml
 type_to_route:
-  circuit_diagram: diagram_heavy
-  cad_drawing: diagram_heavy
-  schematic: diagram_heavy
-
-  invoice: table_heavy
-  financial_statement: table_heavy
-  purchase_order: table_heavy
-
-  contract: text_default
-  policy: text_default
-  research_paper: text_default
-  report: text_default
-  manual: text_default
-
-  presentation: presentation_route
+  cad_drawing: cad_route           # Mechanical CAD drawings
+  circuit_diagram: circuit_route   # Electrical schematics
+  datasheet: diagram_heavy         # Technical datasheets
+  presentation: presentation_route # PowerPoint with vision enrichment
+  image: image_route               # Images with vision analysis
+  
+  contract: text_default           # Legal documents
+  policy: text_default             # Policies
+  report: text_default             # Reports
+  # ... all other types default to text_default
 ```
 
-The model never directly decides the route.
+**Key Principle:** The classifier never directly decides the route.
 
-Routes are determined only through configuration.
+Routes are determined only through configuration mapping.
+
+This allows easy route updates without code changes.
 
 ---
 
 # Supported Routes
 
-The categorizer currently supports:
+The categorizer currently supports 6 routes:
 
-```text
-diagram_heavy
-table_heavy
-text_default
-presentation_route
-```
+| Route | Vision Enrichment | Use Case | Example Docs |
+|-------|------------------|----------|---------------|
+| **text_default** | No | Contracts, policies, reports | Contract.pdf, Policy.pdf |
+| **diagram_heavy** | Yes | Technical diagrams, datasheets | Datasheet.pdf |
+| **cad_route** | No | Mechanical CAD drawings | MotorDrawing.pdf |
+| **circuit_route** | No | Electrical schematics | Circuit.pdf |
+| **image_route** | Yes | Images, photos, visual content | Photo.jpg |
+| **presentation_route** | Yes | PowerPoint (text or image-heavy) | Presentation.pptx |
 
-No OCR-specific route exists.
-
-OCR decisions are handled later in the pipeline by page-level processing.
+**Note:** `presentation_route` includes vision enrichment to handle both text-heavy (bullet points) and image-heavy (diagrams/charts) presentations.
 
 ---
 

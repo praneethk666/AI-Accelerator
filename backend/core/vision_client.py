@@ -15,7 +15,7 @@ import os
 
 def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:
     provider = config.get("vision", {}).get("provider", "google")
-    model = config.get("vision", {}).get("model", "gemma-3-27b-it")
+    model = config.get("vision", {}).get("model", "gemma-4-26b-a4b-it")
 
     if provider == "google":
         return _describe_google(image_bytes, prompt, model, config)

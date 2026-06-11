@@ -255,3 +255,5 @@ grafana_data/
 
 # macOS
 .DS_Store
+
+test-data/

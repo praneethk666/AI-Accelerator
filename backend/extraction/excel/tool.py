@@ -39,7 +39,6 @@ class ExcelExtractorTool:
         try:
             wb = pd.read_excel(file_path, sheet_name=None, engine="openpyxl")
         except Exception as e:
-            print(f"[excel_extractor] Failed to open {file_path}: {e}")
             return blocks
 
         # ── 1. Table blocks ────────────────────────────────────────────
@@ -74,8 +73,7 @@ class ExcelExtractorTool:
                     },
                 ))
 
-            except Exception as e:
-                print(f"[excel_extractor] Skipping sheet '{sheet_name}': {e}")
+            except Exception:
                 continue
 
         # ── 2. Embedded image blocks ───────────────────────────────────
@@ -102,8 +100,7 @@ class ExcelExtractorTool:
 
         try:
             wb = openpyxl.load_workbook(file_path)
-        except Exception as e:
-            print(f"[excel_extractor] openpyxl open failed for images: {e}")
+        except Exception:
             return blocks
 
         out_dir = os.path.join("uploads", "images", doc_id)
@@ -122,7 +119,7 @@ class ExcelExtractorTool:
                         block_id=block_id,
                         document_id=doc_id,
                         type="image_caption",
-                        text=None,
+                        text="",
                         source_ref=SourceRef(
                             filename=filename,
                             sheet=sheet.title,
@@ -136,8 +133,7 @@ class ExcelExtractorTool:
                         },
                     ))
 
-                except Exception as e:
-                    print(f"[excel_extractor] Skipping image in sheet '{sheet.title}': {e}")
+                except Exception:
                     continue
 
         return blocks
@@ -155,8 +151,7 @@ class ExcelExtractorTool:
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=False)
-        except Exception as e:
-            print(f"[excel_extractor] Formula load failed: {e}")
+        except Exception:
             return blocks
 
         for sheet in wb.worksheets:
@@ -188,8 +183,7 @@ class ExcelExtractorTool:
                             },
                         ))
 
-                    except Exception as e:
-                        print(f"[excel_extractor] Skipping formula at {cell.coordinate}: {e}")
+                    except Exception:
                         continue
 
         return blocks
@@ -207,8 +201,7 @@ class ExcelExtractorTool:
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
-        except Exception as e:
-            print(f"[excel_extractor] Pivot load failed: {e}")
+        except Exception:
             return blocks
 
         for sheet in wb.worksheets:
@@ -264,8 +257,7 @@ class ExcelExtractorTool:
                         },
                     ))
 
-                except Exception as e:
-                    print(f"[excel_extractor] Skipping pivot '{getattr(pivot, 'name', '?')}': {e}")
+                except Exception:
                     continue
 
         return blocks

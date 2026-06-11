@@ -39,8 +39,7 @@ class PPTExtractorTool:
 
         try:
             prs = Presentation(file_path)
-        except Exception as e:
-            print(f"[ppt_extractor] Failed to open {file_path}: {e}")
+        except Exception:
             return blocks
 
         for slide_index, slide in enumerate(prs.slides):
@@ -53,8 +52,7 @@ class PPTExtractorTool:
                 blocks.extend(self._extract_slide_tables(slide, slide_num, doc_id, filename, cfg))
                 blocks.extend(self._extract_slide_images(slide, slide_num, doc_id, filename, cfg))
 
-            except Exception as e:
-                print(f"[ppt_extractor] Skipping slide {slide_num}: {e}")
+            except Exception:
                 continue
 
         return blocks
@@ -149,8 +147,7 @@ class PPTExtractorTool:
                     },
                 ))
 
-            except Exception as e:
-                print(f"[ppt_extractor] Skipping table on slide {slide_num}: {e}")
+            except Exception:
                 continue
 
         return blocks
@@ -198,7 +195,7 @@ class PPTExtractorTool:
                     block_id=block_id,
                     document_id=doc_id,
                     type="image_caption",
-                    text=None,
+                    text="",
                     source_ref=SourceRef(
                         filename=filename,
                         slide=slide_num,
@@ -213,8 +210,7 @@ class PPTExtractorTool:
                     },
                 ))
 
-            except Exception as e:
-                print(f"[ppt_extractor] Skipping image/chart on slide {slide_num}: {e}")
+            except Exception:
                 continue
 
         return blocks

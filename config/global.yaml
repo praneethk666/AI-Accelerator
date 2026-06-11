@@ -29,9 +29,16 @@ vision:
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
-  dense_model: BAAI/bge-large-en-v1.5   # 1024-dim; leads MTEB retrieval benchmark
+  # nomic-embed-text-v1.5 chosen over BAAI/bge-large-en-v1.5 for CPU compatibility:
+  # bge-large (1.3GB) causes deadlocks on Windows and is too slow on CPU (~148s/21 chunks).
+  # nomic runs well on CPU (15-100ms), 768-dim, MTEB 62.39, 8192 token context.
+  dense_model: nomic-ai/nomic-embed-text-v1.5
+  dense_dim: 768
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
   reranker_model: BAAI/bge-reranker-large
+  # SemanticChunker uses this lightweight model to decide split boundaries only —
+  # potion-base-32M (32M params) avoids loading the full dense model twice.
+  chunking_model: minishlab/potion-base-32M
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 chunking:

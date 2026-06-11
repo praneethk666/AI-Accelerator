@@ -79,7 +79,7 @@ class Chunk:
     token_count: int = 0
     tags: dict = field(default_factory=dict)   # industry, doc_type, topic, section, keywords
     source_ref: Optional[SourceRef] = None
-    vector: Optional[list] = None              # dense embedding — length 1024 (bge-large)
+    vector: Optional[list] = None              # dense embedding — length 768 (nomic-embed-text-v1.5)
     sparse_vector: Optional[dict] = None       # {"indices": [...], "values": [...]} for BM25
     table_data: Optional[dict] = None          # {"headers": [...], "rows": [...]} for table chunks
     image_path: Optional[str] = None           # set for image_caption chunks

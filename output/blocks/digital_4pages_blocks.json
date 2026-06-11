@@ -1,0 +1,576 @@
+[
+  {
+    "block_id": "1b96672f-814c-41c1-b59f-77e7ac227fdf",
+    "document_id": "test1",
+    "type": "page_metrics",
+    "text": "Page 1 metrics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {
+      "text_length": 1174,
+      "raster_images_total": 2,
+      "significant_images": 2,
+      "vector_drawings_total": 41,
+      "significant_vectors": 0,
+      "has_table": true
+    }
+  },
+  {
+    "block_id": "11b1452d-7f97-4fe5-86d3-b5658b679266",
+    "document_id": "test1",
+    "type": "heading",
+    "text": "PDF B OOKMARK S AMPLE Sample Date: May 2001 Prepared by: Accelio Present Applied Technology Created and Tested Using: \u2022 Accelio Present Central 5.4 \u2022 Accelio Present Output Designer 5.4 Features Demonstrated: \u2022 Primary bookmarks in a PDF file. \u2022 Secondary bookmarks in a PDF file.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "666dc839-c988-44d6-835c-7b23fa6afac1",
+    "document_id": "test1",
+    "type": "heading",
+    "text": "Overview This sample consists of a simple form containing four distinct fields. The data file contains eight separate records. By default, the data file will produce a PDF file containing eight separate pages. The selective use of the bookmark file will produce the same PDF with a separate pane containing bookmarks. This screenshot of the sample output shows a PDF file with bookmarks.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "db2871a9-9789-4b30-b12a-ea493a4f9b74",
+    "document_id": "test1",
+    "type": "text",
+    "text": "The left pane displays the available bookmarks for this PDF. You may need to enable the display of bookmarks in Adobe \uf8e8 Acrobat \uf8e8 Reader by clicking Window > Show Bookmarks . Selecting a date from the left pane displays the corresponding page within the document. Note that the index has been sorted according to the specification in the bookmark file, and that pages within the file are created according to the original order in the data file.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "cf6d2909-d2d5-45c0-bdb8-e5141f0e0414",
+    "document_id": "test1",
+    "type": "text",
+    "text": "PDF Bookmark Sample Page 1 of 4",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "ff6a4a44-84e3-4a4b-a536-d0eef0a1178f",
+    "document_id": "test1",
+    "type": "table",
+    "text": null,
+    "table_data": {
+      "headers": [
+        "Sample Date:",
+        "May 2001"
+      ],
+      "rows": [
+        [
+          "Sample Date:",
+          "May 2001"
+        ],
+        [
+          "Prepared by:",
+          "Accelio Present Applied Technology"
+        ],
+        [
+          "Created and Tested Using:",
+          "\u2022 Accelio Present Central 5.4\n\u2022 Accelio Present Output Designer 5.4"
+        ],
+        [
+          "Features Demonstrated:",
+          "\u2022 Primary bookmarks in a PDF file.\n\u2022 Secondary bookmarks in a PDF file."
+        ]
+      ]
+    },
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "70188bea-6c59-4467-a21f-d7af5407f48a",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        57.63589859008789,
+        35.996910095214844,
+        128.5500030517578,
+        84.23291015625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false
+    }
+  },
+  {
+    "block_id": "fdb3fd5d-f0e3-4da4-a2a4-d44d228bbc9f",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 1,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        57.63589859008789,
+        410.48565673828125,
+        521.63720703125,
+        638.586669921875
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false
+    }
+  },
+  {
+    "block_id": "3dc71beb-173a-49d0-bb84-e2260ad11b1c",
+    "document_id": "test1",
+    "type": "page_metrics",
+    "text": "Page 2 metrics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 2,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {
+      "text_length": 820,
+      "raster_images_total": 1,
+      "significant_images": 1,
+      "vector_drawings_total": 0,
+      "significant_vectors": 0,
+      "has_table": false
+    }
+  },
+  {
+    "block_id": "e163f481-0928-4900-a64d-c62cecc798ee",
+    "document_id": "test1",
+    "type": "text",
+    "text": "Sample Data File Sample Bookmark File ^reformat trunc [invoices] ^symbolset WINLATIN1 Invoices by Date=0 ^field trans_date trans_date=1,A 2000-01-1 [type] ^field description Invoices by Item Type=0 Description for item #1 trans_type=1,A ^field trans_type [amount] TYPE1 Invoices by Transaction Amount=0 ^field trans_amount trans_amount=1,D 11.00 ^page 1 ^field trans_date 2000-01-2 ^field description Description for item #2 ^field trans_type TYPE2 ^field trans_amount 11.00 ^page 1 ^field trans_date 2000-01-3 ^field description Description for item #3 ^field trans_type TYPE3 The example bookmark file includes three distinct sections: \u2022 Invoices sorted, ascending, by date. \u2022 Invoices sorted, ascending, by item type. \u2022 Invoices sorted, descending, by transaction amount.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 2,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "1e5ae7bc-dc97-4d5f-9ad8-ff0d13ec059b",
+    "document_id": "test1",
+    "type": "text",
+    "text": "PDF Bookmark Sample Page 2 of 4",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 2,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "389ca080-957a-4ad7-8007-e02c3c479f63",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 2,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        57.63589859008789,
+        35.996910095214844,
+        128.5500030517578,
+        84.23291015625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false
+    }
+  },
+  {
+    "block_id": "347d9599-6ef1-4571-b069-878bfd6ae60d",
+    "document_id": "test1",
+    "type": "page_metrics",
+    "text": "Page 3 metrics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {
+      "text_length": 1051,
+      "raster_images_total": 1,
+      "significant_images": 1,
+      "vector_drawings_total": 110,
+      "significant_vectors": 0,
+      "has_table": true
+    }
+  },
+  {
+    "block_id": "58410959-c31e-46d2-9d0c-cc6d599d53c2",
+    "document_id": "test1",
+    "type": "heading",
+    "text": "Sample Files This sample package contains:",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "c5228149-810d-4e42-813f-653f145e83bf",
+    "document_id": "test1",
+    "type": "text",
+    "text": "Filename Description ap_bookmark.IFD The template design. ap_bookmark.mdf The template targeted for PDF output. ap_bookmark.dat A sample data file in DAT format. ap_bookmark.bmk A sample bookmark file. ap_bookmark.pdf Sample PDF output. ap_bookmark_doc.pdf A document describing the sample.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "4721abe5-691d-40cb-8894-73bc600c31fd",
+    "document_id": "test1",
+    "type": "heading",
+    "text": "Deploying the Sample To deploy this sample in your environment: 1. Open the template design ap_bookmark.IFD in Output Designer and recompile the template for the appropriate presentment target. 2. Modify the -z option in the ^job command in the data file ap_bookmark.dat to: \u2022 Identify the target output device. \u2022 Identify the bookmark file using the -abmk command. \u2022 Identify the section for which to generate bookmarks, if desired, using the -abms command. For example,",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "f61dd106-28ae-4b81-96f5-37d55717f111",
+    "document_id": "test1",
+    "type": "text",
+    "text": "To bookmark by \u2026 Use the command line parameter \u2026 -abmk ap_bookmark.bmk -abms invoices Invoices -abmk ap_bookmark.bmk -abms type Type -abmk ap_bookmark.bmk -abms amount Amount",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "c30e6fe9-4df7-4af6-8f83-a42e360d7d1b",
+    "document_id": "test1",
+    "type": "text",
+    "text": "PDF Bookmark Sample Page 3 of 4",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "429817c9-d574-47c0-b3b5-8201118d0a8e",
+    "document_id": "test1",
+    "type": "table",
+    "text": null,
+    "table_data": {
+      "headers": [
+        "Filename",
+        "Description"
+      ],
+      "rows": [
+        [
+          "Filename",
+          "Description"
+        ],
+        [
+          "ap_bookmark.IFD",
+          "The template design."
+        ],
+        [
+          "ap_bookmark.mdf",
+          "The template targeted for PDF output."
+        ],
+        [
+          "ap_bookmark.dat",
+          "A sample data file in DAT format."
+        ],
+        [
+          "ap_bookmark.bmk",
+          "A sample bookmark file."
+        ],
+        [
+          "ap_bookmark.pdf",
+          "Sample PDF output."
+        ],
+        [
+          "ap_bookmark_doc.pdf",
+          "A document describing the sample."
+        ]
+      ]
+    },
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "8d58ce96-8f6e-4312-a302-712b0e6b8487",
+    "document_id": "test1",
+    "type": "table",
+    "text": null,
+    "table_data": {
+      "headers": [
+        "To bookmark by \u2026",
+        "Use the command line parameter \u2026"
+      ],
+      "rows": [
+        [
+          "To bookmark by \u2026",
+          "Use the command line parameter \u2026"
+        ],
+        [
+          "Invoices",
+          "-abmkap_bookmark.bmk -abmsinvoices"
+        ],
+        [
+          "Type",
+          "-abmkap_bookmark.bmk -abmstype"
+        ],
+        [
+          "Amount",
+          "-abmkap_bookmark.bmk -abmsamount"
+        ]
+      ]
+    },
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 0.95,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "996bd423-5928-4e97-9ad6-6b324e62f153",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 3,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        57.63589859008789,
+        35.996910095214844,
+        128.5500030517578,
+        84.23291015625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false
+    }
+  },
+  {
+    "block_id": "4398cc3f-258c-4625-a67f-b0110583abbb",
+    "document_id": "test1",
+    "type": "page_metrics",
+    "text": "Page 4 metrics",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {
+      "text_length": 437,
+      "raster_images_total": 1,
+      "significant_images": 1,
+      "vector_drawings_total": 0,
+      "significant_vectors": 0,
+      "has_table": false
+    }
+  },
+  {
+    "block_id": "bd4a077b-bad4-425e-82c8-f3560f077bf2",
+    "document_id": "test1",
+    "type": "text",
+    "text": "3. Place the accompanying files in directories consistent with your implementation: \u2022 Place ap_bookmark.IFD in the Designs subdirectory for Output Designer. \u2022 Place ap_bookmark.mdf in the forms subdirectory accessible to Central. \u2022 Place ap_bookmark.bmk in an addressable directory. Running the Sample \u2022 To run this sample, place ap_bookmark.dat in the collector directory scanned by Central.",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "ac2d6187-87a2-4fdb-a34e-8e88c7996d55",
+    "document_id": "test1",
+    "type": "text",
+    "text": "PDF Bookmark Sample Page 4 of 4",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": null
+    },
+    "confidence": 1.0,
+    "language": "en",
+    "metadata": {}
+  },
+  {
+    "block_id": "a81e0905-2915-4176-9864-2a3a515288db",
+    "document_id": "test1",
+    "type": "image_caption",
+    "text": "[Image - awaiting vision enrichment]",
+    "table_data": null,
+    "source_ref": {
+      "filename": "Digital_4pages.pdf",
+      "page": 4,
+      "sheet": null,
+      "slide": null,
+      "bbox": [
+        57.63589859008789,
+        35.996910095214844,
+        128.5500030517578,
+        84.23291015625
+      ]
+    },
+    "confidence": 0.5,
+    "language": "en",
+    "metadata": {
+      "pending_vision": true,
+      "is_vector": false
+    }
+  }
+]

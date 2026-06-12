@@ -17,7 +17,8 @@ def generate_blocks_from_json(page_profiles, document_id="doc123", filename="unk
     Generate image_caption blocks directly from JSON metadata.
     Includes duplicate detection for raster images (same bbox across pages).
     Vector pages are never deduplicated (assumed unique).
-    """
+    """ 
+    
     from uuid import uuid4
 
     blocks = []

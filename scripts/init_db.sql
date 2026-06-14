@@ -34,13 +34,14 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at    TIMESTAMP DEFAULT NOW()
 );
 
+-- One row per turn (role/content), matching the ConversationStore Protocol +
+-- conversation_store.py. Keep this in sync with PostgresConversationStore._ensure_schema.
 CREATE TABLE IF NOT EXISTS conversations (
-    session_id    UUID,
-    turn          INTEGER,
-    question      TEXT NOT NULL,
-    answer        TEXT NOT NULL,
-    created_at    TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (session_id, turn)
+    id            BIGSERIAL PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    role          TEXT NOT NULL,          -- 'user' | 'assistant'
+    content       TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ── Indexes ────────────────────────────────────────────────────────────────
@@ -48,5 +49,5 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tags      ON chunks USING gin(tags);
 CREATE INDEX IF NOT EXISTS idx_chunks_doc       ON chunks (document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_img       ON chunks (image_path) WHERE image_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_tokens    ON chunks (document_id, token_count);
-CREATE INDEX IF NOT EXISTS idx_conversations    ON conversations (session_id, turn);
+CREATE INDEX IF NOT EXISTS idx_conversations    ON conversations (session_id, id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status);

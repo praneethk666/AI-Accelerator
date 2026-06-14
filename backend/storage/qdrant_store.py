@@ -20,6 +20,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     Modifier,
     PointStruct,
@@ -139,14 +140,20 @@ class QdrantStore:
 
 
 def _build_filter(filters: dict | None) -> Filter | None:
+    # tags are flattened to top-level payload keys (industry, doc_type, ...);
+    # document_id is also top-level. A list value -> MatchAny (e.g. doc scope),
+    # a scalar -> MatchValue.
     if not filters:
         return None
-    return Filter(
-        must=[
-            FieldCondition(key=k, match=MatchValue(value=v))
-            for k, v in filters.items()
-        ]
-    )
+    conditions = []
+    for key, val in filters.items():
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple, set)):
+            conditions.append(FieldCondition(key=key, match=MatchAny(any=list(val))))
+        else:
+            conditions.append(FieldCondition(key=key, match=MatchValue(value=val)))
+    return Filter(must=conditions) if conditions else None
 
 
 def _as_results(hits) -> list[dict]:

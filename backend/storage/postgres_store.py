@@ -93,5 +93,75 @@ class PostgresStore:
             for r in rows
         ]
 
+    # ── documents (upload metadata; backs the API's /files) ────────────────────
+
+    def insert_document(
+        self, document_id: str, filename: str, file_type: str, file_path: str
+    ) -> None:
+        """Create a document row in 'processing' state at upload time."""
+        self.conn.execute(
+            """
+            INSERT INTO documents (document_id, filename, file_type, file_path, status)
+            VALUES (%s, %s, %s, %s, 'processing')
+            ON CONFLICT (document_id) DO NOTHING
+            """,
+            (document_id, filename, file_type, file_path),
+        )
+
+    def finalize_document(
+        self, document_id: str, *, document_type, industry, route, status, errors
+    ) -> None:
+        """Record categorization results + final status after the pipeline runs."""
+        self.conn.execute(
+            """
+            UPDATE documents SET document_type = %s, industry = %s, route = %s,
+                                 status = %s, errors = %s
+            WHERE document_id = %s
+            """,
+            (document_type, industry, route, status, Json(errors or []), document_id),
+        )
+
+    def list_documents(self) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT document_id, filename, file_type, document_type, industry,
+                   route, status, created_at
+            FROM documents ORDER BY created_at DESC
+            """
+        ).fetchall()
+        return [_document_row(r) for r in rows]
+
+    def get_document(self, document_id: str) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT document_id, filename, file_type, document_type, industry,
+                   route, status, created_at
+            FROM documents WHERE document_id::text = %s
+            """,
+            (document_id,),
+        ).fetchone()
+        return _document_row(row) if row else None
+
+    def delete_document(self, document_id: str) -> None:
+        # chunks cascade via the FK ON DELETE CASCADE
+        self.conn.execute(
+            "DELETE FROM documents WHERE document_id::text = %s", (document_id,)
+        )
+
     def close(self) -> None:
         self.conn.close()
+
+
+def _document_row(r) -> dict:
+    # `id` mirrors document_id so the frontend can treat it as an opaque key
+    return {
+        "id": str(r[0]),
+        "document_id": str(r[0]),
+        "filename": r[1],
+        "file_type": r[2],
+        "document_type": r[3],
+        "industry": r[4],
+        "route": r[5],
+        "status": r[6],
+        "created_at": r[7].isoformat() if r[7] else None,
+    }

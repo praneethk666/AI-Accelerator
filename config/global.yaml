@@ -122,7 +122,7 @@ categorization:
   industry_keywords:
     automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
     electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing:[assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
+    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
     finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
     legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
     healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
@@ -181,6 +181,15 @@ routes:
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   image_route:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+
+# ── Ingestion profile (what the API/run_pipeline actually builds) ─────────────
+# categorize decides the route at RUNTIME, so the graph is built once with the
+# UNION of steps and route_gates skip the steps a given route doesn't want.
+# Only vision_enrichment varies across the routes above, so it's the only gate.
+ingestion:
+  steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  route_gates:
+    vision_enrichment: [diagram_heavy, image_route]
 
 # ── Database (connection strings from environment) ────────────────────────────
 database:

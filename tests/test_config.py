@@ -5,10 +5,23 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.core.config import DEFAULT_ROUTE, PipelineConfig
+from backend.core.config import DEFAULT_ROUTE, PipelineConfig, load_config
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLE_YAML = os.path.join(REPO_ROOT, "config", "pipeline.example.yaml")
+GLOBAL_YAML = os.path.join(REPO_ROOT, "config", "global.yaml")
+
+
+def test_global_yaml_loads_and_has_pipeline_profiles():
+    # guards against YAML typos in the real config (e.g. missing space after a key)
+    cfg = load_config(GLOBAL_YAML)
+    assert cfg["ingestion"]["steps"][0] == "categorize"
+    assert "vision_enrichment" in cfg["ingestion"]["route_gates"]
+    assert cfg["query"]["steps"] == ["query_planner", "retrieval", "answerer"]
+    assert cfg["pdf_extractors"]["digital"] == "pdf_digital"
+    assert cfg["route_extractors"]["cad_route"] == "cad_extract"
+    # the categorization block parses (had a missing-space bug)
+    assert "manufacturing" in cfg["categorization"]["industry_keywords"]
 
 
 def test_from_yaml_reads_route_and_steps():

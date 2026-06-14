@@ -37,6 +37,7 @@ _TOOL_SPECS: list[tuple[str, str]] = [
     ("backend.extraction.cad.cad_extract", "CADExtractionTool"),
     ("backend.vision.vision_enrichment", "VisionEnrichmentTool"),
     ("backend.chunking.chunk_tool", "ChunkTool"),
+    ("backend.enrichment.enrich_chunks", "EnrichChunksTool"),
     ("backend.embeddings.embed_tool", "EmbedTool"),
     ("backend.storage.index_tool", "IndexTool"),
     ("backend.retrieval.query_planner", "QueryPlannerTool"),

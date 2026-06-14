@@ -41,7 +41,7 @@ chonkie[semantic]        # semantic + token-aware chunking
 # ── Vector + relational storage ───────────────────────────────────────────────
 qdrant-client
 sqlalchemy
-psycopg2-binary
+psycopg[binary]          # psycopg 3 — code imports `psycopg`, not psycopg2
 
 # ── API layer ─────────────────────────────────────────────────────────────────
 fastapi

@@ -16,13 +16,17 @@ from psycopg.types.json import Json
 
 
 def dsn_from_env() -> str:
-    """Build a Postgres connection string from POSTGRES_* env vars."""
+    """Postgres connection string. Prefer POSTGRES_URL (matches .env.example +
+    config + docker-compose); otherwise assemble from POSTGRES_* parts."""
+    url = os.getenv("POSTGRES_URL")
+    if url:
+        return url
     return (
         f"host={os.getenv('POSTGRES_HOST', 'localhost')} "
         f"port={os.getenv('POSTGRES_PORT', '5432')} "
         f"dbname={os.getenv('POSTGRES_DB', 'accelerator')} "
-        f"user={os.getenv('POSTGRES_USER', 'accel')} "
-        f"password={os.getenv('POSTGRES_PASSWORD', 'accel_local_pw')}"
+        f"user={os.getenv('POSTGRES_USER', 'postgres')} "
+        f"password={os.getenv('POSTGRES_PASSWORD', 'postgres')}"
     )
 
 

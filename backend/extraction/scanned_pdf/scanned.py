@@ -11,8 +11,13 @@ import numpy as np
 
 from collections import OrderedDict
 from PIL import Image
-from paddleocr import PaddleOCR
 from typing import List, Optional, Tuple
+
+# NOTE: paddleocr is imported LAZILY inside get_ocr_engine(), not here.
+# Importing paddle BEFORE torch initializes (the nomic embedder) corrupts torch's
+# tensor allocator -> "Tensor holds no memory" crash. Lazy import keeps paddle out
+# of the process for digital PDFs entirely, and the model warm-up
+# (backend.core.models.warm_up) loads torch first so scanned+embed also coexist.
 
 from backend.core.schemas import NormalizedBlock, SourceRef
 
@@ -52,6 +57,11 @@ def _cache_put(cache: OrderedDict, key, value):
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None:
+        # lazy import (see module note): warm torch first so paddle can't corrupt it
+        from backend.core.models import warm_up
+        warm_up()
+        from paddleocr import PaddleOCR
+
         _ocr_engine = PaddleOCR(
             lang='en',
             use_angle_cls=True,

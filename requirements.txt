@@ -36,7 +36,8 @@ tabulate             # df.to_markdown() for table text
 python-pptx
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
-sentence-transformers    # bge-large dense embedder + bge-reranker
+sentence-transformers    # nomic dense embedder + bge-reranker
+einops                   # required by nomic-embed-text-v1.5 modeling code
 fastembed                # BM25 sparse embedder
 chonkie[semantic]        # semantic + token-aware chunking
 

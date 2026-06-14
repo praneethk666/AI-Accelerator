@@ -25,9 +25,25 @@ from __future__ import annotations
 DENSE_DOCUMENT_PREFIX = "search_document: "
 DENSE_QUERY_PREFIX = "search_query: "
 
+DEFAULT_DENSE_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+
 _dense_model = None
 _sparse_model = None
 _reranker = None
+
+
+def warm_up(config: dict | None = None) -> None:
+    """Initialize torch (load the dense model) BEFORE paddle (paddleocr) is ever
+    imported. paddle imported first corrupts torch's tensor allocator ->
+    "Tensor holds no memory" crash at embed time. Call this at process start (API
+    startup / pipeline entry); it's idempotent and a no-op once the model loaded.
+    """
+    cfg = config or {"embeddings": {"dense_model": DEFAULT_DENSE_MODEL}}
+    try:
+        get_dense_model(cfg)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("model warm_up failed: %s", exc)
 
 
 def get_dense_model(config: dict):

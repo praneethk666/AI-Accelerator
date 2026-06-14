@@ -1,7 +1,13 @@
 """Detect if a PDF is digital, scanned, or mixed (per-page)."""
 
+import logging
 import fitz
 from typing import Tuple, List
+
+logger = logging.getLogger(__name__)
+
+# A page with almost no extractable text layer is treated as scanned (image-only).
+_DIGITAL_TEXT_THRESHOLD = 5
 
 
 def detect_pdf_type(file_path: str) -> Tuple[str, List[str]]:
@@ -9,12 +15,10 @@ def detect_pdf_type(file_path: str) -> Tuple[str, List[str]]:
     per_page: List[str] = []
     try:
         for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text().strip()
-            text_len = len(text)
-            page_type = "digital" if text_len > 5 else "scanned"
+            text_len = len(doc[page_num].get_text().strip())
+            page_type = "digital" if text_len > _DIGITAL_TEXT_THRESHOLD else "scanned"
             per_page.append(page_type)
-            print(f"Page {page_num+1}: {page_type} ({text_len} chars)")
+            logger.debug("Page %s: %s (%s chars)", page_num + 1, page_type, text_len)
     finally:
         doc.close()
 
@@ -25,5 +29,5 @@ def detect_pdf_type(file_path: str) -> Tuple[str, List[str]]:
     else:
         overall = "mixed"
 
-    print(f"\nOverall PDF type: {overall}")
+    logger.debug("Overall PDF type: %s", overall)
     return overall, per_page

@@ -33,6 +33,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from backend.core.config import PipelineConfig, load_config  # noqa: E402
+from backend.core.models import warm_up  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
 from backend.pipeline.graph import run_pipeline  # noqa: E402
 from backend.pipeline.query import run_query  # noqa: E402
@@ -69,6 +70,9 @@ app.mount("/images", StaticFiles(directory=_IMAGES_DIR), name="images")
 
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
+# Warm torch/nomic BEFORE anything can import paddle (paddleocr) — paddle-first
+# corrupts torch's allocator. paddleocr is lazy-imported, so this ordering holds.
+warm_up(_config)
 _registry = build_default_registry()
 _ingestion_cfg = PipelineConfig.from_dict({
     **_config,

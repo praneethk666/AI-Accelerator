@@ -132,9 +132,13 @@ async def upload(file: UploadFile = File(...)):
             status=status,
             errors=result.get("errors"),
         )
-        return pg.get_document(document_id)
+        doc = pg.get_document(document_id)
     finally:
         pg.close()
+    # surface per-step timings + any errors for observability
+    doc["metrics"] = result.get("metrics", [])
+    doc["errors"] = result.get("errors", [])
+    return doc
 
 
 @app.get("/files")
@@ -180,7 +184,11 @@ async def chat(req: ChatRequest):
         {"filename": c.get("filename"), "page": c.get("page"), "snippet": c.get("snippet")}
         for c in (final.get("citations") or [])
     ]
-    return {"answer": final.get("answer", ""), "sources": sources}
+    return {
+        "answer": final.get("answer", ""),
+        "sources": sources,
+        "metrics": final.get("metrics", []),   # per-step timings (observability)
+    }
 
 
 @app.get("/chat-history")

@@ -5,10 +5,16 @@ result back. Tools never call each other directly — they only touch the state.
 That is what makes the pipeline pluggable.
 """
 from __future__ import annotations
-from typing import Protocol, TypedDict
+from operator import add
+from typing import Annotated, Protocol, TypedDict
 
 
 class PipelineState(TypedDict, total=False):
+    # ── observability ──────────────────────────────────────────────
+    # per-step timings appended by the graph node wrapper. add-reducer so each
+    # node contributes one entry even when a tool returns only a partial state.
+    metrics: Annotated[list, add]  # [{step, ms, status, error?}]
+
     # ── ingestion ──────────────────────────────────────────────────
     document_id: str
     file_path: str

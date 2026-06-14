@@ -14,24 +14,46 @@
 """
 
 from __future__ import annotations
+import logging
+import time
 from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState, Tool
+
+logger = logging.getLogger(__name__)
 
 # Placeholder step in a route's `steps`; resolved to a file-type-specific extractor.
 EXTRACT_PLACEHOLDER = "extract"
 
 
 def _make_node(tool: Tool, raw_config: dict):
-    # wrap a Tool as a graph node + graceful failure; config bound in via closure
+    # wrap a Tool as a graph node: graceful failure + per-step metrics. config
+    # bound in via closure.
     def node(state: PipelineState) -> PipelineState:
         state.setdefault("errors", [])
+        start = time.perf_counter()
+        status, error = "ok", None
         try:
-            return tool.run(state, raw_config)
+            result = tool.run(state, raw_config)
         except Exception as exc:  # one tool must not kill the run
+            status, error = "error", str(exc)
             state["errors"].append(f"{tool.name}: {exc}")
-            return state
+            result = state
+
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        entry = {"step": tool.name, "ms": elapsed_ms, "status": status}
+        if error:
+            entry["error"] = error
+        logger.info("step %s %s %.1fms", tool.name, status, elapsed_ms)
+
+        # Return the tool's updates, but own the `metrics` channel: strip any
+        # inherited metrics from the update and contribute exactly one entry
+        # (the add-reducer on PipelineState.metrics appends it).
+        update = dict(result) if isinstance(result, dict) else {}
+        update.pop("metrics", None)
+        update["metrics"] = [entry]
+        return update
 
     return node
 

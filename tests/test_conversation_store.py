@@ -33,7 +33,8 @@ pytestmark = pytest.mark.skipif(
 def _fresh_store():
     from backend.storage.conversation_store import get_conversation_store
 
-    return get_conversation_store(), f"test_sess_{uuid.uuid4()}"
+    # session_id column is UUID → use a real uuid string
+    return get_conversation_store(), str(uuid.uuid4())
 
 
 def test_save_turn_persists_and_loads_in_order():
@@ -41,28 +42,31 @@ def test_save_turn_persists_and_loads_in_order():
     try:
         store.save_turn(sid, "user", "what is the 5V rail?")
         store.save_turn(sid, "assistant", "It powers the op-amp.")
-        store.save_turn(sid, "user", "and the tolerance?")
+        store.save_turn(sid, "user", "and the tolerance?")  # open turn, no answer yet
         history = store.load_history(sid)
         assert history == [
             {"role": "user", "content": "what is the 5V rail?"},
             {"role": "assistant", "content": "It powers the op-amp."},
             {"role": "user", "content": "and the tolerance?"},
-        ]  # chronological, oldest first
+        ]  # chronological, oldest first; open turn shows the user message only
     finally:
         store.conn.execute("DELETE FROM conversations WHERE session_id = %s", (sid,))
         store.close()
 
 
-def test_n_limit_returns_last_n_oldest_first():
+def test_n_limit_returns_last_n_turns_oldest_first():
     store, sid = _fresh_store()
     try:
-        for i in range(5):
-            store.save_turn(sid, "user", f"msg{i}")
-        history = store.load_history(sid, n=2)
+        for i in range(3):  # 3 complete Q&A turns
+            store.save_turn(sid, "user", f"q{i}")
+            store.save_turn(sid, "assistant", f"a{i}")
+        history = store.load_history(sid, n=2)  # last 2 turns
         assert history == [
-            {"role": "user", "content": "msg3"},
-            {"role": "user", "content": "msg4"},
-        ]  # last 2, still oldest-first
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ]  # last 2 turns, still oldest-first
     finally:
         store.conn.execute("DELETE FROM conversations WHERE session_id = %s", (sid,))
         store.close()

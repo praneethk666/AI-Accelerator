@@ -22,16 +22,21 @@ import os
 import shutil
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from dotenv import load_dotenv
 
-from backend.core.config import PipelineConfig, load_config
-from backend.pipeline.default_registry import build_default_registry
-from backend.pipeline.graph import run_pipeline
-from backend.pipeline.query import run_query
-from backend.storage.postgres_store import PostgresStore
+# Load .env BEFORE load_config so ${GROQ_API_KEY}/${POSTGRES_URL}/... resolve.
+load_dotenv()
+
+from fastapi import FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from backend.core.config import PipelineConfig, load_config  # noqa: E402
+from backend.pipeline.default_registry import build_default_registry  # noqa: E402
+from backend.pipeline.graph import run_pipeline  # noqa: E402
+from backend.pipeline.query import run_query  # noqa: E402
+from backend.storage.postgres_store import PostgresStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +128,7 @@ async def upload(file: UploadFile = File(...)):
             document_type=result.get("document_type"),
             industry=result.get("industry"),
             route=result.get("route"),
+            confidence=result.get("confidence"),
             status=status,
             errors=result.get("errors"),
         )

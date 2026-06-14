@@ -1,9 +1,14 @@
 """Shared vision helper. Both categorize_tool and vision_enrichment_tool
-call describe_image() — Gemma access lives here and nowhere else.
+call describe_image() — vision-model access lives here and nowhere else.
 
-Supported providers (set via config["vision"]["provider"]):
-  google  — Gemma via Google AI Studio (requires GOOGLE_API_KEY in env)
-  ollama  — self-hosted Gemma via Ollama (no API key, local only)
+Providers (config["vision"]["provider"]):
+  google  — Gemma/Gemini via Google AI Studio (GOOGLE_API_KEY)
+  ollama  — self-hosted VLM via Ollama (local, no key)
+  openai  — any OpenAI-COMPATIBLE multimodal endpoint via base_url. Covers OpenAI
+            GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter vision, vLLM — point
+            config["vision"]["base_url"] at the provider.
+
+config["vision"] keys: provider, model, base_url (openai), api_key ("${ENV}").
 
 Usage:
     from backend.core.vision_client import describe_image
@@ -14,18 +19,52 @@ import os
 
 
 def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:
-    provider = config.get("vision", {}).get("provider", "google")
-    model = config.get("vision", {}).get("model", "gemma-3-27b-it")
+    vcfg = config.get("vision", {})
+    provider = vcfg.get("provider", "google")
+    model = vcfg.get("model", "gemma-3-27b-it")
 
     if provider == "google":
         return _describe_google(image_bytes, prompt, model, config)
     if provider == "ollama":
         return _describe_ollama(image_bytes, prompt, model, config)
+    if provider == "openai":
+        return _describe_openai(image_bytes, prompt, model, config)
 
     raise ValueError(
         f"Unknown vision provider {provider!r}. "
-        "Set config['vision']['provider'] to 'google' or 'ollama'."
+        "Use 'google', 'ollama', or 'openai' (openai + base_url covers any "
+        "OpenAI-compatible vision API such as NVIDIA NIM / GPT-4o-vision)."
     )
+
+
+def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) -> str:
+    """OpenAI-compatible multimodal: send the image as a base64 data URL."""
+    import base64
+    from openai import OpenAI
+
+    vcfg = config.get("vision", {})
+    api_key = os.environ.get("OPENAI_API_KEY")
+    cfg_key = vcfg.get("api_key")
+    if cfg_key and not str(cfg_key).startswith("${"):
+        api_key = cfg_key
+
+    client = OpenAI(api_key=api_key, base_url=vcfg.get("base_url") or None)
+    data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
+
+    _trace_start(prompt, model, config)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }],
+    )
+    result = resp.choices[0].message.content
+    _trace_end(result, config)
+    return result
 
 
 def _describe_google(image_bytes: bytes, prompt: str, model: str, config: dict) -> str:

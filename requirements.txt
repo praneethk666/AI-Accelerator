@@ -9,6 +9,7 @@ langchain-core
 langchain-groq
 langchain-ollama
 langchain-openai
+langchain-google-genai     # native Google/Gemini/Vertex LLM provider
 langgraph
 langchain-mcp-adapters
 

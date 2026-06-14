@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS documents (
     document_type TEXT,
     industry      TEXT,
     route         TEXT,
+    confidence    REAL,                         -- categorize confidence (UI shows a bar)
     status        TEXT DEFAULT 'processing',   -- processing | ready | failed
     errors        JSONB DEFAULT '[]',
     created_at    TIMESTAMP DEFAULT NOW()

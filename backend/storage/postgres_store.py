@@ -113,23 +113,25 @@ class PostgresStore:
         )
 
     def finalize_document(
-        self, document_id: str, *, document_type, industry, route, status, errors
+        self, document_id: str, *, document_type, industry, route, confidence,
+        status, errors
     ) -> None:
         """Record categorization results + final status after the pipeline runs."""
         self.conn.execute(
             """
             UPDATE documents SET document_type = %s, industry = %s, route = %s,
-                                 status = %s, errors = %s
+                                 confidence = %s, status = %s, errors = %s
             WHERE document_id = %s
             """,
-            (document_type, industry, route, status, Json(errors or []), document_id),
+            (document_type, industry, route, confidence, status,
+             Json(errors or []), document_id),
         )
 
     def list_documents(self) -> list[dict]:
         rows = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, status, created_at
+                   route, confidence, status, created_at
             FROM documents ORDER BY created_at DESC
             """
         ).fetchall()
@@ -139,7 +141,7 @@ class PostgresStore:
         row = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, status, created_at
+                   route, confidence, status, created_at
             FROM documents WHERE document_id::text = %s
             """,
             (document_id,),
@@ -166,6 +168,7 @@ def _document_row(r) -> dict:
         "document_type": r[3],
         "industry": r[4],
         "route": r[5],
-        "status": r[6],
-        "created_at": r[7].isoformat() if r[7] else None,
+        "confidence": r[6],
+        "status": r[7],
+        "created_at": r[8].isoformat() if r[8] else None,
     }

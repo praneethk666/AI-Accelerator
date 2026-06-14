@@ -4,15 +4,32 @@
 # Database connection strings use ${VAR} substitution resolved from the environment.
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
+# provider: groq | google | ollama | openai
+# `openai` + base_url reaches ANY OpenAI-compatible API (NVIDIA NIM, OpenRouter,
+# Together, vLLM, …). api_key is usually a ${ENV_VAR}; blank => SDK's default env.
+# Recipes:
+#   Groq (default): provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
+#   Gemini/Vertex:  provider: google  model: gemini-1.5-flash       api_key: ${GOOGLE_API_KEY}
+#   NVIDIA NIM:     provider: openai  model: meta/llama-3.1-8b-instruct
+#                   base_url: https://integrate.api.nvidia.com/v1   api_key: ${NVIDIA_API_KEY}
+#   OpenRouter:     provider: openai  model: <org/model>
+#                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
+#   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  provider: groq            # groq | ollama | openai
+  provider: groq
   model: llama-3.1-8b-instant
-  # base_url:               # uncomment for OpenAI-compatible endpoints
+  api_key: ${GROQ_API_KEY}
+  # base_url:               # set for openai-compatible endpoints
+  # temperature: 0.2
 
-# ── Vision (Gemma) ────────────────────────────────────────────────────────────
+# ── Vision ────────────────────────────────────────────────────────────────────
+# provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
+# multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
 vision:
-  provider: google          # google (AI Studio) | ollama (self-hosted)
+  provider: google
   model: gemma-3-27b-it
+  api_key: ${GOOGLE_API_KEY}
+  # base_url:               # set for vision.provider: openai
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped

@@ -110,6 +110,14 @@ def chunk_blocks(
             continue
 
         if btype in ATOMIC_TYPES:  # table / image_caption -> atomic
+            # an image still pending vision was never described — its text is a
+            # placeholder ("[Image - awaiting vision enrichment]"), not content.
+            # Don't index placeholders; vision_enrichment clears pending_vision
+            # and writes the real caption on the blocks it enriches.
+            if btype == "image_caption" and (block.get("metadata") or {}).get(
+                "pending_vision"
+            ):
+                continue
             if text or block.get("table_data"):
                 chunks.append(_make_chunk(block, text, document_id))
             continue

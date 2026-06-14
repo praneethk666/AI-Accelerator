@@ -24,6 +24,7 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.core.config import PipelineConfig, load_config
@@ -54,6 +55,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve enriched images so citation image_path (/images/<doc>/<file>) resolves.
+# vision writes them under uploads/images/<doc_id>/<block_id>.png.
+_IMAGES_DIR = os.path.join(UPLOAD_DIR, "images")
+os.makedirs(_IMAGES_DIR, exist_ok=True)
+app.mount("/images", StaticFiles(directory=_IMAGES_DIR), name="images")
 
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)

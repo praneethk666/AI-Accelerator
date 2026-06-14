@@ -1,6 +1,7 @@
 """Tool for mixed PDFs that routes each page to digital or scanned pipeline."""
 
 from backend.core.tool import Tool, PipelineState
+from backend.core.schemas import as_dicts
 from backend.extraction.mixed_pdf.mixed import extract_mixed
 from backend.extraction.page_profile import page_profile   # shared location
 
@@ -20,6 +21,6 @@ class MixedPDFTool(Tool):
         # Generate page profiles (metadata)
         profiles = page_profile(pdf_path)
 
-        state["blocks"] = blocks
-        state["page_profiles"] = profiles
+        state["blocks"] = as_dicts(blocks)
+        state["page_profiles"] = as_dicts(profiles)
         return state

@@ -1,6 +1,7 @@
 """Tool for extracting content from digital PDFs."""
 
 from backend.core.tool import Tool, PipelineState
+from backend.core.schemas import as_dicts
 from backend.extraction.digital_pdf.digital import extract_digital
 from backend.extraction.page_profile import page_profile   # moved to extraction root
 
@@ -20,6 +21,7 @@ class PDFDigitalTool(Tool):
         # Generate page profiles (metadata)
         profiles = page_profile(pdf_path)
 
-        state["blocks"] = blocks
-        state["page_profiles"] = profiles
+        # state carries plain dicts (dataclasses are construction schemas)
+        state["blocks"] = as_dicts(blocks)
+        state["page_profiles"] = as_dicts(profiles)
         return state

@@ -3,7 +3,7 @@ import uuid
 import json
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
-from backend.core.schemas import NormalizedBlock, SourceRef
+from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
 class PPTExtractorTool:
@@ -18,7 +18,7 @@ class PPTExtractorTool:
         file_path   = state["file_path"]
         document_id = state.get("document_id")
         blocks      = self._extract(file_path, document_id=document_id, config=config)
-        state["blocks"] = blocks
+        state["blocks"] = as_dicts(blocks)
         state.setdefault("errors", [])
         return state
 

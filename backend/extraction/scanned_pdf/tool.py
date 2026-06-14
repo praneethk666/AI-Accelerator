@@ -1,6 +1,7 @@
 """Tool for extracting content from scanned PDFs using OCR + YOLO."""
 
 from backend.core.tool import Tool, PipelineState
+from backend.core.schemas import as_dicts
 from backend.extraction.scanned_pdf.scanned import extract_scanned
 from backend.extraction.page_profile import page_profile   # shared location
 
@@ -21,6 +22,6 @@ class ScannedPDFTool(Tool):
         # Generate page profiles (metadata)
         profiles = page_profile(pdf_path)
 
-        state["blocks"] = blocks
-        state["page_profiles"] = profiles
+        state["blocks"] = as_dicts(blocks)
+        state["page_profiles"] = as_dicts(profiles)
         return state

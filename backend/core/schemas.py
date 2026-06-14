@@ -1,9 +1,24 @@
 """Shared data contracts. Every tool reads/writes these shapes.
-Keep field names stable — changing them is a team decision, not a solo one."""
+Keep field names stable — changing them is a team decision, not a solo one.
+
+Representation rule: these dataclasses are CONSTRUCTION + DOCUMENTATION schemas.
+What flows through the pipeline `state` (and into storage / the API / LangGraph
+checkpoints) is PLAIN DICTS. Extractors build dataclasses for clarity, then call
+as_dicts() at the state boundary. Downstream tools (chunk, vision, enrich, embed,
+index, retrieval) read/write plain dicts — never attribute access."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Optional
+
+
+def as_dicts(items) -> list[dict]:
+    """Normalize a list of dataclass instances (or dicts) to plain dicts.
+
+    asdict() recurses, so nested SourceRef / ImageRegion become dicts too. Call
+    this wherever a tool writes dataclass-built objects into the shared state.
+    """
+    return [asdict(x) if is_dataclass(x) else x for x in (items or [])]
 
 
 @dataclass

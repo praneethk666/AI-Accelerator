@@ -23,6 +23,7 @@ Uses concurrency, duplicate detection, timeouts, and error handling.
 
 """
  
+import logging
 import os
 
 import hashlib
@@ -38,6 +39,8 @@ import fitz  # PyMuPDF
 from backend.core.vision_client import describe_image
 
 from backend.core.tool import Tool, PipelineState
+
+logger = logging.getLogger(__name__)
 
 from .pdf_cropper import PDFCropper
 
@@ -122,7 +125,7 @@ class VisionEnrichmentTool(Tool):
 
                 if kind == "scanned" and images:
 
-                    print(f"\n📄 Page {page_number}: scanned + images → FULL PAGE")
+                    logger.debug(f"\n📄 Page {page_number}: scanned + images → FULL PAGE")
 
                     w, h = page_dims[page_number]
 
@@ -136,7 +139,7 @@ class VisionEnrichmentTool(Tool):
 
                 elif kind == "scanned" and not images:
 
-                    print(f"\n⏭️ Page {page_number}: scanned, no images → skip")
+                    logger.debug(f"\n⏭️ Page {page_number}: scanned, no images → skip")
 
                 else:
 
@@ -144,7 +147,7 @@ class VisionEnrichmentTool(Tool):
 
                     if has_vector:
 
-                        print(f"\n📄 Page {page_number}: digital + vector → FULL PAGE")
+                        logger.debug(f"\n📄 Page {page_number}: digital + vector → FULL PAGE")
 
                         w, h = page_dims[page_number]
 
@@ -208,7 +211,7 @@ class VisionEnrichmentTool(Tool):
  
         if pending_blocks:
 
-            print(f"\n🔍 Processing {len(pending_blocks)} pending vision blocks...")
+            logger.debug(f"\n🔍 Processing {len(pending_blocks)} pending vision blocks...")
 
             with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
 
@@ -248,11 +251,11 @@ class VisionEnrichmentTool(Tool):
 
         if duplicates_saved > 0:
 
-            print("\n" + "=" * 80)
+            logger.debug("\n" + "=" * 80)
 
-            print("DUPLICATE IMAGE SUMMARY")
+            logger.debug("DUPLICATE IMAGE SUMMARY")
 
-            print("=" * 80)
+            logger.debug("=" * 80)
 
             for h, count in hash_occurrence_count.items():
 
@@ -264,17 +267,17 @@ class VisionEnrichmentTool(Tool):
 
                     first_id = first_src.get("page") or first_src.get("slide") or first_src.get("sheet") or "unknown"
 
-                    print(f"  Image first on {first_src.get('filename', '?')} at {first_id}: appeared {count} times total")
+                    logger.debug(f"  Image first on {first_src.get('filename', '?')} at {first_id}: appeared {count} times total")
 
-            print(f"\nTotal unique images processed (Gemini calls): {total_unique}")
+            logger.debug(f"\nTotal unique images processed (Gemini calls): {total_unique}")
 
-            print(f"Total image occurrences: {total_images}")
+            logger.debug(f"Total image occurrences: {total_images}")
 
-            print(f"Duplicates reused without Gemini: {duplicates_saved}")
+            logger.debug(f"Duplicates reused without Gemini: {duplicates_saved}")
 
         else:
 
-            print("\n✅ No duplicate images found across all sources.")
+            logger.debug("\n✅ No duplicate images found across all sources.")
  
         return state
  
@@ -304,13 +307,13 @@ class VisionEnrichmentTool(Tool):
 
             )
 
-            print(f"🔪 Cropped page {page_number}, bbox {bbox}, size {len(image_bytes)} bytes")
+            logger.debug(f"🔪 Cropped page {page_number}, bbox {bbox}, size {len(image_bytes)} bytes")
  
             # Skip tiny / blank crops (likely errors or empty regions)
 
             if len(image_bytes) < 10_000:
 
-                print(f"⏭️ Skipping tiny/blank crop – placeholder")
+                logger.debug(f"⏭️ Skipping tiny/blank crop – placeholder")
 
                 placeholder_block = self._create_placeholder_block(
 
@@ -338,7 +341,7 @@ class VisionEnrichmentTool(Tool):
 
         except TimeoutException:
 
-            print(f"⏰ Timeout for page {page_number}")
+            logger.debug(f"⏰ Timeout for page {page_number}")
 
             errors.append(f"Vision timeout page {page_number}, bbox {bbox}")
 
@@ -376,7 +379,7 @@ class VisionEnrichmentTool(Tool):
 
         if not raw_path or not os.path.exists(raw_path):
 
-            print(f"⚠️ Missing raw_image_path: {raw_path}")
+            logger.debug(f"⚠️ Missing raw_image_path: {raw_path}")
 
             return
  
@@ -386,11 +389,11 @@ class VisionEnrichmentTool(Tool):
 
                 image_bytes = f.read()
  
-            print(f"🖼️ Processing pending image: {raw_path}")
+            logger.debug(f"🖼️ Processing pending image: {raw_path}")
  
             if len(image_bytes) < 10_000:
 
-                print(f"⏭️ Skipping tiny/blank pending image – placeholder")
+                logger.debug(f"⏭️ Skipping tiny/blank pending image – placeholder")
 
                 block["text"] = "Image too small or blank."
 
@@ -414,7 +417,7 @@ class VisionEnrichmentTool(Tool):
 
         except Exception as e:
 
-            print(f"❌ Failed to enrich {raw_path}: {e}")
+            logger.debug(f"❌ Failed to enrich {raw_path}: {e}")
 
             block["metadata"]["enrichment_failed"] = True
 
@@ -482,13 +485,13 @@ class VisionEnrichmentTool(Tool):
 
             blocks.append(dup)
 
-            print(f"📋 Duplicate PDF image (occ #{occurrence}) → reused from page {first['source_ref']['page']}")
+            logger.debug(f"📋 Duplicate PDF image (occ #{occurrence}) → reused from page {first['source_ref']['page']}")
 
             return
  
         # First time – call Gemini
 
-        print(f"🆕 First PDF image – calling describe_image...")
+        logger.debug(f"🆕 First PDF image – calling describe_image...")
 
         if debug:
 
@@ -498,11 +501,11 @@ class VisionEnrichmentTool(Tool):
 
                 f.write(image_bytes)
 
-            print(f"💾 Debug image: {debug_path}")
+            logger.debug(f"💾 Debug image: {debug_path}")
  
         description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
 
-        print(f"📄 Description (first 200 chars): {description[:200]}")
+        logger.debug(f"📄 Description (first 200 chars): {description[:200]}")
  
         # Build a NormalizedBlock (type="image_caption") with the description
 
@@ -576,13 +579,13 @@ class VisionEnrichmentTool(Tool):
 
             block["metadata"]["image_path"] = first["metadata"].get("image_path")
 
-            print(f"📋 Duplicate pending image (occ #{occurrence}) → reused from block {first['block_id']}")
+            logger.debug(f"📋 Duplicate pending image (occ #{occurrence}) → reused from block {first['block_id']}")
 
             return
  
         # First time – call Gemini
 
-        print(f"🆕 First pending image – calling describe_image...")
+        logger.debug(f"🆕 First pending image – calling describe_image...")
 
         if debug:
 
@@ -592,11 +595,11 @@ class VisionEnrichmentTool(Tool):
 
                 f.write(image_bytes)
 
-            print(f"💾 Debug image: {debug_path}")
+            logger.debug(f"💾 Debug image: {debug_path}")
  
         description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
 
-        print(f"📄 Description (first 200 chars): {description[:200]}")
+        logger.debug(f"📄 Description (first 200 chars): {description[:200]}")
  
         # Parse the JSON reply into a clean caption (description + entities) —
         # same as the PDF path; never store the raw JSON blob as the chunk text.

@@ -70,11 +70,8 @@ class NormalizedBlock:
     source_ref: Optional[SourceRef] = None
     confidence: float = 1.0
     language: str = "en"
-    pending_vision: bool = (
-        False  # extractor sets True; vision_enrichment reads + clears
-    )
-    raw_image_path: Optional[str] = None  # saved raw image for vision (PPT/Excel/image)
     metadata: dict = field(default_factory=dict)
+    # pending_vision / raw_image_path live in metadata (see docstring) — not top-level fields.
 
 
 @dataclass
@@ -89,9 +86,7 @@ class Chunk:
         default_factory=dict
     )  # industry, doc_type, topic, section, keywords
     source_ref: Optional[SourceRef] = None
-    vector: Optional[list] = None  # dense embedding — length 1024 (bge-large)
-    sparse_vector: Optional[dict] = None  # {"indices": [...], "values": [...]} for BM25
-    table_data: Optional[dict] = (
-        None  # {"headers": [...], "rows": [...]} for table chunks
-    )
-    image_path: Optional[str] = None  # set for image_caption chunks
+    vector: Optional[list] = None              # dense embedding — length 768 (nomic-embed-text-v1.5)
+    sparse_vector: Optional[dict] = None       # {"indices": [...], "values": [...]} for BM25
+    table_data: Optional[dict] = None          # {"headers": [...], "rows": [...]} for table chunks
+    image_path: Optional[str] = None           # set for image_caption chunks

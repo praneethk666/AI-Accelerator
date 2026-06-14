@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from backend.core.tool import PipelineState
-from backend.embeddings.local_embedder import DEFAULT_DIM
 from backend.storage.postgres_store import PostgresStore
 from backend.storage.qdrant_store import QdrantStore
 
@@ -19,7 +18,7 @@ class IndexTool:
     name = "index"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
-        dim = config.get("embeddings", {}).get("dim", DEFAULT_DIM)
+        dim = config.get("embeddings", {}).get("dense_dim", 768)
         collection = config.get("database", {}).get("qdrant_collection", "chunks")
         pg = PostgresStore()
         vectors = QdrantStore(dim, collection)

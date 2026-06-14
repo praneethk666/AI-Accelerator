@@ -120,7 +120,11 @@ async def upload(file: UploadFile = File(...)):
     }
     try:
         result = run_pipeline(_registry, state, _ingestion_cfg)
-        status = "ready" if not result.get("errors") else "failed"
+        # "failed" only if a pipeline STEP actually errored — non-fatal warnings
+        # in errors (e.g. categorize "low confidence, flagged for review") must
+        # NOT mark an otherwise-successful ingest as failed.
+        step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
+        status = "failed" if step_failed else "ready"
     except Exception as exc:
         logger.exception("ingestion failed for %s", file.filename)
         result, status = {"errors": [str(exc)]}, "failed"

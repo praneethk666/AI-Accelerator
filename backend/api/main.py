@@ -73,6 +73,9 @@ _config = load_config(CONFIG_PATH)
 # Warm torch/nomic BEFORE anything can import paddle (paddleocr) — paddle-first
 # corrupts torch's allocator. paddleocr is lazy-imported, so this ordering holds.
 warm_up(_config)
+# Select the OCR engine (surya|paddle) from config for scanned pages.
+from backend.extraction.scanned_pdf.scanned import set_ocr_engine  # noqa: E402
+set_ocr_engine(_config.get("ocr", {}).get("engine"))
 _registry = build_default_registry()
 _ingestion_cfg = PipelineConfig.from_dict({
     **_config,

@@ -21,9 +21,14 @@ pymupdf              # fitz — PDF rendering and text extraction
 paddleocr            # OCR for scanned pages
 paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
+# ── OCR (scanned pages) ───────────────────────────────────────────────────────
+surya-ocr            # default scanned OCR: text + layout in one pass, 90+ langs.
+                     # NEEDS the llama-server binary at runtime: `brew install llama.cpp`
+                     # (Linux: build llama.cpp). Falls back to paddleocr if absent.
+
 # ── Vision / image processing ─────────────────────────────────────────────────
-doclayout-yolo       # document-layout detector (figures/tables) for scanned pages
-huggingface-hub      # downloads the DocLayout-YOLO weights (also a ST dep)
+doclayout-yolo       # document-layout detector — fallback when ocr.engine=paddle
+huggingface-hub      # downloads model weights (also a ST dep)
 opencv-python-headless  # cv2 — used by scanned PDF pipeline (contour detection, morphology)
 Pillow               # image manipulation
 google-generativeai  # Gemma via Google AI Studio (vision.provider: google)

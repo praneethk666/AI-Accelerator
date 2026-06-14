@@ -27,12 +27,19 @@ def get_tool_for_pdf(pdf_path: str):
         return MixedPDFTool()
 
 
-# Patch the layout-model loader for all tests — keeps tests offline (no weight
-# download) and fast; detection falls back to contours.
+# Keep tests offline + fast: force the Paddle OCR path (the default is Surya, which
+# needs llama-server + is slow), and stub the layout model so detection falls back
+# to contours (no weight download).
 @pytest.fixture(autouse=True)
-def mock_layout():
-    with patch("backend.extraction.scanned_pdf.scanned.get_layout_model", return_value=None):
-        yield
+def fast_offline_ocr():
+    from backend.extraction.scanned_pdf import scanned
+    prev = scanned._OCR_ENGINE
+    scanned.set_ocr_engine("paddle")
+    try:
+        with patch("backend.extraction.scanned_pdf.scanned.get_layout_model", return_value=None):
+            yield
+    finally:
+        scanned.set_ocr_engine(prev)
 
 
 # Test all three PDF types automatically

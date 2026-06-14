@@ -44,6 +44,16 @@ vision:
       net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
       visible dimensions or tolerances. Be precise — this is used for search.
 
+# ── OCR (scanned pages) ───────────────────────────────────────────────────────
+# engine: surya | paddle
+#   surya  — torch-based; ONE pass gives text + layout (figures/tables), 90+
+#            languages, better on complex layouts. No paddle<->torch conflict.
+#            Requires the llama-server binary:  brew install llama.cpp
+#   paddle — PaddleOCR text + DocLayout-YOLO/contour regions (fallback). Faster
+#            CNN recognition; auto-used if surya is unavailable.
+ocr:
+  engine: surya
+
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
   # nomic-embed-text-v1.5 chosen over BAAI/bge-large-en-v1.5 for CPU compatibility:

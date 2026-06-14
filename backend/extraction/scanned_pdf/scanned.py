@@ -35,6 +35,19 @@ _yolo_model = None
 _CACHE_MAX = 64
 _ocr_cache: "OrderedDict[str, tuple]" = OrderedDict()
 _region_cache: "OrderedDict[tuple, list]" = OrderedDict()
+_surya_cache: "OrderedDict[str, object]" = OrderedDict()
+
+# OCR engine: "surya" (default) or "paddle". Settable from config via
+# set_ocr_engine(); overridable by the OCR_ENGINE env var. Surya does text +
+# layout in one pass and is torch-based (no paddle<->torch conflict); paddle is
+# the fallback. Surya needs the llama-server binary (brew install llama.cpp).
+_OCR_ENGINE = os.getenv("OCR_ENGINE", "surya").lower()
+
+
+def set_ocr_engine(name: Optional[str]) -> None:
+    global _OCR_ENGINE
+    if name:
+        _OCR_ENGINE = name.lower()
 
 
 def _img_hash(pil_image: "Image.Image") -> str:
@@ -127,6 +140,19 @@ def page_to_pil(page, dpi: int = 200) -> Image.Image:
     return Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
 
 
+def _get_surya_page(pil_image: "Image.Image"):
+    """Run Surya once per page (text + layout regions), memoized by image content."""
+    key = _img_hash(pil_image)
+    cached = _cache_get(_surya_cache, key)
+    if cached is not None:
+        return cached
+    from backend.extraction.scanned_pdf.ocr_backends import surya_page
+
+    page = surya_page(pil_image)
+    _cache_put(_surya_cache, key, page)
+    return page
+
+
 def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[int, int, int, int]]]:
     """
     Run OCR once and return both the full text and bounding boxes of all text lines.
@@ -137,6 +163,17 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
     cached = _cache_get(_ocr_cache, key)
     if cached is not None:
         return cached
+
+    # Surya: text comes from the one-pass full-page result. Fall back to Paddle
+    # if Surya is unavailable (e.g. no llama-server) or errors.
+    if _OCR_ENGINE == "surya":
+        try:
+            page = _get_surya_page(pil_image)
+            out = (page.text, page.text_boxes)
+            _cache_put(_ocr_cache, key, out)
+            return out
+        except Exception as e:
+            logger.warning("Surya OCR failed (%s); falling back to PaddleOCR", e)
 
     ocr = get_ocr_engine()
     img_np = np.array(pil_image)
@@ -173,6 +210,20 @@ def detect_visual_regions(
     cached = _cache_get(_region_cache, cache_key)
     if cached is not None:
         return cached
+
+    # Surya: visual regions come from the SAME one-pass result as the text
+    # (no separate layout model). Fall back to DocLayout/contours on failure.
+    if _OCR_ENGINE == "surya":
+        try:
+            page = _get_surya_page(pil_image)
+            regions = [
+                b for b in page.regions
+                if (b[2] - b[0]) * (b[3] - b[1]) >= min_area
+            ]
+            _cache_put(_region_cache, cache_key, regions)
+            return regions
+        except Exception as e:
+            logger.warning("Surya layout failed (%s); falling back to detector", e)
 
     img_w, img_h = pil_image.size
     page_area = img_w * img_h

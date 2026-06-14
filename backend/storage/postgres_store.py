@@ -34,34 +34,47 @@ class PostgresStore:
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True)
 
     def write_chunk(self, chunk: dict) -> None:
-        """Upsert one chunk row (text + tags + source_ref), keyed by chunk_id."""
+        """Upsert one chunk row (full record), keyed by chunk_id.
+
+        Persists table_data / image_path too — table and image_caption chunks
+        carry these and retrieval/citations need them back (Qdrant holds only the
+        vectors + tag payload; Postgres is the source of truth for content)."""
         self.conn.execute(
             """
-            INSERT INTO chunks (chunk_id, document_id, text, tags, source_ref)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO chunks
+                (chunk_id, document_id, text, token_count, tags, source_ref,
+                 table_data, image_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (chunk_id) DO UPDATE SET
                 document_id = EXCLUDED.document_id,
                 text        = EXCLUDED.text,
+                token_count = EXCLUDED.token_count,
                 tags        = EXCLUDED.tags,
-                source_ref  = EXCLUDED.source_ref
+                source_ref  = EXCLUDED.source_ref,
+                table_data  = EXCLUDED.table_data,
+                image_path  = EXCLUDED.image_path
             """,
             (
                 chunk["chunk_id"],
                 chunk.get("document_id"),
                 chunk.get("text"),
+                chunk.get("token_count", 0),
                 Json(chunk.get("tags", {})),
                 Json(chunk.get("source_ref")),
+                Json(chunk.get("table_data")) if chunk.get("table_data") else None,
+                chunk.get("image_path"),
             ),
         )
-    
+
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
-        """Fetch chunks by chunk_id (e.g. to hydrate Qdrant search hits with text)."""
+        """Fetch full chunk rows by chunk_id (hydrate Qdrant search hits)."""
         if not chunk_ids:
             return []
         rows = self.conn.execute(
             # ::text cast keeps this agnostic to the chunk_id column type (uuid)
             """
-            SELECT chunk_id, document_id, text, tags, source_ref
+            SELECT chunk_id, document_id, text, token_count, tags, source_ref,
+                   table_data, image_path
             FROM chunks WHERE chunk_id::text = ANY(%s)
             """,
             (chunk_ids,),
@@ -71,8 +84,11 @@ class PostgresStore:
                 "chunk_id": r[0],
                 "document_id": r[1],
                 "text": r[2],
-                "tags": r[3],
-                "source_ref": r[4],
+                "token_count": r[3],
+                "tags": r[4],
+                "source_ref": r[5],
+                "table_data": r[6],
+                "image_path": r[7],
             }
             for r in rows
         ]

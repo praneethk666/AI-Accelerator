@@ -28,17 +28,12 @@ class PGStore:
     def log_conversation(
         config: dict, session_id: str, turn: int, question: str, answer: str
     ) -> None:
-        """Append one turn to the conversations table. Best-effort — the caller
-        (answerer._log) already swallows exceptions, so a missing table or a
-        down DB never blocks answering."""
-        pg = PostgresStore()
-        try:
-            pg.conn.execute(
-                """
-                INSERT INTO conversations (session_id, turn, question, answer)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (session_id, turn, question, answer),
-            )
-        finally:
-            pg.close()
+        """Persist one Q/A turn as a user row + an assistant row, via the single
+        conversation store (one schema: session_id, role, content). Best-effort —
+        answerer._log already swallows exceptions, so a down DB never blocks
+        answering."""
+        from backend.storage.conversation_store import get_conversation_store
+
+        store = get_conversation_store()
+        store.save_turn(session_id, "user", question)
+        store.save_turn(session_id, "assistant", answer)

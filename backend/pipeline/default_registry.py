@@ -39,6 +39,7 @@ _TOOL_SPECS: list[tuple[str, str]] = [
     ("backend.chunking.chunk_tool", "ChunkTool"),
     ("backend.embeddings.embed_tool", "EmbedTool"),
     ("backend.storage.index_tool", "IndexTool"),
+    ("backend.retrieval.query_planner", "QueryPlannerTool"),
     ("backend.retrieval.retrieval", "RetrievalTool"),
     ("backend.retrieval.answerer", "AnswererTool"),
 ]

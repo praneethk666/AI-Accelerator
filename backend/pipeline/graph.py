@@ -2,8 +2,13 @@
 
 - nodes = tools found in the registry by the names in config.steps
 - a step runs only if it is BOTH listed in config.steps AND registered (toggle)
-- the `extract` placeholder expands to the concrete extractors (pdf/excel/ppt/
-  image); at runtime only the one matching state["file_type"] runs
+- the `extract` placeholder expands to the concrete extractors; at runtime exactly
+  one runs, chosen by (in priority order):
+    1. route_extractors  — a route overrides extraction entirely (e.g. cad_route
+       -> cad_extract uses a vision prompt instead of the normal pdf extractor)
+    2. pdf_extractors     — file_type=="pdf" dispatches by state["pdf_kind"]
+       (digital/scanned/mixed), set by the categorize step's detector
+    3. extractors         — file_type -> tool for the simple 1:1 cases (excel, ppt)
 - tools never call each other — they read/write the shared state; the graph routes
 - one tool failing -> appended to state["errors"], never kills the run
 """
@@ -32,45 +37,103 @@ def _make_node(tool: Tool, raw_config: dict):
 
 
 def _resolve_steps(config: PipelineConfig, registry: ToolRegistry):
-    """Expand `extract` into registered extractors; return (steps, extractor_ft).
+    """Expand `extract` into registered extractors; return (steps, dispatch).
 
-    extractor_ft maps an expanded extractor's tool name -> the file_type that
-    selects it. Only steps from expanding `extract` are file-type-gated; a
-    concrete extractor listed directly in `steps` always runs (a deliberate choice).
+    dispatch holds the three gate maps that decide which single extractor runs:
+      extractor_ft       tool -> file_type            (excel/ppt 1:1)
+      pdf_kind_of        tool -> pdf kind             (digital/scanned/mixed)
+      route_extractor_of tool -> {routes}             (route override, e.g. CAD)
+      override_routes    set of routes that have a route_extractor — on those
+                         routes the normal file_type/pdf extractors are suppressed
+    A concrete extractor listed directly in `steps` (not via `extract`) always runs.
     """
-    extractor_map = config.raw.get("extractors", {})  # file_type -> tool name
+    extractor_map = config.raw.get("extractors", {})        # file_type -> tool
+    pdf_extractors = config.raw.get("pdf_extractors", {})    # pdf kind  -> tool
+    route_extractors = config.raw.get("route_extractors", {})  # route   -> tool
+
     steps: list[str] = []
     extractor_ft: dict[str, str] = {}
+    pdf_kind_of: dict[str, str] = {}
+    route_extractor_of: dict[str, set[str]] = {}
+
     for s in config.steps:
         if s == EXTRACT_PLACEHOLDER:
+            # 1. route-override extractors (a tool may serve several routes)
+            for route, tool_name in route_extractors.items():
+                if tool_name in registry:
+                    if tool_name not in route_extractor_of:
+                        steps.append(tool_name)
+                        route_extractor_of[tool_name] = set()
+                    route_extractor_of[tool_name].add(route)
+            # 2. file_type extractors (excel, ppt, ...)
             for file_type, tool_name in extractor_map.items():
-                if tool_name in registry:  # toggle: only registered extractors
+                if tool_name in registry:
                     steps.append(tool_name)
                     extractor_ft[tool_name] = file_type
+            # 3. pdf sub-kind extractors (digital/scanned/mixed)
+            for kind, tool_name in pdf_extractors.items():
+                if tool_name in registry:
+                    steps.append(tool_name)
+                    pdf_kind_of[tool_name] = kind
         elif s in registry:  # toggle: listed AND registered
             steps.append(s)
-    return steps, extractor_ft
+
+    dispatch = {
+        "extractor_ft": extractor_ft,
+        "pdf_kind_of": pdf_kind_of,
+        "route_extractor_of": route_extractor_of,
+        "override_routes": set(route_extractors.keys()),
+    }
+    return steps, dispatch
 
 
 def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
     """Compile a runnable graph from a registry + config. Returns graph.invoke-able."""
-    steps, extractor_ft = _resolve_steps(config, registry)
+    steps, dispatch = _resolve_steps(config, registry)
+    extractor_ft = dispatch["extractor_ft"]
+    pdf_kind_of = dispatch["pdf_kind_of"]
+    route_extractor_of = dispatch["route_extractor_of"]
+    override_routes = dispatch["override_routes"]
     gates = config.raw.get("route_gates", {})  # {step: [routes that keep it]}
 
+    def _is_extractor(step: str) -> bool:
+        return (
+            step in extractor_ft
+            or step in pdf_kind_of
+            or step in route_extractor_of
+        )
+
     def _enabled(step: str, state: PipelineState) -> bool:
-        # expanded extractor: only the one matching the document's file_type runs
+        route = state.get("route") or config.route
+
+        # route-override extractor: runs only on its route(s)
+        routes = route_extractor_of.get(step)
+        if routes is not None:
+            return route in routes
+
+        # file_type extractor: matches file_type, unless this route is overridden
         ft = extractor_ft.get(step)
         if ft is not None:
+            if route in override_routes:
+                return False
             return state.get("file_type") == ft
+
+        # pdf sub-kind extractor: file_type==pdf AND detected kind matches
+        kind = pdf_kind_of.get(step)
+        if kind is not None:
+            if route in override_routes:
+                return False
+            return state.get("file_type") == "pdf" and state.get("pdf_kind") == kind
+
         # route gate: gated step runs only for its allowed routes; ungated always runs
         allowed = gates.get(step)
         if allowed is None:
             return True
-        return (state.get("route") or config.route) in allowed
+        return route in allowed
 
     def _conditional(step: str) -> bool:
-        # skippable -> a branch point precedes it (route gate or file-type dispatch)
-        return step in gates or step in extractor_ft
+        # skippable -> a branch point precedes it (route gate or extractor dispatch)
+        return step in gates or _is_extractor(step)
 
     sg = StateGraph(PipelineState)
     for step in steps:

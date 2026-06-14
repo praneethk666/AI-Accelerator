@@ -19,6 +19,23 @@ from typing import Any, Dict
 
 from .classifier import categorize
 
+
+def _augment_pdf_kind(result: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    """For PDFs, classify digital/scanned/mixed so the graph picks the right
+    PDF extractor (pdf_digital/scanned_pdf/mixed_pdf). categorize is the document
+    -inspection step, so detection belongs here. Safe default: digital."""
+    if state.get("file_type") != "pdf" or result.get("pdf_kind"):
+        return result
+    try:
+        from backend.extraction.detector import detect_pdf_type
+
+        kind, _ = detect_pdf_type(state["file_path"])
+        result["pdf_kind"] = kind
+    except Exception:
+        result["pdf_kind"] = "digital"
+    return result
+
+
 class CategorizeTool:
     name = "categorize"
 
@@ -71,12 +88,13 @@ class CategorizeTool:
 
         try:
             # Pass full config to categorize; it handles structure internally
-            return categorize(
+            result = categorize(
                 file_path=file_path,
                 state=state,
                 config=config,
                 deployment=config.get("deployment", {})
             )
+            return _augment_pdf_kind(result, state)
 
         except Exception as e:
             state["errors"].append(

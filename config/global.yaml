@@ -137,20 +137,29 @@ type_to_route:
   unknown:         text_default
 
 # "extract" is a placeholder in the steps below. At build time the graph expands
-# it into the extractor matching state["file_type"]; the others are skipped.
-# One schema, file-type-specific extraction — add a row to plug in a new extractor.
-# Values MUST match a tool's `name` (see backend/extraction/*/tool.py).
+# it into concrete extractors; at runtime exactly one runs. Values MUST match a
+# tool's `name` (see backend/extraction/*/tool.py). Selection priority:
+#   route_extractors > pdf_extractors (by state.pdf_kind) > extractors (by file_type)
 #
-# FOLLOW-UP (Karthii): PDFs are not one tool — detector.py classifies a PDF as
-# digital/scanned/mixed and the matching extractor (pdf_digital / scanned_pdf /
-# mixed_pdf) should run. The graph's one-tool-per-file_type model can't express
-# that yet, so `pdf` defaults to pdf_digital (the common case). A `pdf_dispatch`
-# step that runs the detector then routes is the proper fix. `image` has no
-# extractor yet (no image_extraction tool exists) — left unmapped on purpose.
+# extractors: simple file_type -> tool (1:1). `image` has no extractor yet.
 extractors:
-  pdf: pdf_digital          # interim: digital only; scanned/mixed dispatch TODO
   excel: excel_extraction
   ppt: ppt_extraction
+
+# pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
+# sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.
+pdf_extractors:
+  digital: pdf_digital
+  scanned: scanned_pdf
+  mixed: mixed_pdf
+
+# route_extractors: a route overrides extraction entirely. CAD/circuit drawings
+# are PDFs but need vision extraction (cad_extract) with the right diagram prompt,
+# not the normal text pdf extractor. On these routes the file_type/pdf extractors
+# are suppressed.
+route_extractors:
+  cad_route: cad_extract
+  circuit_route: cad_extract
 
 routes:
   text_default:

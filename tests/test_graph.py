@@ -117,6 +117,69 @@ def test_extract_skips_all_when_file_type_unknown():
     assert out["errors"] == []
 
 
+class _ViaStub:
+    """Minimal extractor stub that tags which extractor ran."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def run(self, state, config):
+        state.setdefault("blocks", []).append({"type": "text", "via": self.name})
+        return state
+
+
+def _pdf_registry():
+    reg = _registry()
+    for n in ("pdf_digital", "scanned_pdf", "mixed_pdf", "cad_extract"):
+        reg.register(_ViaStub(n))
+    return reg
+
+
+PDF_CFG = {
+    "route": "text_default",
+    "steps": ["categorize", "extract", "chunk"],
+    "extractors": {"excel": "excel_extraction", "ppt": "ppt_extraction"},
+    "pdf_extractors": {
+        "digital": "pdf_digital",
+        "scanned": "scanned_pdf",
+        "mixed": "mixed_pdf",
+    },
+    "route_extractors": {"cad_route": "cad_extract", "circuit_route": "cad_extract"},
+}
+
+
+def test_pdf_dispatches_on_pdf_kind():
+    # file_type=pdf -> the extractor matching state["pdf_kind"] runs, alone
+    graph = build_pipeline(_pdf_registry(), PipelineConfig.from_dict(PDF_CFG))
+    for kind, tool in [
+        ("digital", "pdf_digital"),
+        ("scanned", "scanned_pdf"),
+        ("mixed", "mixed_pdf"),
+    ]:
+        out = graph.invoke(
+            {"document_id": "d1", "file_type": "pdf", "pdf_kind": kind}
+        )
+        assert _vias(out) == [tool]
+
+
+def test_route_extractor_overrides_file_type():
+    # on cad_route, cad_extract runs and the pdf extractors are suppressed
+    cfg = dict(PDF_CFG, route="cad_route")
+    out = build_pipeline(_pdf_registry(), PipelineConfig.from_dict(cfg)).invoke(
+        {"document_id": "d1", "file_type": "pdf", "pdf_kind": "digital",
+         "route": "cad_route"}
+    )
+    assert _vias(out) == ["cad_extract"]
+
+
+def test_non_pdf_still_dispatches_on_file_type():
+    # excel/ppt unaffected by the pdf/route machinery
+    out = build_pipeline(_pdf_registry(), PipelineConfig.from_dict(PDF_CFG)).invoke(
+        {"document_id": "d1", "file_type": "excel"}
+    )
+    assert _vias(out) == ["excel"]
+
+
 def test_failing_tool_degrades_gracefully():
     class Boom:
         name = "boom"

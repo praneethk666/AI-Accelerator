@@ -13,6 +13,7 @@ class PipelineState(TypedDict, total=False):
     document_id: str
     file_path: str
     file_type: str           # "pdf" | "excel" | "ppt" | "image"
+    pdf_kind: str            # "digital" | "scanned" | "mixed"; set by categorize (detector) — picks the PDF extractor
     document_type: str       # set by categorize
     industry: str            # set by categorize
     confidence: float        # categorize confidence score

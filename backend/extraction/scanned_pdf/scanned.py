@@ -1,5 +1,7 @@
 """Scanned PDF Handler – YOLO + OCR, outputs NormalizedBlock list."""
 
+import hashlib
+import logging
 import os
 import io
 import cv2
@@ -7,17 +9,45 @@ import fitz
 import uuid
 import numpy as np
 
+from collections import OrderedDict
 from PIL import Image
 from paddleocr import PaddleOCR
 from typing import List, Optional, Tuple
 
 from backend.core.schemas import NormalizedBlock, SourceRef
 
+logger = logging.getLogger(__name__)
+
 # ------------------------------------------------------------------
 # Global models (loaded once)
 # ------------------------------------------------------------------
 _ocr_engine = None
 _yolo_model = None
+
+# Per-page result caches keyed by rendered-image content hash. The profiler and
+# the extractor both render the same page @200 DPI and run OCR + region detection;
+# memoizing here means the expensive work happens ONCE per page, not twice.
+_CACHE_MAX = 64
+_ocr_cache: "OrderedDict[str, tuple]" = OrderedDict()
+_region_cache: "OrderedDict[tuple, list]" = OrderedDict()
+
+
+def _img_hash(pil_image: "Image.Image") -> str:
+    return hashlib.md5(pil_image.tobytes()).hexdigest()
+
+
+def _cache_get(cache: OrderedDict, key):
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    return None
+
+
+def _cache_put(cache: OrderedDict, key, value):
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _CACHE_MAX:
+        cache.popitem(last=False)
 
 def get_ocr_engine():
     global _ocr_engine
@@ -37,7 +67,7 @@ def get_yolo_model():
             from ultralytics import YOLO
             _yolo_model = YOLO("yolov8n.pt")
         except Exception as e:
-            print(f"Warning: YOLO model loading failed ({e}). Falling back to contour detection only.")
+            logger.debug(f"Warning: YOLO model loading failed ({e}). Falling back to contour detection only.")
             _yolo_model = None
     return _yolo_model
 
@@ -52,7 +82,13 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
     """
     Run OCR once and return both the full text and bounding boxes of all text lines.
     Returns (full_text, list_of_bboxes) where bbox = (x1,y1,x2,y2) in pixel coordinates.
+    Memoized by image content so the profiler + extractor share one OCR pass.
     """
+    key = _img_hash(pil_image)
+    cached = _cache_get(_ocr_cache, key)
+    if cached is not None:
+        return cached
+
     ocr = get_ocr_engine()
     img_np = np.array(pil_image)
     result = ocr.ocr(img_np)
@@ -66,7 +102,9 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
             xs = [int(p[0]) for p in box]
             ys = [int(p[1]) for p in box]
             text_boxes.append((min(xs), min(ys), max(xs), max(ys)))
-    return "\n".join(text_lines), text_boxes
+    out = ("\n".join(text_lines), text_boxes)
+    _cache_put(_ocr_cache, key, out)
+    return out
 
 
 def detect_visual_regions(
@@ -79,7 +117,14 @@ def detect_visual_regions(
     Use YOLO + contour detection to find meaningful non‑text regions.
     Returns list of bboxes (x1,y1,x2,y2) in pixel coordinates.
     Only regions with area >= min_area are considered significant.
+    Memoized by (image, min_area) — detection is deterministic per page, so the
+    profiler + extractor share one detection pass.
     """
+    cache_key = (_img_hash(pil_image), int(min_area))
+    cached = _cache_get(_region_cache, cache_key)
+    if cached is not None:
+        return cached
+
     img_w, img_h = pil_image.size
     page_area = img_w * img_h
 
@@ -98,7 +143,7 @@ def detect_visual_regions(
                         if (x2 - x1) > 20 and (y2 - y1) > 20:
                             yolo_boxes.append((x1, y1, x2, y2))
         except Exception as e:
-            print(f"YOLO inference failed: {e}")
+            logger.debug(f"YOLO inference failed: {e}")
 
     # ----- Contour detection (text masked) -----
     gray = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2GRAY)
@@ -184,6 +229,7 @@ def detect_visual_regions(
 
         filtered.append((x1, y1, x2, y2))
 
+    _cache_put(_region_cache, cache_key, filtered)
     return filtered
 
 

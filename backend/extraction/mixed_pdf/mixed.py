@@ -1,6 +1,7 @@
 """Handle mixed PDFs: use digital pipeline for digital pages,
 and scanned pipeline for scanned pages."""
 
+import logging
 import os
 import tempfile
 from typing import List
@@ -8,6 +9,8 @@ from typing import List
 import fitz
 
 from backend.core.schemas import NormalizedBlock, SourceRef
+
+logger = logging.getLogger(__name__)
 from backend.extraction.detector import detect_pdf_type
 from backend.extraction.scanned_pdf.scanned import extract_scanned
 from backend.extraction.digital_pdf.digital import extract_digital
@@ -38,7 +41,7 @@ def extract_mixed(
         try:
             for page_num, page_type in enumerate(per_page_types):
                 page_number = page_num + 1
-                print(f"Page {page_number}: {page_type} → calling {'digital' if page_type == 'digital' else 'scanned'} pipeline")
+                logger.debug(f"Page {page_number}: {page_type} → calling {'digital' if page_type == 'digital' else 'scanned'} pipeline")
 
                 # Create a temporary PDF containing only this page
                 temp_pdf_path = os.path.join(tmpdir, f"page_{page_number}.pdf")

@@ -4,12 +4,15 @@ Includes bounding boxes for image and vector placeholders.
 Vector drawings that overlap tables (by >50% area) are ignored.
 Vector drawings with low complexity (few drawing items) are also ignored.
 """
+import logging
 import os
 import fitz
 import uuid
 from typing import List
 
 from backend.core.schemas import NormalizedBlock, SourceRef
+
+logger = logging.getLogger(__name__)
 
 # Configuration (move to config later)
 MIN_IMAGE_AREA = 1000               # ignore logos/icons smaller than ~32x32 px
@@ -36,10 +39,18 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             para_blocks = _extract_paragraphs(page, page_number, filename, document_id)
             blocks.extend(para_blocks)
 
+            # ---- Tables: detect ONCE per page, reuse for table blocks + the
+            # vector-overlap filter below (find_tables is expensive). ----
+            try:
+                table_list = page.find_tables().tables or []
+            except Exception as e:
+                logger.warning("find_tables failed on page %s: %s", page_number, e)
+                table_list = []
+            table_bboxes = [t.bbox for t in table_list]
+
             # ---- 2. Tables ----
             try:
-                tables = page.find_tables()
-                for table in tables.tables:
+                for table in table_list:
                     extracted = table.extract()
                     if not extracted:
                         continue
@@ -62,7 +73,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
                         )
                     )
             except Exception as e:
-                print(f"Table extraction failed on page {page_number}: {e}")
+                logger.warning("Table extraction failed on page %s: %s", page_number, e)
 
             # ---- 3. Image placeholders (significant only) WITH BBOX ----
             try:
@@ -91,16 +102,10 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
                         )
                     )
             except Exception as e:
-                print(f"Image extraction failed on page {page_number}: {e}")
+                logger.warning("Image extraction failed on page %s: %s", page_number, e)
 
-            # ---- 4. Vector drawing placeholders (filtered: area + complexity + table overlap) ----
-            # Detect tables for vector overlap filter
-            try:
-                tables_found = page.find_tables()
-                table_bboxes = [t.bbox for t in tables_found.tables] if tables_found.tables else []
-            except Exception:
-                table_bboxes = []
-
+            # ---- 4. Vector drawing placeholders (filtered: area + complexity +
+            # table overlap). table_bboxes already computed above (no 2nd find_tables). ----
             drawings = page.get_drawings()
             vector_bboxes_for_placeholders = []
             for dr in drawings:
@@ -146,7 +151,7 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
                         )
                     )
             except Exception as e:
-                print(f"Vector drawing extraction failed on page {page_number}: {e}")
+                logger.debug(f"Vector drawing extraction failed on page {page_number}: {e}")
 
     finally:
         doc.close()

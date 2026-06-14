@@ -1,9 +1,12 @@
 """Per-page x-ray (required by Vishal)."""
 
+import logging
 import fitz
 from typing import List
 
 from backend.core.schemas import PageProfile, ImageRegion
+
+logger = logging.getLogger(__name__)
 
 # For scanned page image detection – updated import
 from backend.extraction.scanned_pdf.scanned import page_to_pil, extract_ocr_text_and_boxes, detect_visual_regions
@@ -38,11 +41,13 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
             ocr_text = None
             table_hint = False
 
+            table_bboxes = []
             if has_native_text:
-                # Digital page: fast native table detection
+                # Digital page: fast native table detection — ONCE per page.
                 try:
-                    tables = page.find_tables()
-                    table_hint = len(tables.tables) > 0 if tables.tables else False
+                    table_list = page.find_tables().tables or []
+                    table_bboxes = [t.bbox for t in table_list]
+                    table_hint = len(table_list) > 0
                 except Exception:
                     table_hint = False
             # Scanned pages: table detection is unreliable, so skip it.
@@ -62,25 +67,19 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
                     items = dr.get("items", [])
                     if len(items) < MIN_VECTOR_COMPLEXITY:
                         continue
-                    # Skip if drawing overlaps a table
+                    # Skip if drawing overlaps a table (reuse precomputed bboxes —
+                    # no find_tables per drawing).
                     skip = False
-                    if table_hint:
-                        try:
-                            tables = page.find_tables()
-                            if tables.tables:
-                                for t in tables.tables:
-                                    # simple overlap check
-                                    ix1 = max(rect[0], t.bbox[0])
-                                    iy1 = max(rect[1], t.bbox[1])
-                                    ix2 = min(rect[2], t.bbox[2])
-                                    iy2 = min(rect[3], t.bbox[3])
-                                    if ix2 > ix1 and iy2 > iy1:
-                                        inter_area = (ix2 - ix1) * (iy2 - iy1)
-                                        if inter_area / area > 0.5:
-                                            skip = True
-                                            break
-                        except:
-                            pass
+                    for t_bbox in table_bboxes:
+                        ix1 = max(rect[0], t_bbox[0])
+                        iy1 = max(rect[1], t_bbox[1])
+                        ix2 = min(rect[2], t_bbox[2])
+                        iy2 = min(rect[3], t_bbox[3])
+                        if ix2 > ix1 and iy2 > iy1:
+                            inter_area = (ix2 - ix1) * (iy2 - iy1)
+                            if inter_area / area > 0.5:
+                                skip = True
+                                break
                     if not skip:
                         significant_vector_count += 1
                 has_vector_graphics = significant_vector_count > 0
@@ -117,7 +116,7 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
                             significant=True
                         ))
                 except Exception as e:
-                    print(f"Scanned page detection failed on page {page_num+1}: {e}")
+                    logger.debug(f"Scanned page detection failed on page {page_num+1}: {e}")
 
             else:   # Digital page
                 try:
@@ -151,7 +150,7 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
             )
             profiles.append(profile)
 
-            print(
+            logger.debug(
                 f"Page {page_num + 1} | "
                 f"text={text_len} | "
                 f"images={len(images)} | "

@@ -27,7 +27,35 @@ class ConversationStore(Protocol):
 
 
 class PostgresConversationStore:
-    """ConversationStore backed by the `conversations` table."""
+    """ConversationStore backed by the `conversations` table.
+
+    Per-message schema (role/content) — the standard chat shape: tolerates system/
+    tool messages, non-alternating turns, and streaming. session_id is TEXT so the
+    web UI's "web" session (a non-UUID) works.
+    """
+
+    def _ensure_schema(self) -> None:
+        """Create the table if it's missing — keeps the store usable even if
+        scripts/init_db.sql wasn't run. MUST stay in sync with init_db.sql."""
+        pg = PostgresStore()
+        try:
+            pg.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id          BIGSERIAL PRIMARY KEY,
+                    session_id  TEXT NOT NULL,
+                    role        TEXT NOT NULL,
+                    content     TEXT NOT NULL,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            pg.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversations "
+                "ON conversations (session_id, created_at)"
+            )
+        finally:
+            pg.close()
 
     def save_turn(self, session_id: str, role: str, content: str) -> None:
         pg = PostgresStore()
@@ -67,5 +95,10 @@ def get_conversation_store() -> ConversationStore:
     """Return the process-wide conversation store (PostgreSQL-backed)."""
     global _store
     if _store is None:
-        _store = PostgresConversationStore()
+        store = PostgresConversationStore()
+        try:
+            store._ensure_schema()  # best-effort; harmless if the table exists
+        except Exception:
+            pass
+        _store = store
     return _store

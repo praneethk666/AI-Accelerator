@@ -47,10 +47,13 @@ def extract_mixed(
                     temp_doc.save(temp_pdf_path)
 
                 # Choose pipeline
+                # Keep the SAME document_id across pages. A per-page id (uuid_pN)
+                # makes chunks reference a documents row that doesn't exist ->
+                # Postgres FK violation at index time (mixed PDFs never indexed).
                 if page_type == "digital":
-                    page_blocks = extract_digital(temp_pdf_path, document_id=f"{document_id}_p{page_number}")
+                    page_blocks = extract_digital(temp_pdf_path, document_id=document_id)
                 else:  # scanned
-                    page_blocks = extract_scanned(temp_pdf_path, document_id=f"{document_id}_p{page_number}")
+                    page_blocks = extract_scanned(temp_pdf_path, document_id=document_id)
 
                 # Correct source_ref to the original file and page number
                 for block in page_blocks:

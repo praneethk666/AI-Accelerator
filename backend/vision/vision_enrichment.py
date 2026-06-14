@@ -41,11 +41,11 @@ from backend.core.tool import Tool, PipelineState
 
 from .pdf_cropper import PDFCropper
 
-from .block_builder import build_image_caption_block
+from .block_builder import build_image_caption_block, parse_caption
 
 from .timeout import run_with_timeout, TimeoutException
 
-from .prompts import VISION_PROMPT   # plain text prompt
+from .prompts import VISION_PROMPT, build_vision_prompt   # route-aware prompt builder
  
 from dotenv import load_dotenv
 
@@ -56,7 +56,11 @@ class VisionEnrichmentTool(Tool):
  
     def run(self, state: PipelineState, config: dict) -> PipelineState:
 
-        vision_cfg = config.get("vision", {})
+        # Resolve the route-specific prompt ONCE and thread it through vision_cfg
+        # so every per-image task uses the right focus (e.g. CAD/circuit) instead
+        # of the generic prompt. Copy so we don't mutate the shared config dict.
+        vision_cfg = dict(config.get("vision", {}))
+        vision_cfg["_resolved_prompt"] = build_vision_prompt(state, config)
 
         timeout_s = vision_cfg.get("timeout_s", 60)
 
@@ -496,7 +500,7 @@ class VisionEnrichmentTool(Tool):
 
             print(f"💾 Debug image: {debug_path}")
  
-        description = run_with_timeout(describe_image, timeout_s, image_bytes, VISION_PROMPT, vision_cfg)
+        description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
 
         print(f"📄 Description (first 200 chars): {description[:200]}")
  
@@ -590,19 +594,21 @@ class VisionEnrichmentTool(Tool):
 
             print(f"💾 Debug image: {debug_path}")
  
-        description = run_with_timeout(describe_image, timeout_s, image_bytes, VISION_PROMPT, vision_cfg)
+        description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
 
         print(f"📄 Description (first 200 chars): {description[:200]}")
  
-        # Update the existing block (pending vision) with the description
+        # Parse the JSON reply into a clean caption (description + entities) —
+        # same as the PDF path; never store the raw JSON blob as the chunk text.
+        searchable_text, entities, vision_type, conf, failed = parse_caption(description)
 
-        block["text"] = description
-
-        block["confidence"] = 0.95
+        block["text"] = searchable_text
+        block["confidence"] = conf or 0.95
 
         block["metadata"]["pending_vision"] = False
-
-        block["metadata"]["enrichment_failed"] = False
+        block["metadata"]["enrichment_failed"] = failed
+        block["metadata"]["entities"] = entities
+        block["metadata"]["vision_type"] = vision_type
  
         # Make the image web‑accessible (assume raw_path is already under uploads/images/)
 

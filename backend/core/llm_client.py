@@ -95,8 +95,15 @@ def _with_key(kwargs: dict, key_name: str, api_key) -> dict:
 
 
 def _langfuse_callbacks() -> list:
+    # langfuse v3 -> v4 moved the handler to langfuse.langchain; try the new path
+    # first, fall back to the old one. Absent/misconfigured -> no callbacks (calls
+    # still work, just untraced).
     try:
-        from langfuse.callback import CallbackHandler
+        from langfuse.langchain import CallbackHandler
         return [CallbackHandler()]
     except Exception:
-        return []
+        try:
+            from langfuse.callback import CallbackHandler
+            return [CallbackHandler()]
+        except Exception:
+            return []

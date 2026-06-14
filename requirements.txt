@@ -22,7 +22,8 @@ paddleocr            # OCR for scanned pages
 paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
 # ── Vision / image processing ─────────────────────────────────────────────────
-ultralytics          # YOLO — object detection for significant image regions
+doclayout-yolo       # document-layout detector (figures/tables) for scanned pages
+huggingface-hub      # downloads the DocLayout-YOLO weights (also a ST dep)
 opencv-python-headless  # cv2 — used by scanned PDF pipeline (contour detection, morphology)
 Pillow               # image manipulation
 google-generativeai  # Gemma via Google AI Studio (vision.provider: google)

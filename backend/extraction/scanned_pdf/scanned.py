@@ -60,16 +60,55 @@ def get_ocr_engine():
         )
     return _ocr_engine
 
-def get_yolo_model():
-    global _yolo_model
-    if _yolo_model is None:
+# Document-layout detector. We use DocLayout-YOLO (trained on document elements:
+# title/text/table/figure/...), NOT a COCO model — COCO detects people/cars and
+# is the wrong tool for documents. If the package or weights aren't available we
+# return None and fall back to contour detection (still works, just less precise).
+_LAYOUT_FIGURE_CLASSES = {"figure", "table", "isolate_formula", "chart"}
+_layout_unavailable = False
+
+
+def get_layout_model():
+    global _yolo_model, _layout_unavailable
+    if _yolo_model is None and not _layout_unavailable:
         try:
-            from ultralytics import YOLO
-            _yolo_model = YOLO("yolov8n.pt")
+            from doclayout_yolo import YOLOv10
+            from huggingface_hub import hf_hub_download
+
+            weights = hf_hub_download(
+                repo_id="juliozhao/DocLayout-YOLO-DocStructBench",
+                filename="doclayout_yolo_docstructbench_imgsz1024.pt",
+            )
+            _yolo_model = YOLOv10(weights)
+            logger.info("DocLayout-YOLO loaded for document layout detection")
         except Exception as e:
-            logger.debug(f"Warning: YOLO model loading failed ({e}). Falling back to contour detection only.")
+            logger.warning(
+                "DocLayout-YOLO unavailable (%s); using contour detection only", e
+            )
+            _layout_unavailable = True
             _yolo_model = None
     return _yolo_model
+
+
+def _layout_region_boxes(pil_image: "Image.Image"):
+    """Figure/table/chart boxes from the doc-layout model, or [] if unavailable."""
+    model = get_layout_model()
+    if model is None:
+        return []
+    try:
+        result = model.predict(np.array(pil_image), imgsz=1024, conf=0.25, verbose=False)[0]
+        names = result.names
+        boxes = []
+        for b in result.boxes:
+            cls_name = names.get(int(b.cls), "") if isinstance(names, dict) else ""
+            if cls_name in _LAYOUT_FIGURE_CLASSES:
+                x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                if (x2 - x1) > 20 and (y2 - y1) > 20:
+                    boxes.append((x1, y1, x2, y2))
+        return boxes
+    except Exception as e:
+        logger.warning("DocLayout-YOLO inference failed: %s", e)
+        return []
 
 
 def page_to_pil(page, dpi: int = 200) -> Image.Image:
@@ -128,24 +167,10 @@ def detect_visual_regions(
     img_w, img_h = pil_image.size
     page_area = img_w * img_h
 
-    # ----- YOLO detection (if model available) -----
-    yolo_boxes = []
-    model = get_yolo_model()
-    if model is not None:
-        try:
-            img_np = np.array(pil_image)
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            results = model(img_bgr, conf=0.25, verbose=False)
-            for r in results:
-                if r.boxes is not None:
-                    for box in r.boxes.xyxy.cpu().numpy():
-                        x1, y1, x2, y2 = map(int, box)
-                        if (x2 - x1) > 20 and (y2 - y1) > 20:
-                            yolo_boxes.append((x1, y1, x2, y2))
-        except Exception as e:
-            logger.debug(f"YOLO inference failed: {e}")
+    # ----- Document-layout detection (figures/tables/charts) -----
+    yolo_boxes = _layout_region_boxes(pil_image)
 
-    # ----- Contour detection (text masked) -----
+    # ----- Contour detection (text masked) — complements/serves as fallback -----
     gray = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2GRAY)
     _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
 

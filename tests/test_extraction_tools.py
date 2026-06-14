@@ -27,10 +27,11 @@ def get_tool_for_pdf(pdf_path: str):
         return MixedPDFTool()
 
 
-# Patch the YOLO model loader for all tests to avoid DLL crash on Windows
+# Patch the layout-model loader for all tests — keeps tests offline (no weight
+# download) and fast; detection falls back to contours.
 @pytest.fixture(autouse=True)
-def mock_yolo():
-    with patch("backend.extraction.scanned_pdf.scanned.get_yolo_model", return_value=None):
+def mock_layout():
+    with patch("backend.extraction.scanned_pdf.scanned.get_layout_model", return_value=None):
         yield
 
 

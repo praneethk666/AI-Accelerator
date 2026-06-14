@@ -139,11 +139,18 @@ type_to_route:
 # "extract" is a placeholder in the steps below. At build time the graph expands
 # it into the extractor matching state["file_type"]; the others are skipped.
 # One schema, file-type-specific extraction — add a row to plug in a new extractor.
+# Values MUST match a tool's `name` (see backend/extraction/*/tool.py).
+#
+# FOLLOW-UP (Karthii): PDFs are not one tool — detector.py classifies a PDF as
+# digital/scanned/mixed and the matching extractor (pdf_digital / scanned_pdf /
+# mixed_pdf) should run. The graph's one-tool-per-file_type model can't express
+# that yet, so `pdf` defaults to pdf_digital (the common case). A `pdf_dispatch`
+# step that runs the detector then routes is the proper fix. `image` has no
+# extractor yet (no image_extraction tool exists) — left unmapped on purpose.
 extractors:
-  pdf: pdf_extraction
+  pdf: pdf_digital          # interim: digital only; scanned/mixed dispatch TODO
   excel: excel_extraction
   ppt: ppt_extraction
-  image: image_extraction
 
 routes:
   text_default:

@@ -20,7 +20,7 @@ from typing import Optional
 
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
-from backend.core.models import get_dense_model, get_reranker
+from backend.core.models import DENSE_QUERY_PREFIX, get_dense_model, get_reranker
 from backend.core.llm_client import get_llm
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
@@ -121,10 +121,18 @@ def _retrieve_one(
 
 # ── methods ───────────────────────────────────────────────────────────────────
 
+def _embed_query(embedder, query: str) -> list[float]:
+    # nomic queries MUST carry the query prefix (different from the document
+    # prefix used at index time) — otherwise dense recall silently degrades.
+    return embedder.encode(
+        DENSE_QUERY_PREFIX + query, normalize_embeddings=True
+    ).tolist()
+
+
 def _naive(query, cfg, full_config, filters):
     top_k    = cfg["top_n"]
     embedder = get_dense_model(full_config)
-    q_emb    = embedder.encode(query, normalize_embeddings=True).tolist()
+    q_emb    = _embed_query(embedder, query)
     return VectorStore.search(q_emb, full_config, top_k=top_k, filters=filters)
 
 
@@ -135,9 +143,9 @@ def _hybrid(query, cfg, full_config, filters):
     candidate_k   = cfg["candidate_k"]
 
     embedder    = get_dense_model(full_config)
-    q_emb       = embedder.encode(query, normalize_embeddings=True).tolist()
+    q_emb       = _embed_query(embedder, query)
     dense_hits  = VectorStore.search(q_emb, full_config, top_k=candidate_k, filters=filters)
-    sparse_hits = KeywordIndex.search(query, top_k=candidate_k, filters=filters)
+    sparse_hits = KeywordIndex.search(query, full_config, top_k=candidate_k, filters=filters)
 
     return _rrf_fuse(dense_hits, sparse_hits,
                      w_dense=dense_weight, w_sparse=sparse_weight,
@@ -165,7 +173,7 @@ def _hyde(query, cfg, full_config, filters):
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     ).content
     embedder = get_dense_model(full_config)
-    hyp_emb  = embedder.encode(hyp, normalize_embeddings=True).tolist()
+    hyp_emb  = _embed_query(embedder, hyp)
     return VectorStore.search(hyp_emb, full_config, top_k=top_k, filters=filters)
 
 

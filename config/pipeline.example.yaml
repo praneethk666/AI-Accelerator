@@ -10,6 +10,10 @@ steps:
   - enrich_chunks
   - embed
   - index
+# route_gates: a listed step runs only for these routes (else the graph skips it).
+# vision is expensive -> only on diagram/scanned routes, never text_default.
+route_gates:
+  vision_enrichment: [diagram_heavy, scanned_heavy]
 vision:
   enabled: true
   dpi: 150
@@ -21,6 +25,9 @@ chunking:
   strategy: recursive
   size: 800
   overlap: 100
+embeddings:
+  model: local # local stub for now; swap for a real model later
+  dim: 256 # must match the vector(N) column the store creates
 retrieval:
   mode: hybrid
   top_n: 20

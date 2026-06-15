@@ -4,15 +4,32 @@
 # Database connection strings use ${VAR} substitution resolved from the environment.
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
+# provider: groq | google | ollama | openai
+# `openai` + base_url reaches ANY OpenAI-compatible API (NVIDIA NIM, OpenRouter,
+# Together, vLLM, …). api_key is usually a ${ENV_VAR}; blank => SDK's default env.
+# Recipes:
+#   Groq (default): provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
+#   Gemini/Vertex:  provider: google  model: gemini-1.5-flash       api_key: ${GOOGLE_API_KEY}
+#   NVIDIA NIM:     provider: openai  model: meta/llama-3.1-8b-instruct
+#                   base_url: https://integrate.api.nvidia.com/v1   api_key: ${NVIDIA_API_KEY}
+#   OpenRouter:     provider: openai  model: <org/model>
+#                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
+#   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  provider: groq            # groq | ollama | openai
+  provider: groq
   model: llama-3.1-8b-instant
-  # base_url:               # uncomment for OpenAI-compatible endpoints
+  api_key: ${GROQ_API_KEY}
+  # base_url:               # set for openai-compatible endpoints
+  # temperature: 0.2
 
-# ── Vision (Gemma) ────────────────────────────────────────────────────────────
+# ── Vision ────────────────────────────────────────────────────────────────────
+# provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
+# multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
 vision:
-  provider: google          # google (AI Studio) | ollama (self-hosted)
+  provider: google
   model: gemma-3-27b-it
+  api_key: ${GOOGLE_API_KEY}
+  # base_url:               # set for vision.provider: openai
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
@@ -27,11 +44,28 @@ vision:
       net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
       visible dimensions or tolerances. Be precise — this is used for search.
 
+# ── OCR (scanned pages) ───────────────────────────────────────────────────────
+# engine: surya | paddle
+#   surya  — torch-based; ONE pass gives text + layout (figures/tables), 90+
+#            languages, better on complex layouts. No paddle<->torch conflict.
+#            Requires the llama-server binary:  brew install llama.cpp
+#   paddle — PaddleOCR text + DocLayout-YOLO/contour regions (fallback). Faster
+#            CNN recognition; auto-used if surya is unavailable.
+ocr:
+  engine: surya
+
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
-  dense_model: BAAI/bge-large-en-v1.5   # 1024-dim; leads MTEB retrieval benchmark
+  # nomic-embed-text-v1.5 chosen over BAAI/bge-large-en-v1.5 for CPU compatibility:
+  # bge-large (1.3GB) causes deadlocks on Windows and is too slow on CPU (~148s/21 chunks).
+  # nomic runs well on CPU (15-100ms), 768-dim, MTEB 62.39, 8192 token context.
+  dense_model: nomic-ai/nomic-embed-text-v1.5
+  dense_dim: 768
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
   reranker_model: BAAI/bge-reranker-large
+  # SemanticChunker uses this lightweight model to decide split boundaries only —
+  # potion-base-32M (32M params) avoids loading the full dense model twice.
+  chunking_model: minishlab/potion-base-32M
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 chunking:
@@ -43,6 +77,13 @@ chunking:
 query:
   small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
   max_context_tokens: 3000      # answer_tool context budget
+
+  # Query-time pipeline steps (the read path). run_query() builds the graph from
+  # this list: plan the query -> retrieve -> answer. Same graph engine as ingestion.
+  steps: [query_planner, retrieval, answerer]
+
+  planner:
+    max_sub_questions: 4        # QueryPlannerTool: cap on decomposed sub-questions
 
   hyde:
     enabled: false              # generate hypothetical answer before encoding
@@ -108,7 +149,7 @@ categorization:
   industry_keywords:
     automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
     electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing:[assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
+    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
     finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
     legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
     healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
@@ -129,9 +170,31 @@ type_to_route:
   image:           image_route
   unknown:         text_default
 
-# Steps listed here are resolved by the graph at runtime.
-# "extract" is a placeholder — the graph replaces it with the right
-# extractor(s) based on state["file_type"] (pdf/excel/ppt/image).
+# "extract" is a placeholder in the steps below. At build time the graph expands
+# it into concrete extractors; at runtime exactly one runs. Values MUST match a
+# tool's `name` (see backend/extraction/*/tool.py). Selection priority:
+#   route_extractors > pdf_extractors (by state.pdf_kind) > extractors (by file_type)
+#
+# extractors: simple file_type -> tool (1:1). `image` has no extractor yet.
+extractors:
+  excel: excel_extraction
+  ppt: ppt_extraction
+
+# pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
+# sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.
+pdf_extractors:
+  digital: pdf_digital
+  scanned: scanned_pdf
+  mixed: mixed_pdf
+
+# route_extractors: a route overrides extraction entirely. CAD/circuit drawings
+# are PDFs but need vision extraction (cad_extract) with the right diagram prompt,
+# not the normal text pdf extractor. On these routes the file_type/pdf extractors
+# are suppressed.
+route_extractors:
+  cad_route: cad_extract
+  circuit_route: cad_extract
+
 routes:
   text_default:
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
@@ -145,6 +208,15 @@ routes:
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   image_route:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+
+# ── Ingestion profile (what the API/run_pipeline actually builds) ─────────────
+# categorize decides the route at RUNTIME, so the graph is built once with the
+# UNION of steps and route_gates skip the steps a given route doesn't want.
+# Only vision_enrichment varies across the routes above, so it's the only gate.
+ingestion:
+  steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  route_gates:
+    vision_enrichment: [diagram_heavy, image_route]
 
 # ── Database (connection strings from environment) ────────────────────────────
 database:

@@ -38,7 +38,7 @@ import uuid
 from typing import Any
 from backend.core.tool import PipelineState
 from backend.core.vision_client import describe_image
-from backend.extraction.cad.pro import PROMPTS
+from backend.extraction.cad.drawing_prompt import PROMPTS
 import json
 logger = logging.getLogger(__name__)
 

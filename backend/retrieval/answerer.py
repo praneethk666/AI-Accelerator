@@ -78,9 +78,9 @@ class AnswererTool:
         try:
             context_blocks = []
             for i, chunk in enumerate(chunks, start=1):
-                ref   = chunk["source_ref"] or {}
-                label = f"{ref['filename']}, p.{ref['page']}"
-                context_blocks.append(f"[{i}] ({label})\n{chunk['text']}")
+                ref   = chunk.get("source_ref") or {}
+                label = _locator(ref)
+                context_blocks.append(f"[{i}] ({label})\n{chunk.get('text') or ''}")
 
             user_msg = (
                 "Context:\n\n"
@@ -95,16 +95,20 @@ class AnswererTool:
             ])
             answer_text = (response.content or "").strip()
 
-            # Build citations — image_path and table_data are top-level chunk fields
+            # Build citations — image_path and table_data are top-level chunk fields.
+            # source_ref varies by file type (page for PDF, sheet for Excel, slide
+            # for PPT), so read every locator field with .get and never assume page.
             citations = []
             for chunk in chunks:
-                ref = chunk["source_ref"] or {}
+                ref = chunk.get("source_ref") or {}
                 citations.append({
-                    "filename":   ref["filename"],
-                    "page":       ref["page"],
-                    "snippet":    (chunk["text"] or "")[:200],
-                    "image_path": chunk["image_path"],
-                    "table_data": chunk["table_data"],
+                    "filename":   ref.get("filename"),
+                    "page":       ref.get("page"),
+                    "sheet":      ref.get("sheet"),
+                    "slide":      ref.get("slide"),
+                    "snippet":    (chunk.get("text") or "")[:200],
+                    "image_path": chunk.get("image_path"),
+                    "table_data": chunk.get("table_data"),
                 })
 
             state["answer"]    = answer_text
@@ -121,6 +125,19 @@ class AnswererTool:
             state["citations"] = []
 
         return state
+
+
+def _locator(ref: dict) -> str:
+    """Human-readable source label that works for any file type:
+    'report.pdf, p.3' / 'sheet.xlsx, Sheet1' / 'deck.pptx, slide 4'."""
+    name = ref.get("filename") or "source"
+    if ref.get("page") is not None:
+        return f"{name}, p.{ref['page']}"
+    if ref.get("sheet"):
+        return f"{name}, {ref['sheet']}"
+    if ref.get("slide") is not None:
+        return f"{name}, slide {ref['slide']}"
+    return name
 
 
 def _log(

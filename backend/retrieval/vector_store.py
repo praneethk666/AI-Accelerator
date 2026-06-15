@@ -1,111 +1,60 @@
-"""
-backend/retrieval/vector_store.py
-──────────────────────────────────
-Qdrant adapter for dense vector search.
+"""Dense-search adapter — thin layer over the canonical QdrantStore.
 
-Split storage pattern (matches init_db.sql design):
-  Qdrant   — stores vectors + minimal payload (chunk_id, tags for filtering)
-  Postgres — stores full text, source_ref, table_data, image_path
+Retrieval reads through this static interface; the actual storage is Karthii's
+backend.storage.qdrant_store (dense leg) + backend.storage.postgres_store
+(text/tag hydration). One wire format, one writer (IndexTool), one reader (here).
 
-So search() does:
-  1. Ask Qdrant for top-k matching chunk_ids
-  2. Call PGStore.fetch_by_ids() to get full chunk data
-  3. Return hydrated Chunk list
+  VectorStore.search(query_vector, config, top_k, filters) -> list[chunk dict]
 
-This avoids duplicating large text blobs in both stores.
-
-Connection settings (config/global.yaml):
-    database:
-      qdrant_url:        http://localhost:6333   # takes priority if set
-      qdrant_host:       localhost               # used when qdrant_url absent
-      qdrant_port:       6333
-      qdrant_collection: chunks
+filters keys map to flat Qdrant payload fields (tags are flattened on write):
+    {"industry": "automotive"}     -> exact match
+    {"document_id": ["uuid1", ...]} -> any-of (document scope)
 """
 from __future__ import annotations
 
 import logging
 from typing import Optional
 
-from backend.core.schemas import Chunk
-from backend.retrieval.pg_store import PGStore
+from backend.storage.postgres_store import PostgresStore
+from backend.storage.qdrant_store import QdrantStore
 
 logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-
-    @staticmethod
-    def get_client(config: dict):
-        from qdrant_client import QdrantClient
-
-        qdrant_url = config["database"]["qdrant_url"]
-        if qdrant_url:
-            return QdrantClient(url=qdrant_url)
-
-        return QdrantClient(
-            host=config["database"]["qdrant_host"],
-            port=config["database"]["qdrant_port"],
-        )
-
     @staticmethod
     def search(
         query_vector: list[float],
         config: dict,
         top_k: int = 5,
         filters: Optional[dict] = None,
-    ) -> list[Chunk]:
+    ) -> list[dict]:
+        """Dense cosine search, then hydrate full chunk rows from Postgres.
+
+        Qdrant returns chunk_ids + scores (text lives only in Postgres); we fetch
+        the rows by id and preserve Qdrant's score order.
         """
-        Dense cosine search.
+        dim        = config["embeddings"]["dense_dim"]
+        collection = config["database"]["qdrant_collection"]
 
-        Step 1: Qdrant returns top-k chunk_ids + scores
-        Step 2: PGStore hydrates full Chunk objects from Postgres
+        store = QdrantStore(dim, collection)
+        try:
+            hits = store.search_dense(query_vector, filters=filters, top_n=top_k)
+        finally:
+            store.close()
 
-        filters keys map to Qdrant payload fields stored as tags.*:
-            {"industry": "automotive"}   →  tags.industry == "automotive"
-            {"document_id": ["uuid1"]}   →  document_scope filtering
-        """
-        client = VectorStore.get_client(config)
-
-        hits = client.search(
-            collection_name=config["database"]["qdrant_collection"],
-            query_vector=query_vector,
-            limit=top_k,
-            query_filter=_build_qdrant_filter(filters),
-            with_payload=False,
-            with_vectors=False,
-        )
-
-        if not hits:
-            return []
-
-        chunk_ids = [str(h.id) for h in hits]
-
-        # Hydrate from Postgres — preserves Qdrant score order
-        chunk_map = {c["chunk_id"]: c for c in PGStore.fetch_by_ids(config, chunk_ids)}
-        return [chunk_map[cid] for cid in chunk_ids if cid in chunk_map]
+        return _hydrate(hits)
 
 
-def _build_qdrant_filter(filters: Optional[dict]):
-    """
-    Convert a flat filter dict to a Qdrant Filter object.
-
-    Handles:
-        {"industry": "automotive"}         → FieldCondition / MatchValue
-        {"document_id": ["uuid1","uuid2"]} → FieldCondition / MatchAny (list)
-    """
-    if not filters:
-        return None
-
-    from qdrant_client.http.models import Filter, FieldCondition, MatchValue, MatchAny
-
-    conditions = []
-    for key, val in filters.items():
-        if val is None:
-            continue
-        field = f"tags.{key}" if key != "document_id" else key
-        if isinstance(val, list):
-            conditions.append(FieldCondition(key=field, match=MatchAny(any=val)))
-        else:
-            conditions.append(FieldCondition(key=field, match=MatchValue(value=val)))
-
-    return Filter(must=conditions) if conditions else None
+def _hydrate(hits: list[dict]) -> list[dict]:
+    """Fetch chunk text/tags from Postgres for the hit chunk_ids, in hit order."""
+    chunk_ids = [h["chunk_id"] for h in hits if h.get("chunk_id")]
+    if not chunk_ids:
+        return []
+    pg = PostgresStore()
+    try:
+        rows = pg.get_chunks_by_ids(chunk_ids)
+    finally:
+        pg.close()
+    by_id = {r["chunk_id"]: r for r in rows}
+    return [by_id[cid] for cid in chunk_ids if cid in by_id]

@@ -1,7 +1,9 @@
 """Smoke test: a dummy tool flows through the stub runner and updates state.
 Run from the repo root:  python tests/test_smoke.py   (or:  pytest)"""
+
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.core.tool import PipelineState

@@ -1,8 +1,24 @@
 """Shared data contracts. Every tool reads/writes these shapes.
-Keep field names stable — changing them is a team decision, not a solo one."""
+Keep field names stable — changing them is a team decision, not a solo one.
+
+Representation rule: these dataclasses are CONSTRUCTION + DOCUMENTATION schemas.
+What flows through the pipeline `state` (and into storage / the API / LangGraph
+checkpoints) is PLAIN DICTS. Extractors build dataclasses for clarity, then call
+as_dicts() at the state boundary. Downstream tools (chunk, vision, enrich, embed,
+index, retrieval) read/write plain dicts — never attribute access."""
+
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Optional
+
+
+def as_dicts(items) -> list[dict]:
+    """Normalize a list of dataclass instances (or dicts) to plain dicts.
+
+    asdict() recurses, so nested SourceRef / ImageRegion become dicts too. Call
+    this wherever a tool writes dataclass-built objects into the shared state.
+    """
+    return [asdict(x) if is_dataclass(x) else x for x in (items or [])]
 
 
 @dataclass
@@ -16,6 +32,7 @@ class ImageRegion:
 @dataclass
 class PageProfile:
     """Per-page x-ray of a PDF (owner: Manoj)."""
+
     page_number: int
     kind: str  # "digital" | "scanned" | "mixed"
     text_len: int = 0
@@ -59,6 +76,7 @@ class NormalizedBlock:
       in metadata["cell_range"] (e.g. "Sheet1!A1:D20"). They do not travel downstream
       past the extractor.
     """
+
     block_id: str
     document_id: str
     type: str
@@ -68,18 +86,22 @@ class NormalizedBlock:
     confidence: float = 1.0
     language: str = "en"
     metadata: dict = field(default_factory=dict)
+    # pending_vision / raw_image_path live in metadata (see docstring) — not top-level fields.
 
 
 @dataclass
 class Chunk:
     """A retrieval-ready unit. tags carry category + text-enrichment."""
+
     chunk_id: str
     document_id: str
     text: str
     token_count: int = 0
-    tags: dict = field(default_factory=dict)   # industry, doc_type, topic, section, keywords
+    tags: dict = field(
+        default_factory=dict
+    )  # industry, doc_type, topic, section, keywords
     source_ref: Optional[SourceRef] = None
-    vector: Optional[list] = None              # dense embedding — length 1024 (bge-large)
+    vector: Optional[list] = None              # dense embedding — length 768 (nomic-embed-text-v1.5)
     sparse_vector: Optional[dict] = None       # {"indices": [...], "values": [...]} for BM25
     table_data: Optional[dict] = None          # {"headers": [...], "rows": [...]} for table chunks
     image_path: Optional[str] = None           # set for image_caption chunks

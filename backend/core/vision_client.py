@@ -19,7 +19,7 @@ load_dotenv()
 
 def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:
     provider = config.get("vision", {}).get("provider", "google")
-    model = config.get("vision", {}).get("model", "gemma-3-27b-it")
+    model = config.get("vision", {}).get("model", "gemini-2.0-flash")
 
     if provider == "google":
         return _describe_google(image_bytes, prompt, model, config)

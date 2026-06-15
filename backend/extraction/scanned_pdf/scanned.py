@@ -22,12 +22,19 @@ _yolo_model = None
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None:
-        _ocr_engine = PaddleOCR(
-            lang='en',
-            use_angle_cls=True,
-            ocr_version='PP-OCRv4',
-            show_log=False
-        )
+        try:
+            _ocr_engine = PaddleOCR(
+                lang='en',
+                use_angle_cls=True,
+                ocr_version='PP-OCRv4',
+                show_log=False
+            )
+        except (TypeError, ValueError):
+            _ocr_engine = PaddleOCR(
+                lang='en',
+                use_angle_cls=True,
+                ocr_version='PP-OCRv4'
+            )
     return _ocr_engine
 
 def get_yolo_model():
@@ -53,9 +60,13 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
     Run OCR once and return both the full text and bounding boxes of all text lines.
     Returns (full_text, list_of_bboxes) where bbox = (x1,y1,x2,y2) in pixel coordinates.
     """
-    ocr = get_ocr_engine()
-    img_np = np.array(pil_image)
-    result = ocr.ocr(img_np)
+    try:
+        ocr = get_ocr_engine()
+        img_np = np.array(pil_image)
+        result = ocr.ocr(img_np)
+    except Exception as exc:
+        print(f"OCR failed, falling back to placeholder scan handling: {exc}")
+        return "", []
 
     text_lines = []
     text_boxes = []
@@ -261,6 +272,25 @@ def extract_scanned(
                         text=para,
                         source_ref=SourceRef(filename=filename, page=page_number),
                         confidence=0.8,
+                    )
+                )
+
+            # ---- OCR fallback: ensure scanned pages still emit at least one block ----
+            if not paragraphs and not visual_regions:
+                blocks.append(
+                    NormalizedBlock(
+                        block_id=str(uuid.uuid4()),
+                        document_id=document_id,
+                        type="image_caption",
+                        text="[Scanned page - OCR unavailable]",
+                        source_ref=SourceRef(filename=filename, page=page_number),
+                        confidence=0.2,
+                        metadata={
+                            "pending_vision": True,
+                            "is_vector": False,
+                            "detected_region": False,
+                            "ocr_fallback": True,
+                        },
                     )
                 )
 

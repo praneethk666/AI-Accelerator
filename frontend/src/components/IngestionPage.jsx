@@ -280,7 +280,7 @@ const IngestionPage = () => {
                       <div className="flex-1 min-w-0">
                         <h3 className="font-semibold text-white truncate text-lg">{file.filename}</h3>
                         <p className="text-xs text-gray-500 mt-1">{file.file_type || 'Document'}</p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-xs">
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4 text-xs">
                           <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
                             <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Route</span>
                             <p className="text-blue-400 font-mono font-medium mt-1">{file.route || 'N/A'}</p>
@@ -288,6 +288,10 @@ const IngestionPage = () => {
                           <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
                             <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Type</span>
                             <p className="text-gray-300 mt-1">{file.document_type || 'Unknown'}</p>
+                          </div>
+                          <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
+                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">File Type</span>
+                            <p className="text-gray-300 capitalize mt-1">{file.file_type || 'N/A'}</p>
                           </div>
                           <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
                             <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Industry</span>
@@ -308,6 +312,12 @@ const IngestionPage = () => {
                             </div>
                           </div>
                         </div>
+                        {file.reasoning && (
+                          <div className="mt-4 p-3 bg-slate-900/50 border border-slate-600 rounded-lg">
+                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Reasoning</span>
+                            <p className="text-gray-300 text-sm mt-1 whitespace-pre-wrap">{file.reasoning}</p>
+                          </div>
+                        )}
                         {file.errors && file.errors.length > 0 && (
                           <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs space-y-1">
                             <p className="font-semibold">⚠️ Issues found:</p>

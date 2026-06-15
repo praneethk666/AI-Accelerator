@@ -45,7 +45,7 @@ def get_test_config() -> dict:
         },
         "vision": {
             "provider": "google",
-            "model": "gemma-3-27b-it"
+            "model": "gemini-2.0-flash"
         }
     }
 

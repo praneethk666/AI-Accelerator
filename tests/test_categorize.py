@@ -10,11 +10,13 @@ Tests verify:
 
 import sys
 import os
+import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.categorize.categorize_tool import CategorizeTool
+from tests.fixtures import sample_global_config, sample_query_response
 
 
 # Configuration for testing

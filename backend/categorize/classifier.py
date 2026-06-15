@@ -201,6 +201,7 @@ def categorize(
                         state["industry"] = best["industry"]
                         state["confidence"] = best["confidence"]
                         state["reasoning"] = best["reasoning"]
+                        state["file_type"] = detect_file_type(file_path)
                         state.setdefault("errors", [])
                         
                         return {
@@ -208,7 +209,9 @@ def categorize(
                             "document_type": state["document_type"],
                             "industry": state["industry"],
                             "confidence": state["confidence"],
+                            "file_type": state["file_type"],
                             "reasoning": state["reasoning"],
+                            "errors": state.get("errors", []),
                         }
             except Exception as e:
                 # If CAD analysis fails, continue with normal flow
@@ -234,6 +237,7 @@ def categorize(
                 state["industry"] = best["industry"]
                 state["confidence"] = best["confidence"]
                 state["reasoning"] = best["reasoning"]
+                state["file_type"] = detect_file_type(file_path)
                 state.setdefault("errors", [])
                 
                 return {
@@ -241,7 +245,9 @@ def categorize(
                     "document_type": state["document_type"],
                     "industry": state["industry"],
                     "confidence": state["confidence"],
+                    "file_type": state["file_type"],
                     "reasoning": state["reasoning"],
+                    "errors": state.get("errors", []),
                 }
 
 

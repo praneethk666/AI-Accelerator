@@ -4,7 +4,7 @@ import ChatPage from './components/ChatPage';
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
         <Route path="/" element={<IngestionPage />} />
         <Route path="/chat" element={<ChatPage />} />

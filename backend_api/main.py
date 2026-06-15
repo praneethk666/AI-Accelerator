@@ -50,6 +50,7 @@ class UploadResponse(BaseModel):
     industry: str
     confidence: float
     file_type: str
+    reasoning: str
     errors: List[str]
     upload_time: str
 
@@ -128,6 +129,7 @@ async def upload_file(file: UploadFile = File(...)):
             "industry": result.get("industry", "general"),
             "confidence": round(result.get("confidence", 0.0), 3),
             "file_type": result.get("file_type", file_ext.strip('.')),
+            "reasoning": result.get("reasoning", ""),
             "errors": result.get("errors", []),
             "upload_time": datetime.now().isoformat(),
             "file_path": file_path,  # Store for later retrieval

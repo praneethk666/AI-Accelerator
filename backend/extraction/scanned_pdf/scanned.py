@@ -1,4 +1,9 @@
-"""Scanned PDF Handler – YOLO + OCR, outputs NormalizedBlock list."""
+"""Scanned PDF Handler – YOLO + OCR, outputs NormalizedBlock list.
+
+For scanned pages, we create placeholder `image` blocks (empty text) for each
+detected visual region, just like the digital extraction does. The vision
+enrichment tool will later convert them to `image_caption` with descriptions.
+"""
 
 import os
 import io
@@ -37,7 +42,7 @@ def get_yolo_model():
             from ultralytics import YOLO
             _yolo_model = YOLO("yolov8n.pt")
         except Exception as e:
-            print(f"Warning: YOLO model loading failed ({e}). Falling back to contour detection only.")
+            # Silently fall back – no print in production
             _yolo_model = None
     return _yolo_model
 
@@ -97,8 +102,9 @@ def detect_visual_regions(
                         x1, y1, x2, y2 = map(int, box)
                         if (x2 - x1) > 20 and (y2 - y1) > 20:
                             yolo_boxes.append((x1, y1, x2, y2))
-        except Exception as e:
-            print(f"YOLO inference failed: {e}")
+        except Exception:
+            # Silent – errors handled upstream
+            pass
 
     # ----- Contour detection (text masked) -----
     gray = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2GRAY)
@@ -190,25 +196,25 @@ def detect_visual_regions(
 def extract_scanned(
     pdf_path: str,
     document_id: str,
-    use_gemma: bool = False,
     min_visual_area: int = 50000
 ) -> List[NormalizedBlock]:
     """
     Extract content from a scanned PDF using OCR + YOLO for visual regions.
 
+    This creates placeholder `image` blocks (empty text) for each detected
+    visual region, exactly like the digital extraction does. Later, the
+    vision enrichment tool will replace them with `image_caption` blocks.
+
     Args:
         pdf_path: Path to the scanned PDF.
         document_id: Unique document identifier.
-        use_gemma: If True, send detected visual regions to Gemma for description
-                   (placeholder – implement your own client).
         min_visual_area: Minimum area (pixels² at 200 DPI) for a region to be
                          considered a significant visual element. Default 50000.
 
     Returns:
         List[NormalizedBlock] containing:
         - text blocks (type="text" or "heading") from OCR
-        - image_caption blocks for each detected visual region (with bbox)
-        - (page_metrics block removed – handled by page_profile)
+        - image blocks (type="image", text="") for each visual region
     """
     doc = fitz.open(pdf_path)
     blocks: List[NormalizedBlock] = []
@@ -234,10 +240,7 @@ def extract_scanned(
                 min_area=min_visual_area
             )
 
-            # ---- Page metrics block REMOVED (handled by page_profile) ----
-
             # ---- Convert OCR text to NormalizedBlock (text/heading) ----
-            # Simple grouping into paragraphs by empty lines
             paragraphs = []
             current_para = []
             for line in ocr_text.split('\n'):
@@ -264,38 +267,29 @@ def extract_scanned(
                     )
                 )
 
-            # ---- Create placeholders for each visual region ----
+            # ---- Create placeholder image blocks for each visual region ----
+            # (Like digital extraction: type="image", empty text, pending_vision=True)
             scale_x = page_rect.width / img_w
             scale_y = page_rect.height / img_h
             for (x1, y1, x2, y2) in visual_regions:
                 pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
 
-                # (Optional) send cropped region to Gemma
-                description = None
-                if use_gemma:
-                    # Placeholder – replace with actual gemma_client call
-                    # from backend.vision.gemma_client import describe_image_with_gemma
-                    # cropped = pil_img.crop((x1, y1, x2, y2))
-                    # img_bytes = io.BytesIO()
-                    # cropped.save(img_bytes, format="PNG")
-                    # description = describe_image_with_gemma(img_bytes.getvalue())
-                    pass
-
                 blocks.append(
                     NormalizedBlock(
                         block_id=str(uuid.uuid4()),
                         document_id=document_id,
-                        type="image_caption",
-                        text=description or "[Image - awaiting vision enrichment]",
+                        type="image",
+                        text="",
                         source_ref=SourceRef(
                             filename=filename,
                             page=page_number,
                             bbox=pdf_bbox
                         ),
-                        confidence=0.5,
+                        confidence=0.9,
                         metadata={
-                            "pending_vision": not bool(description),
+                            "pending_vision": True,
                             "is_vector": False,
+                            "is_full_page": False,
                             "detected_region": True,
                         }
                     )

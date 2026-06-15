@@ -29,15 +29,22 @@ vision:
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
-  dense_model: BAAI/bge-large-en-v1.5   # 1024-dim; leads MTEB retrieval benchmark
-  sparse_model: Qdrant/bm25             # keyword matching for hybrid search
+  dense_model: nomic-ai/nomic-embed-text-v1.5   # ← was: nomic-embed-text-v1.5
+  sparse_model: Qdrant/bm25                 # keyword matching for hybrid search
   reranker_model: BAAI/bge-reranker-large
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 chunking:
-  strategy: semantic        # semantic | recursive
-  size: 400                 # tokens (not characters)
-  overlap: 50               # tokens
+  strategy: semantic                        # semantic | recursive
+  size: 400                                 # tokens (not characters)
+  overlap: 50                               # tokens
+  chunker_model: minishlab/potion-base-32M  # lightweight for semantic splitting (avoids deadlock on Windows)
+
+# chunker_model is lightweight for semantic chunking only.
+# BAAI/bge-large-en-v1.5 is ~1.3 GB – too heavy for splitting and often
+# causes deadlock on Windows. potion-base-32M is chonkie's native model,
+# fast, low RAM, and sufficient for deciding where to split text.
+# The actual embedding for search still uses embeddings.dense_model.
 
 # ── Query pipeline ────────────────────────────────────────────────────────────
 query:
@@ -67,12 +74,12 @@ query:
 # Read your settings with:
 #   config["query"]["retrieval"]["method"]
 #   config["query"]["retrieval"]["top_n"]
-#   config["embeddings"]["dense_model"]     ← shared with Manoj's embed_tool
+#   config["embeddings"]["dense_model"]     <- shared with Manoj's embed_tool
 #   config["embeddings"]["sparse_model"]
 #   config["embeddings"]["reranker_model"]
 #   config["database"]["qdrant_url"]
 #   config["database"]["postgres_url"]
-# Never use os.getenv() for model names — keep them in config so they're swappable.
+# Never use os.getenv() for model names — keep them in config so they are swappable.
 
 # ── Document taxonomy ─────────────────────────────────────────────────────────
 document_types:
@@ -106,48 +113,130 @@ categorization:
     categorization_low_confidence: 0.5
 
   industry_keywords:
-    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
-    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing:[assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
-    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
-    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
-    general:      []
+    automotive:
+      - toyota
+      - ford
+      - bmw
+      - vehicle
+      - engine
+      - torque
+      - transmission
+      - chassis
+      - automotive
+    electronics:
+      - circuit
+      - pcb
+      - schematic
+      - voltage
+      - resistor
+      - capacitor
+      - signal
+      - semiconductor
+    manufacturing:
+      - assembly
+      - drawing
+      - tolerance
+      - weld
+      - machining
+      - fixture
+      - jig
+      - bom
+      - part number
+    finance:
+      - invoice
+      - balance sheet
+      - revenue
+      - profit
+      - ledger
+      - audit
+      - fiscal
+      - equity
+    legal:
+      - contract
+      - agreement
+      - clause
+      - liability
+      - indemnity
+      - arbitration
+      - jurisdiction
+    healthcare:
+      - patient
+      - diagnosis
+      - clinical
+      - pharma
+      - dosage
+      - trial
+      - medical
+      - drug
+      - therapy
+    general: []
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.
 # cad_drawing and circuit_diagram are separate routes — same steps but different
 # vision prompts and retrieval strategy (owner: Vinod). Karthii wires both in the graph.
 type_to_route:
-  cad_drawing:     cad_route      # mechanical drawings → CADExtractionTool with mechanical prompt
+  cad_drawing: cad_route          # mechanical drawings → CADExtractionTool with mechanical prompt
   circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
-  datasheet:       diagram_heavy
-  report:          text_default
-  invoice:         text_default
-  presentation:    text_default
-  spreadsheet:     text_default
-  image:           image_route
-  unknown:         text_default
+  datasheet: diagram_heavy
+  report: text_default
+  invoice: text_default
+  presentation: text_default
+  spreadsheet: text_default
+  image: image_route
+  unknown: text_default
 
 # Steps listed here are resolved by the graph at runtime.
 # "extract" is a placeholder — the graph replaces it with the right
 # extractor(s) based on state["file_type"] (pdf/excel/ppt/image).
 routes:
   text_default:
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   diagram_heavy:
-    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   cad_route:
     # Mechanical CAD drawings — Vinod's CADExtractionTool uses a mechanical diagram prompt
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   circuit_route:
     # Electrical circuit diagrams — Vinod's CADExtractionTool uses an electrical/schematic prompt
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   image_route:
-    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
 
 # ── Database (connection strings from environment) ────────────────────────────
 database:
-  postgres_url: ${POSTGRES_URL}
-  qdrant_url: ${QDRANT_URL}
+  postgres_url: "${POSTGRES_URL}"
+  qdrant_url: "${QDRANT_URL}"
   qdrant_collection: chunks

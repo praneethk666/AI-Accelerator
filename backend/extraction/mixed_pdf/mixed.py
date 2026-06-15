@@ -3,11 +3,11 @@ and scanned pipeline for scanned pages."""
 
 import os
 import tempfile
-from typing import List
+from typing import List, Optional
 
 import fitz
 
-from backend.core.schemas import NormalizedBlock, SourceRef
+from backend.core.schemas import NormalizedBlock, SourceRef, PageProfile
 from backend.extraction.detector import detect_pdf_type
 from backend.extraction.scanned_pdf.scanned import extract_scanned
 from backend.extraction.digital_pdf.digital import extract_digital
@@ -16,12 +16,20 @@ from backend.extraction.digital_pdf.digital import extract_digital
 def extract_mixed(
     pdf_path: str,
     document_id: str,
+    page_profiles: Optional[List[PageProfile]] = None,
 ) -> List[NormalizedBlock]:
     """
     Process a mixed PDF.
 
-    Digital pages -> call extract_digital() on a single‑page PDF.
-    Scanned pages -> call extract_scanned() on a single‑page PDF.
+    Digital pages -> call extract_digital() with the corresponding page profile.
+    Scanned pages -> call extract_scanned().
+
+    Args:
+        pdf_path: Path to the PDF file
+        document_id: Document identifier
+        page_profiles: Optional list of pre‑computed page profiles.
+                       If provided, each digital page gets its profile so that
+                       extract_digital knows about vector graphics.
 
     Returns:
         List[NormalizedBlock] merged from both pipelines.
@@ -46,9 +54,19 @@ def extract_mixed(
                     temp_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
                     temp_doc.save(temp_pdf_path)
 
+                # Get the profile for this page if available
+                profile = None
+                if page_profiles and page_num < len(page_profiles):
+                    profile = page_profiles[page_num]
+
                 # Choose pipeline
                 if page_type == "digital":
-                    page_blocks = extract_digital(temp_pdf_path, document_id=f"{document_id}_p{page_number}")
+                    # Pass the profile (as a list with one element) so extract_digital knows about vector graphics
+                    page_blocks = extract_digital(
+                        temp_pdf_path,
+                        document_id=f"{document_id}_p{page_number}",
+                        page_profiles=[profile] if profile else None,
+                    )
                 else:  # scanned
                     page_blocks = extract_scanned(temp_pdf_path, document_id=f"{document_id}_p{page_number}")
 
@@ -62,5 +80,4 @@ def extract_mixed(
         finally:
             doc.close()
 
-    # No disk writes – just return the merged blocks
     return all_blocks

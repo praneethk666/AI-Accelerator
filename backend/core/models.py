@@ -5,11 +5,14 @@ Models are heavy — bge-large is ~1.3 GB. Loading the same model twice
 startup. These module-level singletons load each model exactly once.
 
 Usage:
-    from backend.core.models import get_dense_model, get_sparse_model, get_reranker
+    from backend.core.models import (
+        get_dense_model, get_sparse_model, get_reranker, get_tokenizer
+    )
 
     dense  = get_dense_model(config)   # SentenceTransformer, 1024-dim
     sparse = get_sparse_model(config)  # fastembed BM25
     rerank = get_reranker(config)      # CrossEncoder for reranking
+    tokenizer = get_tokenizer(config)  # AutoTokenizer for exact token counting
 
 Config keys used:
     config["embeddings"]["dense_model"]    — default: BAAI/bge-large-en-v1.5
@@ -21,6 +24,7 @@ from __future__ import annotations
 _dense_model = None
 _sparse_model = None
 _reranker = None
+_tokenizer = None
 
 
 def get_dense_model(config: dict):
@@ -35,7 +39,7 @@ def get_dense_model(config: dict):
     if _dense_model is None:
         from sentence_transformers import SentenceTransformer
         model_name = config["embeddings"]["dense_model"]
-        _dense_model = SentenceTransformer(model_name)
+        _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
     return _dense_model
 
 
@@ -57,3 +61,17 @@ def get_reranker(config: dict):
         model_name = config["embeddings"]["reranker_model"]
         _reranker = CrossEncoder(model_name)
     return _reranker
+
+
+def get_tokenizer(config: dict):
+    """Return the shared tokenizer for the dense embedding model (bge-large).
+
+    Used for exact token counting in chunk_tool. Loading the tokenizer
+    separately from the model is lightweight (no model weights, just vocab).
+    """
+    global _tokenizer
+    if _tokenizer is None:
+        from transformers import AutoTokenizer
+        model_name = config["embeddings"]["dense_model"]
+        _tokenizer = AutoTokenizer.from_pretrained(model_name)
+    return _tokenizer

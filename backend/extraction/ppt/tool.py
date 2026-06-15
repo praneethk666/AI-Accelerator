@@ -288,14 +288,19 @@ class PPTExtractorTool(Tool):
 # ------------------------------------------------------------------
 # SANDBOX TEST
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# SANDBOX TEST
+# ------------------------------------------------------------------
 if __name__ == "__main__":
-    test_file = "test-data/test.pptx"
+    import os
+    
+    test_file = "test-data/waste3.pptx" 
     doc_id    = "doc-ppt-001"
 
     mock_state = {
         "file_path":   test_file,
         "document_id": doc_id,
-        "filename":    "test.pptx",
+        "filename":    "waste3.pptx",
         "blocks":      [],
         "errors":      [],
     }
@@ -307,37 +312,59 @@ if __name__ == "__main__":
     tool  = PPTExtractorTool()
     state = tool.run(mock_state, mock_config)
 
-    blocks = state["blocks"]
-    errors = state["errors"]
+    blocks = state.get("blocks", [])
+    errors = state.get("errors", [])
 
-    texts  = [b for b in blocks if b.type == "text"]
-    tables = [b for b in blocks if b.type == "table"]
-    images = [b for b in blocks if b.type == "image_caption"]
+    texts   = [b for b in blocks if b.type == "text"]
+    tables  = [b for b in blocks if b.type == "table"]
+    images  = [b for b in blocks if b.type == "image_caption"]
 
-    print(f"\n=== PPT Extraction Results ===")
-    print(f"Total blocks : {len(blocks)}")
-    print(f"  text       : {len(texts)}")
-    print(f"  table      : {len(tables)}")
-    print(f"  image      : {len(images)}")
-    print(f"  errors     : {len(errors)}")
+    print(f"\n=========================================")
+    print(f"===        PPT EXTRACTION SUMMARY     ===")
+    print(f"=========================================")
+    print(f"Total Blocks Extracted : {len(blocks)}")
+    print(f"  ├─ Text Blocks       : {len(texts)}")
+    print(f"  ├─ Tables            : {len(tables)}")
+    print(f"  ├─ Images/Charts     : {len(images)}")
+    print(f"  └─ Errors            : {len(errors)}")
 
+    # Loop through ALL text blocks (Slides + Speaker Notes)
     if texts:
-        print(f"\n--- text block (slide {texts[0].source_ref.slide}) ---")
-        print(f"  language : {texts[0].language}")
-        print(f"  preview  : {texts[0].text[:300]}")
+        print(f"\n=========================================")
+        print(f"===          ALL TEXT BLOCKS          ===")
+        print(f"=========================================")
+        for idx, txt in enumerate(texts, start=1):
+            print(f"\n[Text {idx}/{len(texts)}] Slide: {txt.source_ref.slide}")
+            print(f"  └─ Full Text :\n{txt.text}")
+            print("-" * 50)
 
+    # Loop through ALL table blocks
     if tables:
-        print(f"\n--- table block (slide {tables[0].source_ref.slide}) ---")
-        print(f"  headers  : {tables[0].table_data['headers']}")
-        print(f"  rows     : {len(tables[0].table_data['rows'])}")
-        print(f"  preview  : {tables[0].text[:200]}")
+        print(f"\n=========================================")
+        print(f"===          ALL TABLE BLOCKS         ===")
+        print(f"=========================================")
+        for idx, table in enumerate(tables, start=1):
+            print(f"\n[Table {idx}/{len(tables)}] Slide: {table.source_ref.slide}")
+            print(f"  ├─ Headers     : {table.table_data.get('headers', [])}")
+            print(f"  ├─ Total Rows  : {len(table.table_data.get('rows', []))}")
+            print(f"  ├─ First 3 Rows: {table.table_data.get('rows', [])[:3]}")
+            print(f"  └─ Markdown Representation :\n{table.text}")
+            print("-" * 50)
 
+    # Loop through ALL extracted image/chart metadata
     if images:
-        print(f"\n--- image block (slide {images[0].source_ref.slide}) ---")
-        print(f"  raw_image_path : {images[0].metadata['raw_image_path']}")
-        print(f"  pending_vision : {images[0].metadata['pending_vision']}")
+        print(f"\n=========================================")
+        print(f"===          ALL IMAGE BLOCKS         ===")
+        print(f"=========================================")
+        for idx, img in enumerate(images, start=1):
+            print(f"\n[Image {idx}/{len(images)}] Slide: {img.source_ref.slide}")
+            print(f"  ├─ Raw Path      : {img.metadata.get('raw_image_path')}")
+            print(f"  └─ Pending Vision: {img.metadata.get('pending_vision')}")
 
+    # Show any errors logged along the pipeline
     if errors:
-        print(f"\n--- errors ---")
+        print(f"\n=========================================")
+        print(f"===               ERRORS              ===")
+        print(f"=========================================")
         for e in errors:
-            print(f"  [{e['level']}] {e['tool']} — {e['message']}")
+            print(f"  [{e['level'].upper()}] {e['tool']} — {e['message']}")

@@ -1,8 +1,18 @@
-"""Scanned PDF Handler – YOLO + OCR, outputs NormalizedBlock list.
+"""Scanned PDF Handler – Surya OCR (primary) with PaddleOCR+YOLO fallback.
 
 For scanned pages, we create placeholder `image` blocks (empty text) for each
 detected visual region, just like the digital extraction does. The vision
 enrichment tool will later convert them to `image_caption` with descriptions.
+
+Public functions (used by page_profile.py):
+  - page_to_pil
+  - extract_ocr_text_and_boxes
+  - detect_visual_regions
+These remain unchanged and use PaddleOCR + YOLO (the fallback path).
+
+The main extraction function `extract_scanned` first tries Surya (torch‑based,
+full‑page layout+OCR) per page. If Surya fails (missing dependencies, runtime
+error, etc.), it falls back to the Paddle‑based extraction for that page.
 """
 
 import os
@@ -11,22 +21,22 @@ import cv2
 import fitz
 import uuid
 import numpy as np
-
-from PIL import Image
-from paddleocr import PaddleOCR
 from typing import List, Optional, Tuple
+from PIL import Image
 
 from backend.core.schemas import NormalizedBlock, SourceRef
 
 # ------------------------------------------------------------------
-# Global models (loaded once)
+# Global models (for Paddle fallback)
 # ------------------------------------------------------------------
 _ocr_engine = None
 _yolo_model = None
 
+
 def get_ocr_engine():
     global _ocr_engine
     if _ocr_engine is None:
+        from paddleocr import PaddleOCR
         _ocr_engine = PaddleOCR(
             lang='en',
             use_angle_cls=True,
@@ -35,18 +45,21 @@ def get_ocr_engine():
         )
     return _ocr_engine
 
+
 def get_yolo_model():
     global _yolo_model
     if _yolo_model is None:
         try:
             from ultralytics import YOLO
             _yolo_model = YOLO("yolov8n.pt")
-        except Exception as e:
-            # Silently fall back – no print in production
+        except Exception:
             _yolo_model = None
     return _yolo_model
 
 
+# ------------------------------------------------------------------
+# Public functions (used by page_profile.py) – unchanged, Paddle‑based
+# ------------------------------------------------------------------
 def page_to_pil(page, dpi: int = 200) -> Image.Image:
     """Render a PDF page as a PIL image."""
     pix = page.get_pixmap(dpi=dpi)
@@ -103,7 +116,6 @@ def detect_visual_regions(
                         if (x2 - x1) > 20 and (y2 - y1) > 20:
                             yolo_boxes.append((x1, y1, x2, y2))
         except Exception:
-            # Silent – errors handled upstream
             pass
 
     # ----- Contour detection (text masked) -----
@@ -175,126 +187,174 @@ def detect_visual_regions(
         w = x2 - x1
         h = y2 - y1
         area = w * h
-
-        # Minimum area threshold (ignores tiny logos/decorations)
         if area < min_area:
             continue
-
-        # Avoid long horizontal strips (likely headers/footers)
         if w > img_w * 0.7 and h < 150:
             continue
-
-        # Avoid huge regions on text‑heavy pages (false positive table detection)
         if area > 0.4 * page_area and page_text_lines > 80:
             continue
-
         filtered.append((x1, y1, x2, y2))
-
     return filtered
 
 
+# ------------------------------------------------------------------
+# Surya‑based extraction (primary)
+# ------------------------------------------------------------------
+def _surya_extract_page(page, page_number: int, filename: str, document_id: str) -> List[NormalizedBlock]:
+    """Extract a single scanned page using Surya. Raises exception on failure."""
+    # Import from the local ocr.py (same directory)
+    try:
+        from .ocr import surya_page
+    except ImportError:
+        raise ImportError("Surya backend not found. Make sure ocr.py exists in the same directory.")
+
+    pil_img = page_to_pil(page, dpi=200)
+    surya_res = surya_page(pil_img)
+
+    page_rect = page.rect
+    img_w, img_h = pil_img.size
+    scale_x = page_rect.width / img_w
+    scale_y = page_rect.height / img_h
+
+    blocks = []
+
+    # Text from Surya (split into paragraphs by double newline)
+    if surya_res.text.strip():
+        paragraphs = [p.strip() for p in surya_res.text.split("\n\n") if p.strip()]
+        for para in paragraphs:
+            # Simple heuristic: heading if short and uppercase
+            block_type = "heading" if (para.isupper() and len(para) < 100) else "text"
+            blocks.append(
+                NormalizedBlock(
+                    block_id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    type=block_type,
+                    text=para,
+                    source_ref=SourceRef(filename=filename, page=page_number),
+                    confidence=0.9,
+                )
+            )
+
+    # Visual regions
+    for bbox_px in surya_res.regions:
+        pdf_bbox = [bbox_px[0] * scale_x, bbox_px[1] * scale_y,
+                    bbox_px[2] * scale_x, bbox_px[3] * scale_y]
+        blocks.append(
+            NormalizedBlock(
+                block_id=str(uuid.uuid4()),
+                document_id=document_id,
+                type="image",
+                text="",
+                source_ref=SourceRef(filename=filename, page=page_number, bbox=pdf_bbox),
+                confidence=0.9,
+                metadata={
+                    "pending_vision": True,
+                    "is_vector": False,
+                    "is_full_page": False,
+                    "detected_region": True,
+                }
+            )
+        )
+    return blocks
+
+
+def _paddle_extract_page(page, page_number: int, filename: str, document_id: str, min_visual_area: int) -> List[NormalizedBlock]:
+    """Extract a single scanned page using PaddleOCR + YOLO (fallback)."""
+    page_rect = page.rect
+    pil_img = page_to_pil(page, dpi=200)
+    img_w, img_h = pil_img.size
+
+    ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
+    page_text_lines = len(ocr_text.splitlines())
+    visual_regions = detect_visual_regions(pil_img, text_boxes, page_text_lines, min_area=min_visual_area)
+
+    blocks = []
+
+    # OCR text -> text/heading blocks
+    paragraphs = []
+    current_para = []
+    for line in ocr_text.split('\n'):
+        line = line.strip()
+        if not line:
+            if current_para:
+                paragraphs.append(" ".join(current_para))
+                current_para = []
+        else:
+            current_para.append(line)
+    if current_para:
+        paragraphs.append(" ".join(current_para))
+
+    for para in paragraphs:
+        block_type = "heading" if (para.isupper() and len(para) < 100) else "text"
+        blocks.append(
+            NormalizedBlock(
+                block_id=str(uuid.uuid4()),
+                document_id=document_id,
+                type=block_type,
+                text=para,
+                source_ref=SourceRef(filename=filename, page=page_number),
+                confidence=0.8,
+            )
+        )
+
+    # Visual region placeholders
+    scale_x = page_rect.width / img_w
+    scale_y = page_rect.height / img_h
+    for (x1, y1, x2, y2) in visual_regions:
+        pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+        blocks.append(
+            NormalizedBlock(
+                block_id=str(uuid.uuid4()),
+                document_id=document_id,
+                type="image",
+                text="",
+                source_ref=SourceRef(filename=filename, page=page_number, bbox=pdf_bbox),
+                confidence=0.9,
+                metadata={
+                    "pending_vision": True,
+                    "is_vector": False,
+                    "is_full_page": False,
+                    "detected_region": True,
+                }
+            )
+        )
+    return blocks
+
+
+# ------------------------------------------------------------------
+# Main extraction function – Surya first, fallback to Paddle
+# ------------------------------------------------------------------
 def extract_scanned(
     pdf_path: str,
     document_id: str,
+    config: Optional[dict] = None,
     min_visual_area: int = 50000
 ) -> List[NormalizedBlock]:
     """
-    Extract content from a scanned PDF using OCR + YOLO for visual regions.
+    Extract content from a scanned PDF.
 
-    This creates placeholder `image` blocks (empty text) for each detected
-    visual region, exactly like the digital extraction does. Later, the
-    vision enrichment tool will replace them with `image_caption` blocks.
-
-    Args:
-        pdf_path: Path to the scanned PDF.
-        document_id: Unique document identifier.
-        min_visual_area: Minimum area (pixels² at 200 DPI) for a region to be
-                         considered a significant visual element. Default 50000.
-
-    Returns:
-        List[NormalizedBlock] containing:
-        - text blocks (type="text" or "heading") from OCR
-        - image blocks (type="image", text="") for each visual region
+    Tries to use Surya (torch‑based) on each page. If Surya fails on any page
+    (e.g., missing dependencies, runtime error), falls back to PaddleOCR + YOLO
+    for that page.
     """
     doc = fitz.open(pdf_path)
-    blocks: List[NormalizedBlock] = []
+    all_blocks = []
     filename = os.path.basename(pdf_path)
 
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
             page_number = page_num + 1
-            page_rect = page.rect
 
-            # ---- Render page as image (for OCR and visual detection) ----
-            pil_img = page_to_pil(page, dpi=200)
-            img_w, img_h = pil_img.size
+            # Attempt Surya first
+            try:
+                page_blocks = _surya_extract_page(page, page_number, filename, document_id)
+            except Exception:
+                # Fallback to Paddle
+                page_blocks = _paddle_extract_page(page, page_number, filename, document_id, min_visual_area)
 
-            # ---- OCR: get text and text bounding boxes ----
-            ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
-            page_text_lines = len(ocr_text.splitlines())
-
-            # ---- Detect meaningful visual regions (YOLO + contours) ----
-            visual_regions = detect_visual_regions(
-                pil_img, text_boxes, page_text_lines,
-                min_area=min_visual_area
-            )
-
-            # ---- Convert OCR text to NormalizedBlock (text/heading) ----
-            paragraphs = []
-            current_para = []
-            for line in ocr_text.split('\n'):
-                line = line.strip()
-                if not line:
-                    if current_para:
-                        paragraphs.append(" ".join(current_para))
-                        current_para = []
-                else:
-                    current_para.append(line)
-            if current_para:
-                paragraphs.append(" ".join(current_para))
-
-            for para in paragraphs:
-                block_type = "heading" if (para.isupper() and len(para) < 100) else "text"
-                blocks.append(
-                    NormalizedBlock(
-                        block_id=str(uuid.uuid4()),
-                        document_id=document_id,
-                        type=block_type,
-                        text=para,
-                        source_ref=SourceRef(filename=filename, page=page_number),
-                        confidence=0.8,
-                    )
-                )
-
-            # ---- Create placeholder image blocks for each visual region ----
-            # (Like digital extraction: type="image", empty text, pending_vision=True)
-            scale_x = page_rect.width / img_w
-            scale_y = page_rect.height / img_h
-            for (x1, y1, x2, y2) in visual_regions:
-                pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
-
-                blocks.append(
-                    NormalizedBlock(
-                        block_id=str(uuid.uuid4()),
-                        document_id=document_id,
-                        type="image",
-                        text="",
-                        source_ref=SourceRef(
-                            filename=filename,
-                            page=page_number,
-                            bbox=pdf_bbox
-                        ),
-                        confidence=0.9,
-                        metadata={
-                            "pending_vision": True,
-                            "is_vector": False,
-                            "is_full_page": False,
-                            "detected_region": True,
-                        }
-                    )
-                )
-
+            all_blocks.extend(page_blocks)
     finally:
         doc.close()
-    return blocks
+
+    return all_blocks

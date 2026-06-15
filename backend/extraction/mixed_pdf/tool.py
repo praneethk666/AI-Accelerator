@@ -15,15 +15,15 @@ class MixedPDFTool(Tool):
             pdf_path = state["file_path"]
             doc_id = state.get("document_id", "default")
 
-            # 1. Generate page profiles FIRST (metadata)
+            # 1. Generate page profiles (metadata) – includes per‑page kind
             profiles = page_profile(pdf_path)
-            state["page_profiles"] = profiles   # store for later use
+            state["page_profiles"] = profiles
 
-            # 2. Extract blocks, PASSING THE PROFILES so extract_digital knows about vector graphics
+            # 2. Extract blocks, passing the profiles so extract_mixed knows
+            #    which pages are digital/scanned and digital pages get vector info.
             blocks = extract_mixed(pdf_path, doc_id, page_profiles=profiles)
 
             state["blocks"] = blocks
-            # Do NOT recompute profiles again
 
         except Exception as e:
             state.setdefault("errors", []).append({

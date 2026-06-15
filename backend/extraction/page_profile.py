@@ -5,7 +5,7 @@ from typing import List
 
 from backend.core.schemas import PageProfile, ImageRegion
 
-# For scanned page image detection
+# For scanned page image detection (fallback)
 from backend.extraction.scanned_pdf.scanned import page_to_pil, extract_ocr_text_and_boxes, detect_visual_regions
 
 # ===== CONFIGURATION =====
@@ -25,6 +25,7 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
     - For digital pages with vector graphics, a full‑page ImageRegion is added
       to the `images` list to keep the profile and extracted blocks in sync.
     - Raster image inclusion uses the same MIN_IMAGE_AREA threshold as extraction.
+    - Scanned pages use Surya for text and region detection (fallback to Paddle+YOLO).
     """
     doc = fitz.open(pdf_path)
     profiles: List[PageProfile] = []
@@ -40,7 +41,6 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
             has_native_text = len(native_text) > 5
 
             text_len = len(native_text) if has_native_text else 0
-            ocr_text = None
             table_hint = False
 
             if has_native_text:
@@ -91,31 +91,27 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
             # ---- Images (raster) ----
             images: List[ImageRegion] = []
 
-            if not has_native_text:   # Scanned page
+            if not has_native_text:   # Scanned page – use Surya first
                 try:
+                    from backend.extraction.scanned_pdf.ocr import surya_page
                     pil_img = page_to_pil(page, dpi=200)
-                    img_w, img_h = pil_img.size
+                    surya_res = surya_page(pil_img)
 
-                    ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
-                    text_len = len(ocr_text)
-                    page_text_lines = len(ocr_text.splitlines())
+                    # Get text length from Surya
+                    text_len = len(surya_res.text)
 
-                    vis_regions = detect_visual_regions(
-                        pil_img, text_boxes, page_text_lines,
-                        min_area=MIN_SCANNED_IMAGE_AREA
-                    )
-
-                    scale_x = page_rect.width / img_w
-                    scale_y = page_rect.height / img_h
-                    seen_vis_bboxes = set()
-                    for (x1, y1, x2, y2) in vis_regions:
-                        pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
-                        rounded_bbox = tuple(round(c, 2) for c in pdf_bbox)
-                        if rounded_bbox in seen_vis_bboxes:
-                            continue
-                        seen_vis_bboxes.add(rounded_bbox)
-                        width = int((x2 - x1) * scale_x)
-                        height = int((y2 - y1) * scale_y)
+                    # Convert Surya regions to ImageRegion objects
+                    scale_x = page_rect.width / pil_img.width
+                    scale_y = page_rect.height / pil_img.height
+                    for bbox_px in surya_res.regions:
+                        pdf_bbox = [
+                            bbox_px[0] * scale_x,
+                            bbox_px[1] * scale_y,
+                            bbox_px[2] * scale_x,
+                            bbox_px[3] * scale_y
+                        ]
+                        width = int((bbox_px[2] - bbox_px[0]) * scale_x)
+                        height = int((bbox_px[3] - bbox_px[1]) * scale_y)
                         images.append(ImageRegion(
                             bbox=pdf_bbox,
                             width=width,
@@ -123,7 +119,40 @@ def page_profile(pdf_path: str) -> List[PageProfile]:
                             significant=True
                         ))
                 except Exception:
-                    pass
+                    # Fallback to PaddleOCR + YOLO if Surya fails
+                    try:
+                        pil_img = page_to_pil(page, dpi=200)
+                        img_w, img_h = pil_img.size
+
+                        ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
+                        text_len = len(ocr_text)
+                        page_text_lines = len(ocr_text.splitlines())
+
+                        vis_regions = detect_visual_regions(
+                            pil_img, text_boxes, page_text_lines,
+                            min_area=MIN_SCANNED_IMAGE_AREA
+                        )
+
+                        scale_x = page_rect.width / img_w
+                        scale_y = page_rect.height / img_h
+                        seen_vis_bboxes = set()
+                        for (x1, y1, x2, y2) in vis_regions:
+                            pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+                            rounded_bbox = tuple(round(c, 2) for c in pdf_bbox)
+                            if rounded_bbox in seen_vis_bboxes:
+                                continue
+                            seen_vis_bboxes.add(rounded_bbox)
+                            width = int((x2 - x1) * scale_x)
+                            height = int((y2 - y1) * scale_y)
+                            images.append(ImageRegion(
+                                bbox=pdf_bbox,
+                                width=width,
+                                height=height,
+                                significant=True
+                            ))
+                    except Exception:
+                        # Ultimate fallback: no images, keep text_len as 0
+                        text_len = 0
 
             else:   # Digital page – use same area filter as extraction
                 try:

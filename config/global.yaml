@@ -46,6 +46,12 @@ chunking:
 # fast, low RAM, and sufficient for deciding where to split text.
 # The actual embedding for search still uses embeddings.dense_model.
 
+# ── OCR (scanned PDFs) ───────────────────────────────────────────────────────
+ocr:
+  engine: surya                # surya | paddle   (surya preferred, falls back to paddle)
+  # surya requires: pip install surya-ocr llama-cpp-python
+  # paddle requires: pip install paddlepaddle paddleocr ultralytics opencv-python
+
 # ── Query pipeline ────────────────────────────────────────────────────────────
 query:
   small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval

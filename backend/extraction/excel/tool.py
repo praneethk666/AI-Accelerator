@@ -275,7 +275,12 @@ class ExcelExtractorTool(Tool):
         state: dict,
     ) -> List[NormalizedBlock]:
         import openpyxl
-        blocks = []
+        blocks: List[NormalizedBlock] = []
+
+        # openpyxl strictly does not support legacy .xls or binary .xlsb files
+        ext = os.path.splitext(file_path)[-1].lower()
+        if ext in [".xls", ".xlsb"]:
+            return blocks # Gracefully skip pivot extraction for unsupported old formats
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
@@ -362,13 +367,13 @@ class ExcelExtractorTool(Tool):
 # SANDBOX TEST
 # ------------------------------------------------------------------
 if __name__ == "__main__":
-    test_file = "test-data/test.xlsx"
+    test_file = "test-data/waste.xls"
     doc_id    = "doc-excel-001"
 
     mock_state = {
         "file_path":   test_file,
         "document_id": doc_id,
-        "filename":    "test.xlsx",
+        "filename":    "waste.xls",
         "blocks":      [],
         "errors":      [],
     }

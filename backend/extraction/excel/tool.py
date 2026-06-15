@@ -367,13 +367,13 @@ class ExcelExtractorTool(Tool):
 # SANDBOX TEST
 # ------------------------------------------------------------------
 if __name__ == "__main__":
-    test_file = "test-data/waste.xls"
+    test_file = "test-data/test.xlsx"
     doc_id    = "doc-excel-001"
 
     mock_state = {
         "file_path":   test_file,
         "document_id": doc_id,
-        "filename":    "waste.xls",
+        "filename":    "test.xlsx",
         "blocks":      [],
         "errors":      [],
     }

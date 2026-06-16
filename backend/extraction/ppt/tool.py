@@ -3,7 +3,21 @@ import uuid
 import json
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
+
+
+def _detect_image_ext(data: bytes) -> str:
+    """Sniff an embedded image's real format from its magic bytes."""
+    if not data:
+        return "png"
+    if data[:8] == b"\x89PNG\r\n\x1a\n": return "png"
+    if data[:3] == b"\xff\xd8\xff": return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"): return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "webp"
+    if data[:4] in (b"MM\x00*", b"II*\x00"): return "tiff"
+    if data[:2] == b"BM": return "bmp"
+    return "png"
 
 
 class PPTExtractorTool:
@@ -25,6 +39,25 @@ class PPTExtractorTool:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _iter_shapes(self, shapes):
+        """Recursively yield shapes, descending into grouped shapes (plain
+        slide.shapes iteration misses everything nested inside a group)."""
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                yield from self._iter_shapes(shape.shapes)
+            else:
+                yield shape
+
+    def _detect_language(self, text: str, default: str = "en") -> str:
+        """Best-effort ISO 639-1 language code; falls back to `default`."""
+        if not text or not text.strip():
+            return default
+        try:
+            from langdetect import detect
+            return detect(text)
+        except Exception:
+            return default
 
     def _extract(
         self,
@@ -67,7 +100,7 @@ class PPTExtractorTool:
     ) -> Optional[NormalizedBlock]:
         parts = []
 
-        for shape in slide.shapes:
+        for shape in self._iter_shapes(slide.shapes):
             if shape.has_table or shape.shape_type == 3:
                 continue
             if hasattr(shape, "text") and shape.text.strip():
@@ -92,7 +125,7 @@ class PPTExtractorTool:
                 slide=slide_num,
             ),
             confidence=cfg.get("extraction_confidence", 1.0),
-            language=cfg.get("default_language", "en"),
+            language=self._detect_language(full_text, cfg.get("default_language", "en")),
             metadata={
                 "enrichment_failed": cfg.get("enrichment_failed_flag", False),
             },
@@ -109,7 +142,7 @@ class PPTExtractorTool:
         import pandas as pd
         blocks = []
 
-        for shape in slide.shapes:
+        for shape in self._iter_shapes(slide.shapes):
             if not shape.has_table:
                 continue
             try:
@@ -126,12 +159,13 @@ class PPTExtractorTool:
 
                 df       = pd.DataFrame(rows, columns=headers if headers else None)
                 block_id = str(uuid.uuid4())
+                md_text  = df.to_markdown(index=False)
 
                 blocks.append(NormalizedBlock(
                     block_id=block_id,
                     document_id=doc_id,
                     type="table",
-                    text=df.to_markdown(index=False),
+                    text=md_text,
                     table_data={
                         "headers": headers,
                         "rows":    rows,
@@ -141,7 +175,7 @@ class PPTExtractorTool:
                         slide=slide_num,
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
-                    language=cfg.get("default_language", "en"),
+                    language=self._detect_language(md_text, cfg.get("default_language", "en")),
                     metadata={
                         "enrichment_failed": cfg.get("enrichment_failed_flag", False),
                     },
@@ -160,12 +194,11 @@ class PPTExtractorTool:
         filename: str,
         cfg: Dict[str, Any],
     ) -> List[NormalizedBlock]:
-        from pptx.enum.shapes import MSO_SHAPE_TYPE
         blocks  = []
         out_dir = os.path.join("uploads", "images", doc_id)
         os.makedirs(out_dir, exist_ok=True)
 
-        for shape in slide.shapes:
+        for shape in self._iter_shapes(slide.shapes):
             image_bytes = None
             shape_label = None
 
@@ -186,7 +219,7 @@ class PPTExtractorTool:
                     continue
 
                 block_id = str(uuid.uuid4())
-                raw_path = os.path.join(out_dir, f"{block_id}_raw.png")
+                raw_path = os.path.join(out_dir, f"{block_id}_raw.{_detect_image_ext(image_bytes)}")
 
                 with open(raw_path, "wb") as f:
                     f.write(image_bytes)

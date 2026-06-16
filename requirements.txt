@@ -39,6 +39,7 @@ openpyxl
 pandas
 tabulate             # df.to_markdown() for table text
 python-pptx
+langdetect           # per-block language detection (multilingual docs)
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 sentence-transformers    # nomic dense embedder + bge-reranker

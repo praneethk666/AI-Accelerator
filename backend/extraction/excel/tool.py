@@ -6,6 +6,20 @@ from typing import List, Dict, Any, Optional
 from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
+def _detect_image_ext(data: bytes) -> str:
+    """Sniff an embedded image's real format from its magic bytes (Excel/PPT can
+    embed jpg/gif/emf/... — saving them all as .png corrupts the file)."""
+    if not data:
+        return "png"
+    if data[:8] == b"\x89PNG\r\n\x1a\n": return "png"
+    if data[:3] == b"\xff\xd8\xff": return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"): return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "webp"
+    if data[:4] in (b"MM\x00*", b"II*\x00"): return "tiff"
+    if data[:2] == b"BM": return "bmp"
+    return "png"
+
+
 class ExcelExtractorTool:
     """
     Extracts tables, embedded images, formulas, and pivot table data from Excel files.
@@ -24,6 +38,17 @@ class ExcelExtractorTool:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _detect_language(self, text: str, default: str = "en") -> str:
+        """Best-effort language code (ISO 639-1) for a block's text. Falls back to
+        `default` when text is empty or langdetect isn't installed/confident."""
+        if not text or not text.strip():
+            return default
+        try:
+            from langdetect import detect
+            return detect(text)
+        except Exception:
+            return default
 
     def _extract(
         self,
@@ -51,12 +76,13 @@ class ExcelExtractorTool:
 
                 block_id   = str(uuid.uuid4())
                 cell_range = f"{sheet_name}!A1:{self._col_letter(len(df.columns))}{len(df) + 1}"
+                md_text    = df.to_markdown(index=False)
 
                 blocks.append(NormalizedBlock(
                     block_id=block_id,
                     document_id=doc_id,
                     type="table",
-                    text=df.to_markdown(index=False),
+                    text=md_text,
                     table_data={
                         "headers": [str(c) for c in df.columns.tolist()],
                         "rows":    df.values.tolist(),
@@ -66,7 +92,7 @@ class ExcelExtractorTool:
                         sheet=str(sheet_name),
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
-                    language=cfg.get("default_language", "en"),
+                    language=self._detect_language(md_text, cfg.get("default_language", "en")),
                     metadata={
                         "cell_range":        cell_range,
                         "enrichment_failed": cfg.get("enrichment_failed_flag", False),
@@ -110,8 +136,9 @@ class ExcelExtractorTool:
             for image in getattr(sheet, "_images", []):
                 try:
                     block_id   = str(uuid.uuid4())
-                    raw_path   = os.path.join(out_dir, f"{block_id}_raw.png")
                     image_data = image.ref.read() if hasattr(image.ref, "read") else bytes(image.ref)
+                    ext        = _detect_image_ext(image_data)
+                    raw_path   = os.path.join(out_dir, f"{block_id}_raw.{ext}")
                     with open(raw_path, "wb") as f:
                         f.write(image_data)
 

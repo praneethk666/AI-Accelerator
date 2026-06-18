@@ -3,11 +3,20 @@
 Blocks flow through state as PLAIN DICTS (see schemas.as_dicts) — assert with
 dict access, not attribute access.
 """
+import os
+import pytest
+
 from backend.extraction.excel.tool import ExcelExtractorTool
 from backend.extraction.ppt.tool import PPTExtractorTool
 
 EXCEL_FILE = "test-data/test.xlsx"
 PPT_FILE   = "test-data/test.pptx"
+
+# test-data/ is git-ignored; skip cleanly when the fixtures aren't present locally.
+pytestmark = pytest.mark.skipif(
+    not (os.path.exists(EXCEL_FILE) and os.path.exists(PPT_FILE)),
+    reason="test-data fixtures not present (git-ignored)",
+)
 
 
 # ── Excel ──────────────────────────────────────────────────────────────────────

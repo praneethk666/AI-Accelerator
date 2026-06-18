@@ -7,6 +7,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="google.pr
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*imghdr.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*SwigPy.*")
 
+import os
 import pytest
 from unittest.mock import patch
 
@@ -49,6 +50,8 @@ def fast_offline_ocr():
     "test-data/Mixed.pdf",
 ])
 def test_pdf_extraction(pdf_path):
+    if not os.path.exists(pdf_path):
+        pytest.skip(f"fixture {pdf_path} not present (test-data/ is git-ignored)")
     tool = get_tool_for_pdf(pdf_path)
     state = {"file_path": pdf_path, "document_id": "test"}
     result = tool.run(state, {})

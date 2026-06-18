@@ -236,8 +236,48 @@ class PostgresStore:
         })
         return doc
 
+    # ── document pages (rendered full-page images for visual grounding) ─────────
+
+    def insert_page_image(
+        self, document_id: str, page: int, image_path: str,
+        width=None, height=None,
+    ) -> None:
+        """Record one rendered page image (upsert by document_id+page)."""
+        self.conn.execute(
+            """
+            INSERT INTO document_pages (document_id, page, image_path, width, height)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (document_id, page) DO UPDATE SET
+                image_path = EXCLUDED.image_path,
+                width = EXCLUDED.width, height = EXCLUDED.height
+            """,
+            (document_id, page, image_path, width, height),
+        )
+
+    def list_page_images(self, document_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT page, image_path, width, height FROM document_pages
+            WHERE document_id::text = %s ORDER BY page
+            """,
+            (document_id,),
+        ).fetchall()
+        return [{"page": r[0], "image_path": r[1], "width": r[2], "height": r[3]}
+                for r in rows]
+
+    def get_page_image(self, document_id: str, page: int) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT page, image_path, width, height FROM document_pages
+            WHERE document_id::text = %s AND page = %s
+            """,
+            (document_id, page),
+        ).fetchone()
+        return ({"page": row[0], "image_path": row[1], "width": row[2], "height": row[3]}
+                if row else None)
+
     def delete_document(self, document_id: str) -> None:
-        # chunks cascade via the FK ON DELETE CASCADE
+        # chunks + document_pages cascade via the FK ON DELETE CASCADE
         self.conn.execute(
             "DELETE FROM documents WHERE document_id::text = %s", (document_id,)
         )

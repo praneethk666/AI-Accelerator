@@ -70,6 +70,12 @@ _IMAGES_DIR = os.path.join(UPLOAD_DIR, "images")
 os.makedirs(_IMAGES_DIR, exist_ok=True)
 app.mount("/images", StaticFiles(directory=_IMAGES_DIR), name="images")
 
+# Serve full-page images (visual grounding). Rendered at ingest for PDF pages that
+# produced chunks; stored under uploads/pages/<doc_id>/p{N}.jpg, served at /pages/...
+_PAGES_DIR = os.path.join(UPLOAD_DIR, "pages")
+os.makedirs(_PAGES_DIR, exist_ok=True)
+app.mount("/pages", StaticFiles(directory=_PAGES_DIR), name="pages")
+
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
 # Warm torch/nomic BEFORE anything can import paddle (paddleocr) — paddle-first
@@ -219,6 +225,29 @@ def _pg() -> PostgresStore:
 _INGEST_STEPS = list((_config.get("ingestion") or {}).get("steps") or [])
 
 
+def _save_page_images(document_id: str, pdf_path: str, pages: set, dpi: int = 150) -> list:
+    """Render the given (1-based) PDF pages to JPEGs under uploads/pages/<doc_id>/
+    and return [(page, web_path, width, height)]. PDF-only; best-effort. fitz
+    rendering is pure C (no torch/paddle), so it's safe in the backend process."""
+    import fitz
+    page_dir = os.path.join(_PAGES_DIR, document_id)
+    os.makedirs(page_dir, exist_ok=True)
+    out = []
+    doc = fitz.open(pdf_path)
+    try:
+        for p in sorted(pages):
+            if p < 1 or p > len(doc):
+                continue
+            pix = doc[p - 1].get_pixmap(dpi=dpi)
+            fname = f"p{p}.jpg"
+            with open(os.path.join(page_dir, fname), "wb") as f:
+                f.write(pix.tobytes("jpeg", jpg_quality=80))
+            out.append((p, f"/pages/{document_id}/{fname}", pix.width, pix.height))
+    finally:
+        doc.close()
+    return out
+
+
 def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
     """Run the full pipeline for one upload, persisting per-step progress to the DB."""
     state = {"document_id": document_id, "file_path": dest,
@@ -282,6 +311,21 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
             indexed_tokens=indexed_tokens,              # tokens of text indexed
             chunk_count=len(chunks),
         )
+        # Full-page images for the PDF pages that produced chunks — for visual
+        # grounding ("pull up the page" when a chunk is ambiguous). Only pages with
+        # content, so blank pages aren't rendered/stored.
+        if file_type == "pdf" and status != "failed":
+            try:
+                pages = {
+                    int(c["source_ref"]["page"]) for c in chunks
+                    if isinstance(c.get("source_ref"), dict)
+                    and c["source_ref"].get("page") is not None
+                }
+                for p, web, w, h in _save_page_images(document_id, dest, pages):
+                    pg.insert_page_image(document_id, p, web, w, h)
+                logger.info("saved %d page images for %s", len(pages), document_id)
+            except Exception:
+                logger.exception("page-image save failed for %s", document_id)
     except Exception:
         logger.exception("finalize_document failed for %s", document_id)
     finally:
@@ -346,6 +390,31 @@ async def get_file(file_id: str):
     if not doc:
         raise HTTPException(404, "document not found")
     return doc
+
+
+@app.get("/files/{file_id}/pages")
+async def file_pages(file_id: str):
+    """List rendered full-page images for a document (page -> /pages/... url).
+    Only pages that produced chunks are present."""
+    pg = _pg()
+    try:
+        return {"document_id": file_id, "pages": pg.list_page_images(file_id)}
+    finally:
+        pg.close()
+
+
+@app.get("/files/{file_id}/pages/{page}")
+async def file_page(file_id: str, page: int):
+    """Metadata for one page image (bytes served at the returned image_path).
+    Lets the answerer/agent pull up a full page for visual grounding."""
+    pg = _pg()
+    try:
+        rec = pg.get_page_image(file_id, page)
+    finally:
+        pg.close()
+    if not rec:
+        raise HTTPException(404, "page image not found")
+    return rec
 
 
 @app.delete("/files/{file_id}")

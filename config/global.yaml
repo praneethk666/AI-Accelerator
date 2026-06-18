@@ -21,38 +21,62 @@ llm:
   api_key: ${GROQ_API_KEY}
   # base_url:               # set for openai-compatible endpoints
   # temperature: 0.2
+  # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
 
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
 vision:
   provider: google
-  model: gemma-3-27b-it
+  model: gemma-4-31b-it     # multimodal; gemma-3-27b-it is NOT on the AI Studio API
   api_key: ${GOOGLE_API_KEY}
   # base_url:               # set for vision.provider: openai
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
-  timeout_s: 45
-  max_concurrency: 4        # parallel Gemma calls per document
+  # timeout_s must cover the retry budget: a 429 from Google's free tier asks us
+  # to wait ~12s, and we retry up to max_retries times, so keep this generous.
+  timeout_s: 150
+  max_retries: 5            # retry 429/500/503 with backoff (honors server retry_delay)
+  max_concurrency: 2        # parallel calls per doc; lower = fewer free-tier 429 bursts
+  # Focus instructions, selected by route first, then industry, then "default"
+  # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
+  # key here to tune captions without code changes.
   prompt:
     default: >
       Describe what this image shows in 2–3 sentences. Be specific about
       diagrams, charts, component labels, dimensions, and any text visible.
+    automotive: >
+      You are analyzing a page from a vehicle/equipment service manual. Capture
+      exploded views and assembly diagrams, part names and part numbers, callout
+      numbers, fasteners, torque/clearance specs, and any labels, warnings, or
+      measurements. Be precise — this is used for parts/maintenance search.
     cad_route: >
       Describe all visible circuit components, reference designators (R1, C4),
       net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
       visible dimensions or tolerances. Be precise — this is used for search.
 
 # ── OCR (scanned pages) ───────────────────────────────────────────────────────
+# OCR runs in an ISOLATED subprocess (scanned_pdf/ocr_worker.py) so the native OCR
+# stack can't crash the backend. Pick the engine per DEPLOYMENT:
 # engine: surya | paddle
-#   surya  — torch-based; ONE pass gives text + layout (figures/tables), 90+
-#            languages, better on complex layouts. No paddle<->torch conflict.
-#            Requires the llama-server binary:  brew install llama.cpp
-#   paddle — PaddleOCR text + DocLayout-YOLO/contour regions (fallback). Faster
-#            CNN recognition; auto-used if surya is unavailable.
+#   surya  — torch + llama.cpp; ONE pass gives text + layout, 90+ languages, best
+#            accuracy on complex layouts. Needs the llama-server binary
+#            (brew install llama.cpp). BEST ON A GPU/LINUX BOX: on CPU/Apple Silicon
+#            llama-server stalls over long docs, so prefer surya only where a GPU
+#            backs llama-server. Set ocr.engine: surya in that deployment's profile.
+#   paddle — PaddleOCR text + DocLayout-YOLO/contour regions. CNN recognition,
+#            reliable and fast on CPU. DEFAULT for CPU/dev/Mac.
 ocr:
-  engine: surya
+  engine: paddle            # CPU default; switch to 'surya' on GPU deployments
+  # Surya can stall on a cold/unhealthy llama-server. Each page is bounded by this
+  # many seconds; on timeout (or any error) that page falls back to PaddleOCR so a
+  # stall can't hang an ingestion. Warm Surya pages take ~20-25s, so keep headroom.
+  surya_timeout_s: 90
+  # OCR runs in an isolated subprocess (avoids native crashes in the backend). This
+  # caps the whole document's OCR; if exceeded, the child is killed and the doc is
+  # marked failed instead of hanging. 22 scanned pages ran in ~5 min, so allow room.
+  subprocess_timeout_s: 1800
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
@@ -72,6 +96,21 @@ chunking:
   strategy: semantic        # semantic | recursive
   size: 400                 # tokens (not characters)
   overlap: 50               # tokens
+
+# ── Enrichment ────────────────────────────────────────────────────────────────
+# enrich_chunks stamps tags + (when summarize) an LLM one-line summary + semantic
+# keywords on each chunk. summarize: false -> offline frequency keywords only.
+enrichment:
+  summarize: true
+  keyword_count: 6           # fallback frequency keywords if the LLM is off/fails
+  batch_size: 10             # chunks summarized per LLM call (low call count = no rate limits)
+  # Instruction describing what to produce per chunk (summary + meaningful keywords).
+  # The pipeline adds the numbered chunks and asks for a JSON array — don't put a
+  # chunk in here. Editable in the Settings UI.
+  prompt: >
+    You label document chunks for search. For each chunk, write a one-sentence
+    summary of what it is about and 6-10 meaningful, specific keywords/phrases that
+    capture its content (real terms a user would search — never filler/stopwords).
 
 # ── Query pipeline ────────────────────────────────────────────────────────────
 query:
@@ -216,7 +255,12 @@ routes:
 ingestion:
   steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
   route_gates:
-    vision_enrichment: [diagram_heavy, image_route]
+    # vision_enrichment must run on text_default too: most real documents
+    # (manuals, reports, datasheets with diagrams) land there, and their images
+    # would otherwise never be captioned. CAD/circuit routes are intentionally
+    # excluded — their route_extractor (cad_extract) does its own vision pass.
+    # The tool no-ops when a page has no significant images, so this is cheap.
+    vision_enrichment: [text_default, diagram_heavy, image_route]
 
 # ── Database (connection strings from environment) ────────────────────────────
 database:

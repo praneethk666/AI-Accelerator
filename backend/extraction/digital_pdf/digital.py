@@ -27,6 +27,12 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
     blocks: List[NormalizedBlock] = []
     filename = os.path.basename(pdf_path)
 
+    # Repeating headers/footers (page numbers, "Argo Service Manual", the
+    # www.argoutv.com footer, ...) appear in the top/bottom band of most pages and
+    # otherwise land mid-content, fragmenting procedures. Detect them once so the
+    # paragraph builder can drop them.
+    boilerplate = _detect_boilerplate(doc)
+
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -36,7 +42,9 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
             # ---- (page_metrics removed – handled by page_profile) ----
 
             # ---- 1. Text as paragraphs (merged) ----
-            para_blocks = _extract_paragraphs(page, page_number, filename, document_id)
+            para_blocks = _extract_paragraphs(
+                page, page_number, filename, document_id, boilerplate
+            )
             blocks.extend(para_blocks)
 
             # ---- Tables: detect ONCE per page, reuse for table blocks + the
@@ -160,11 +168,49 @@ def extract_digital(pdf_path: str, document_id: str) -> List[NormalizedBlock]:
     return blocks
 
 
-def _extract_paragraphs(page, page_num: int, filename: str, document_id: str) -> List[NormalizedBlock]:
+def _norm_line(text: str) -> str:
+    """Normalize a line for boilerplate matching: lowercase, drop digits (page
+    numbers vary), collapse whitespace. So 'FS-6' / 'Page 12' style footers match
+    across pages regardless of the changing number."""
+    import re as _re
+    return _re.sub(r"\s+", " ", _re.sub(r"\d+", "", (text or "").lower())).strip()
+
+
+def _detect_boilerplate(doc) -> set:
+    """Lines that repeat in the top/bottom band of many pages = headers/footers."""
+    from collections import Counter
+    n = len(doc)
+    if n < 3:
+        return set()
+    counts: Counter = Counter()
+    for pno in range(n):
+        page = doc[pno]
+        h = page.rect.height or 1
+        seen = set()
+        for block in page.get_text("dict").get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                txt = " ".join(s.get("text", "") for s in line.get("spans", [])).strip()
+                if not txt:
+                    continue
+                y = line["bbox"][1]
+                if y < 0.12 * h or y > 0.88 * h:   # header/footer band only
+                    norm = _norm_line(txt)
+                    if len(norm) >= 4 and norm not in seen:
+                        counts[norm] += 1
+                        seen.add(norm)
+    threshold = max(3, int(0.4 * n))
+    return {ln for ln, c in counts.items() if c >= threshold}
+
+
+def _extract_paragraphs(page, page_num: int, filename: str, document_id: str,
+                        boilerplate: set | None = None) -> List[NormalizedBlock]:
     """
     Extract text from a page, merging spans into paragraphs.
     Returns a list of NormalizedBlock (type="text" or "heading").
     """
+    boilerplate = boilerplate or set()
     text_dict = page.get_text("dict")
     lines = []
 
@@ -172,6 +218,9 @@ def _extract_paragraphs(page, page_num: int, filename: str, document_id: str) ->
         if block["type"] != 0:
             continue
         for line in block.get("lines", []):
+            line_txt = " ".join(s.get("text", "") for s in line.get("spans", [])).strip()
+            if line_txt and _norm_line(line_txt) in boilerplate:
+                continue  # drop repeating header/footer
             spans = []
             for span in line.get("spans", []):
                 text = span["text"].strip()

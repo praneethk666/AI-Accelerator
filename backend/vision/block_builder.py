@@ -16,15 +16,18 @@ def parse_caption(caption_json_str):
     entities = []
     vision_type = "other"
     confidence = 0.0
-    try:
-        data = json.loads(_strip_fences(caption_json_str))
+    data = _extract_json(caption_json_str)
+    if data is not None:
         description = (data.get("description") or "").strip()
         entities = data.get("entities") or []
         vision_type = data.get("type", "other")
-        confidence = float(data.get("confidence", 0.95))
+        try:
+            confidence = float(data.get("confidence", 0.95))
+        except (TypeError, ValueError):
+            confidence = 0.95
         if not isinstance(entities, list):
             entities = []
-    except Exception:
+    else:
         enrichment_failed = True
         description = str(caption_json_str).strip()
 
@@ -43,6 +46,27 @@ def _strip_fences(text: str) -> str:
         if t.lstrip().lower().startswith("json"):
             t = t.lstrip()[4:]
     return t.strip()
+
+
+def _extract_json(text):
+    """Pull the JSON object out of a model reply that may include reasoning.
+
+    "Thinking" models (e.g. gemma-4) emit prose/analysis before the JSON, so a
+    plain json.loads on the whole reply fails and we'd otherwise store the raw
+    reasoning as the caption. Strip fences, try direct parse, then fall back to the
+    outermost {...} span."""
+    t = _strip_fences(text)
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    start, end = t.find("{"), t.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(t[start:end + 1])
+        except Exception:
+            return None
+    return None
 
 
 def build_image_caption_block(state, page_number, bbox, caption_json_str):

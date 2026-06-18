@@ -80,7 +80,9 @@ class AnswererTool:
             for i, chunk in enumerate(chunks, start=1):
                 ref   = chunk.get("source_ref") or {}
                 label = _locator(ref)
-                context_blocks.append(f"[{i}] ({label})\n{chunk.get('text') or ''}")
+                summary = (chunk.get("tags") or {}).get("summary")
+                header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
+                context_blocks.append(f"{header}\n{chunk.get('text') or ''}")
 
             user_msg = (
                 "Context:\n\n"
@@ -101,12 +103,15 @@ class AnswererTool:
             citations = []
             for chunk in chunks:
                 ref = chunk.get("source_ref") or {}
+                tags = chunk.get("tags") or {}
                 citations.append({
                     "filename":   ref.get("filename"),
                     "page":       ref.get("page"),
                     "sheet":      ref.get("sheet"),
                     "slide":      ref.get("slide"),
                     "snippet":    (chunk.get("text") or "")[:200],
+                    "summary":    tags.get("summary"),
+                    "keywords":   tags.get("keywords"),
                     "image_path": chunk.get("image_path"),
                     "table_data": chunk.get("table_data"),
                 })

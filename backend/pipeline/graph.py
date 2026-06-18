@@ -194,8 +194,13 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
     return sg.compile()
 
 
-def run_pipeline(tools, state: PipelineState, config) -> PipelineState:
-    """Build + run in one call. Accepts dicts (legacy) or a registry/PipelineConfig."""
+def run_pipeline(tools, state: PipelineState, config, on_step=None) -> PipelineState:
+    """Build + run in one call. Accepts dicts (legacy) or a registry/PipelineConfig.
+
+    on_step: optional callback invoked as on_step(entry, snapshot) after EACH step
+    completes, where entry is the step's {step, ms, status} metric. Lets the API
+    report live progress while ingestion runs (the UI polls it). When omitted the
+    graph is invoked normally (no streaming overhead)."""
     registry = tools if isinstance(tools, ToolRegistry) else _registry_from_dict(tools)
     cfg = (
         config
@@ -203,7 +208,33 @@ def run_pipeline(tools, state: PipelineState, config) -> PipelineState:
         else PipelineConfig.from_dict(config)
     )
     graph = build_pipeline(registry, cfg)
-    return graph.invoke(state)
+
+    from backend.core import usage  # per-run LLM/vision token accounting
+
+    if on_step is None:
+        with usage.using_sink() as sink:
+            final = graph.invoke(state)
+        if isinstance(final, dict):
+            final["token_usage"] = sink.totals()
+        return final
+
+    # stream_mode="values" yields the full accumulated state after each step;
+    # the metrics channel grows by one entry per step, so emit the new ones.
+    final = state
+    seen = 0
+    with usage.using_sink() as sink:
+        for snapshot in graph.stream(state, stream_mode="values"):
+            final = snapshot
+            metrics = snapshot.get("metrics", []) or []
+            while seen < len(metrics):
+                try:
+                    on_step(metrics[seen], snapshot)
+                except Exception:  # progress reporting must never break ingestion
+                    pass
+                seen += 1
+    if isinstance(final, dict):
+        final["token_usage"] = sink.totals()
+    return final
 
 
 def _registry_from_dict(tools: dict) -> ToolRegistry:

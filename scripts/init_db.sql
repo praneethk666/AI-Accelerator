@@ -20,7 +20,17 @@ CREATE TABLE IF NOT EXISTS documents (
     confidence    REAL,                         -- categorize confidence (UI shows a bar)
     status        TEXT DEFAULT 'processing',   -- processing | ready | failed
     errors        JSONB DEFAULT '[]',
-    created_at    TIMESTAMP DEFAULT NOW()
+    -- live ingestion progress (DB is the single source of truth; the API reads
+    -- these, survives restarts + works across workers — no in-memory state).
+    current_step    TEXT,                       -- step running now (or 'done')
+    metrics         JSONB DEFAULT '[]',         -- [{step, ms, status}] per step, accumulated
+    token_usage     JSONB,                      -- {input_tokens, output_tokens, by_kind, ...}
+    indexed_tokens  INTEGER,                     -- tokens of text indexed
+    chunk_count     INTEGER,                     -- chunks produced
+    progress        REAL DEFAULT 0,             -- 0..1 (completed_steps / total_steps)
+    total_steps     INTEGER,
+    created_at    TIMESTAMP DEFAULT NOW(),
+    updated_at    TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS chunks (

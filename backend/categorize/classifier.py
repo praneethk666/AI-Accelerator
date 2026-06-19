@@ -30,11 +30,12 @@ from backend.core.vision_client import describe_image
 def detect_file_type(file_path: str) -> str:
     """Detect file type based on extension.
     
-    Returns one of:
+    Returns the canonical pipeline file_type vocabulary (matches
+    config `extractors:` keys and PipelineState.file_type):
     - 'pdf' for .pdf files
     - 'excel' for .xlsx, .xls files
     - 'spreadsheet' for .csv files
-    - 'powerpoint' for .pptx, .ppt files
+    - 'ppt' for .pptx, .ppt files
     - 'word' for .docx, .doc files
     - 'image' for .png, .jpg, .jpeg, .bmp, .gif files
     - 'diagram' for .dwg, .dxf, .svg files
@@ -50,7 +51,7 @@ def detect_file_type(file_path: str) -> str:
     elif filename.endswith('.csv'):
         return 'spreadsheet'
     elif filename.endswith(('.pptx', '.ppt')):
-        return 'powerpoint'
+        return 'ppt'
     elif filename.endswith(('.docx', '.doc')):
         return 'word'
     elif filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff')):
@@ -85,6 +86,36 @@ def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]
         if _match_keywords(text, kws):
             return industry
     return None
+
+
+def _heuristic_doctype(
+    filename: str, file_path: str, supported_types: list[str]
+) -> Tuple[str, float, str]:
+    """Vision-free document_type guess from filename + first-page text.
+
+    Used when the vision classifier is unavailable (e.g. no GOOGLE_API_KEY) so
+    categorization still produces a usable route instead of a hard 0.0 that flags
+    every document. The confidence is deliberately modest — it's a keyword signal,
+    not a vision read — but high enough to clear the low-confidence threshold.
+    """
+    hay = (filename or "").lower()
+    try:
+        hay += " " + (extract_text(file_path, max_pages=2) or "").lower()
+    except Exception:
+        pass
+    keymap = [
+        ("invoice", ["invoice", "bill to", "amount due"]),
+        ("purchase_order", ["purchase order", "po number"]),
+        ("financial_statement", ["balance sheet", "income statement", "profit and loss"]),
+        ("datasheet", ["datasheet", "specifications", "rated voltage"]),
+        ("presentation", ["agenda", "slide "]),
+        ("contract", ["agreement", "terms and conditions"]),
+        ("research_paper", ["abstract", "references", "doi:"]),
+    ]
+    for dtype, kws in keymap:
+        if dtype in supported_types and any(k in hay for k in kws):
+            return dtype, 0.6, f"vision unavailable; matched '{dtype}' by keyword heuristic"
+    return "report", 0.5, "vision unavailable; defaulted to 'report' (text route)"
 
 
 def _render_pdf_pages_to_stitched_image_bytes(file_path: str, pages: list[int], zoom: float = 2.0) -> bytes:
@@ -368,6 +399,15 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             if not doc_type:
                 doc_type = "report"
 
+            # ---- Vision unavailable/failed (conf 0.0) -> keyword heuristic ----
+            # Don't let a missing vision key flag every document as low-confidence;
+            # fall back to a filename/text guess so routing still works offline.
+            if conf <= 0.0:
+                doc_type, conf, heuristic_reason = _heuristic_doctype(
+                    filename, file_path, supported_types
+                )
+                reasoning = f"{heuristic_reason} (vision: {reasoning})"
+
             # ---- CAD Override: If filename suggests CAD and vision didn't catch it ----
             if suspected_cad and doc_type != "cad_drawing" and doc_type != "circuit_diagram" and doc_type != "schematic":
                 # Boost CAD classification if filename is clear CAD signal
@@ -419,7 +459,10 @@ Respond with ONLY the JSON object, no other text, no markdown."""
     state["industry"] = best["industry"]
     state["confidence"] = best["confidence"]
     state["reasoning"] = best["reasoning"]
-    state["file_type"] = detect_file_type(file_path)
+    # Don't clobber a file_type the caller (API) already set — it uses the same
+    # canonical vocabulary ("ppt"/"excel"/"pdf"/"image") the extractor dispatch
+    # keys on. Only derive it when missing (e.g. standalone categorize calls).
+    state["file_type"] = state.get("file_type") or detect_file_type(file_path)
 
     return {
         "route": state["route"],

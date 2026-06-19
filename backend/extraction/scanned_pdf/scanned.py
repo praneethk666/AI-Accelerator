@@ -43,11 +43,49 @@ _surya_cache: "OrderedDict[str, object]" = OrderedDict()
 # the fallback. Surya needs the llama-server binary (brew install llama.cpp).
 _OCR_ENGINE = os.getenv("OCR_ENGINE", "surya").lower()
 
+# Surya can STALL on a cold/unhealthy llama-server (observed: 20+ min at 0% CPU on
+# a cold start). The existing except-based fallback only catches errors, not hangs,
+# so we also bound every Surya page call with a wall-clock timeout and fall back to
+# PaddleOCR / the contour detector. Configurable via ocr.surya_timeout_s
+# (set_surya_timeout) or the SURYA_TIMEOUT_S env var.
+_SURYA_TIMEOUT_S = float(os.getenv("SURYA_TIMEOUT_S", "90"))
+# Image hashes where Surya already timed out THIS document — skip it so we don't
+# pay the timeout twice (once for OCR text, once for region detection of the same
+# page). Cleared at the start of each extract_scanned() so a recovered llama-server
+# is retried on the next document.
+_surya_failed_keys: set = set()
+
 
 def set_ocr_engine(name: Optional[str]) -> None:
     global _OCR_ENGINE
     if name:
         _OCR_ENGINE = name.lower()
+
+
+def set_surya_timeout(secs) -> None:
+    global _SURYA_TIMEOUT_S
+    try:
+        if secs:
+            _SURYA_TIMEOUT_S = float(secs)
+    except (TypeError, ValueError):
+        pass
+
+
+def _surya_with_timeout(pil_image):
+    """Run Surya for ONE page, bounded by _SURYA_TIMEOUT_S. Raises TimeoutError on a
+    stall. We shut the worker down with wait=False: a blocked llama.cpp call can't be
+    cancelled, so we abandon the thread rather than block the whole ingestion on it.
+    (_get_surya_page memoizes, so a successful page is reused with no second call.)"""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FTimeout
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_get_surya_page, pil_image)
+    try:
+        result = fut.result(timeout=_SURYA_TIMEOUT_S)
+        ex.shutdown(wait=False)
+        return result
+    except _FTimeout:
+        ex.shutdown(wait=False)
+        raise TimeoutError(f"Surya page exceeded {_SURYA_TIMEOUT_S}s")
 
 
 def _img_hash(pil_image: "Image.Image") -> str:
@@ -165,15 +203,16 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
         return cached
 
     # Surya: text comes from the one-pass full-page result. Fall back to Paddle
-    # if Surya is unavailable (e.g. no llama-server) or errors.
-    if _OCR_ENGINE == "surya":
+    # if Surya is unavailable (e.g. no llama-server), errors, OR stalls (timeout).
+    if _OCR_ENGINE == "surya" and key not in _surya_failed_keys:
         try:
-            page = _get_surya_page(pil_image)
+            page = _surya_with_timeout(pil_image)
             out = (page.text, page.text_boxes)
             _cache_put(_ocr_cache, key, out)
             return out
         except Exception as e:
-            logger.warning("Surya OCR failed (%s); falling back to PaddleOCR", e)
+            _surya_failed_keys.add(key)
+            logger.warning("Surya OCR failed/timed out (%s); falling back to PaddleOCR", e)
 
     ocr = get_ocr_engine()
     img_np = np.array(pil_image)
@@ -212,10 +251,13 @@ def detect_visual_regions(
         return cached
 
     # Surya: visual regions come from the SAME one-pass result as the text
-    # (no separate layout model). Fall back to DocLayout/contours on failure.
-    if _OCR_ENGINE == "surya":
+    # (no separate layout model). Fall back to DocLayout/contours on failure or
+    # timeout. If OCR already timed Surya out for this page, skip straight to the
+    # detector instead of paying the timeout again.
+    ihash = cache_key[0]
+    if _OCR_ENGINE == "surya" and ihash not in _surya_failed_keys:
         try:
-            page = _get_surya_page(pil_image)
+            page = _surya_with_timeout(pil_image)
             regions = [
                 b for b in page.regions
                 if (b[2] - b[0]) * (b[3] - b[1]) >= min_area
@@ -223,7 +265,8 @@ def detect_visual_regions(
             _cache_put(_region_cache, cache_key, regions)
             return regions
         except Exception as e:
-            logger.warning("Surya layout failed (%s); falling back to detector", e)
+            _surya_failed_keys.add(ihash)
+            logger.warning("Surya layout failed/timed out (%s); falling back to detector", e)
 
     img_w, img_h = pil_image.size
     page_area = img_w * img_h
@@ -342,6 +385,11 @@ def extract_scanned(
         - image_caption blocks for each detected visual region (with bbox)
         - (page_metrics block removed – handled by page_profile)
     """
+    # Fresh Surya health per document: retry it even if it stalled on a prior doc
+    # (the llama-server may have recovered). Within THIS doc, a stalled page still
+    # short-circuits to Paddle so we never pay the timeout twice for one page.
+    _surya_failed_keys.clear()
+
     doc = fitz.open(pdf_path)
     blocks: List[NormalizedBlock] = []
     filename = os.path.basename(pdf_path)

@@ -28,15 +28,19 @@ class EmbedTool:
         dense = get_dense_model(config)
         sparse = get_sparse_model(config)
 
-        texts = [(c.get("text") or "") for c in chunks]
+        # Contextual retrieval: embed each chunk's enrichment (summary + keywords)
+        # together with its text, so both vectors carry that context and match more
+        # queries. The stored/displayed chunk["text"] is unchanged — only the
+        # embedding INPUT is augmented.
+        inputs = [_embed_input(c) for c in chunks]
 
         # dense: batch-encode with the nomic document prefix, normalized for cosine
         dense_vecs = dense.encode(
-            [DENSE_DOCUMENT_PREFIX + t for t in texts],
+            [DENSE_DOCUMENT_PREFIX + t for t in inputs],
             normalize_embeddings=True,
         )
         # sparse: BM25 passage embeddings (passage vs query matters for BM25/IDF)
-        sparse_vecs = list(sparse.passage_embed(texts))
+        sparse_vecs = list(sparse.passage_embed(inputs))
 
         for chunk, dvec, svec in zip(chunks, dense_vecs, sparse_vecs):
             chunk["vector"] = dvec.tolist() if hasattr(dvec, "tolist") else list(dvec)
@@ -45,3 +49,18 @@ class EmbedTool:
                 "values": svec.values.tolist(),
             }
         return state
+
+
+def _embed_input(chunk: dict) -> str:
+    """Embedding input = enrichment context (summary + keywords) prepended to the
+    chunk text. Improves recall without changing the stored text."""
+    tags = chunk.get("tags") or {}
+    text = chunk.get("text") or ""
+    summary = (tags.get("summary") or "").strip()
+    keywords = tags.get("keywords") or []
+    ctx = ""
+    if summary:
+        ctx += summary + "\n"
+    if keywords:
+        ctx += "Keywords: " + ", ".join(str(k) for k in keywords) + "\n"
+    return (ctx + text).strip() or text

@@ -31,15 +31,27 @@ calls still work (tracing silently skipped).
 """
 from __future__ import annotations
 
+import os
+
 from langchain_core.language_models import BaseChatModel
 
 
-def get_llm(config: dict) -> BaseChatModel:
+def get_llm(config: dict, max_tokens: int | None = None) -> BaseChatModel:
+    """Build the configured chat model.
+
+    max_tokens caps the completion length. It's provider-agnostic here — each SDK
+    names the kwarg differently (groq/openai: max_tokens, google: max_output_tokens,
+    ollama: num_predict) — so callers pass one number and we map it. An explicit
+    arg wins; otherwise we fall back to llm.max_tokens in config if set. Used e.g.
+    by enrich_chunks to guarantee a batch's JSON array isn't truncated.
+    """
     llm_cfg = config["llm"]
     provider = llm_cfg["provider"]
     model = llm_cfg["model"]
     api_key = _clean(llm_cfg.get("api_key"))
     temperature = llm_cfg.get("temperature")
+    if max_tokens is None:
+        max_tokens = llm_cfg.get("max_tokens")
     callbacks = _langfuse_callbacks()
 
     common = {"callbacks": callbacks}
@@ -48,12 +60,18 @@ def get_llm(config: dict) -> BaseChatModel:
 
     if provider == "groq":
         from langchain_groq import ChatGroq
-        return ChatGroq(model=model, **_with_key(common, "api_key", api_key))
+        kw = dict(common)
+        if max_tokens:
+            kw["max_tokens"] = max_tokens
+        return ChatGroq(model=model, **_with_key(kw, "api_key", api_key))
 
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
+        kw = dict(common)
+        if max_tokens:
+            kw["max_output_tokens"] = max_tokens
         return ChatGoogleGenerativeAI(
-            model=model, **_with_key(common, "google_api_key", api_key)
+            model=model, **_with_key(kw, "google_api_key", api_key)
         )
 
     if provider == "ollama":
@@ -61,6 +79,8 @@ def get_llm(config: dict) -> BaseChatModel:
         kw = dict(common)
         if llm_cfg.get("base_url"):
             kw["base_url"] = llm_cfg["base_url"]
+        if max_tokens:
+            kw["num_predict"] = max_tokens
         return ChatOllama(model=model, **kw)
 
     if provider == "openai":
@@ -69,6 +89,8 @@ def get_llm(config: dict) -> BaseChatModel:
         kw = dict(common)
         if llm_cfg.get("base_url"):
             kw["base_url"] = llm_cfg["base_url"]
+        if max_tokens:
+            kw["max_tokens"] = max_tokens
         return ChatOpenAI(model=model, **_with_key(kw, "api_key", api_key))
 
     raise ValueError(
@@ -98,6 +120,10 @@ def _langfuse_callbacks() -> list:
     # langfuse v3 -> v4 moved the handler to langfuse.langchain; try the new path
     # first, fall back to the old one. Absent/misconfigured -> no callbacks (calls
     # still work, just untraced).
+    # Only attach when both keys are set — otherwise langfuse v4 starts an OTEL
+    # exporter against LANGFUSE_HOST (default localhost:3001) and floods the logs.
+    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
+        return []
     try:
         from langfuse.langchain import CallbackHandler
         return [CallbackHandler()]

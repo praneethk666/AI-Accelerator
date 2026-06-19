@@ -22,7 +22,12 @@ paddleocr            # OCR for scanned pages
 paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
 # ── OCR (scanned pages) ───────────────────────────────────────────────────────
-surya-ocr            # default scanned OCR: text + layout in one pass, 90+ langs.
+surya-ocr>=0.20.0    # default scanned OCR: text + layout in one pass, 90+ langs.
+                     # MUST be >=0.20 — the code uses SuryaInferenceManager, which
+                     # does not exist in 0.17.x. 0.20 pins transformers~=4.57 (the
+                     # nomic embedder is verified on 4.57, so they coexist). If pip
+                     # reports a conflict on a fresh env, install surya-ocr first then
+                     # the rest, or just set ocr.engine: paddle (the built-in fallback).
                      # NEEDS the llama-server binary at runtime: `brew install llama.cpp`
                      # (Linux: build llama.cpp). Falls back to paddleocr if absent.
 

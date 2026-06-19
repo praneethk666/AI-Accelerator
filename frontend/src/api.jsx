@@ -68,6 +68,15 @@ export const getFile = async (fileId) => {
 };
 
 /**
+ * Get live ingestion progress for a document (per-step status + timings).
+ * @param {string} fileId - The document id
+ * @returns {Promise} { status, metrics:[{step, ms, status}], document_type, ... }
+ */
+export const getProgress = async (fileId) => {
+  return API.get(`/files/${fileId}/progress`);
+};
+
+/**
  * Send a chat message about documents
  * @param {string} question - The question to ask
  * @param {number} fileId - Optional file ID to scope the question
@@ -105,5 +114,17 @@ export const deleteFile = async (fileId) => {
 export const healthCheck = async () => {
   return API.get('/health');
 };
+
+// ── Config / customer profiles (Settings page) ──────────────────────────────
+export const getSettings = async () => API.get('/config/settings');
+export const saveSettings = async (settings, saveAs = null) =>
+  API.put('/config/settings', { settings, save_as: saveAs });
+export const getConfigRaw = async () => API.get('/config/raw');
+export const saveConfig = async (yamlText) => API.put('/config', { yaml: yamlText });
+export const getProfiles = async () => API.get('/config/profiles');
+export const saveProfile = async (name, yamlText) =>
+  API.post('/config/profiles', { name, yaml: yamlText });
+export const activateProfile = async (name) =>
+  API.post('/config/activate', { name });
 
 export default API;

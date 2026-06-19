@@ -18,9 +18,17 @@ from __future__ import annotations
 import html as _html
 import logging
 import re
+import sys
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Platform matters for OCR. Surya spawns llama-server via fork+exec; on macOS a
+# fork from a non-main thread aborts the process (os_unfair_lock SIGKILL), so the
+# recognizer MUST be constructed on the main thread at startup. On Linux a
+# fork-from-thread is tolerated, so pre-warming there is only a cold-start
+# optimization, not a correctness requirement.
+IS_MACOS = sys.platform == "darwin"
 
 # Surya layout labels that are visual (sent to vision enrichment), not body text.
 _VISUAL_LABELS = {"picture", "figure", "table", "chart", "form"}
@@ -50,6 +58,18 @@ def _get_surya_recognizer():
         _surya_rec = RecognitionPredictor(SuryaInferenceManager())
         logger.info("Surya recognizer loaded (full_page layout+OCR)")
     return _surya_rec
+
+
+def warm_surya() -> None:
+    """Construct the Surya recognizer NOW, on the caller's thread.
+
+    Surya launches llama-server via fork+exec when the recognizer is built. On
+    macOS, forking from a worker thread aborts the process (os_unfair_lock
+    SIGKILL), so this MUST be called at startup on the MAIN thread — never lazily
+    from an ingestion worker thread. After this, per-page calls only run inference
+    against the already-spawned server (no further fork). On Linux this is just a
+    cold-start optimization (see IS_MACOS)."""
+    _get_surya_recognizer()
 
 
 def surya_page(pil_image) -> SuryaPage:

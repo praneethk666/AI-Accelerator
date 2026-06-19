@@ -125,17 +125,24 @@ class VisionEnrichmentTool(Tool):
 
                 if kind == "scanned" and images:
 
-                    logger.debug(f"\n📄 Page {page_number}: scanned + images → FULL PAGE")
+                    # Crop each DETECTED region (figure/diagram) instead of sending the
+                    # whole page, so the caption describes the actual image — same as
+                    # the digital path below. Whole-page captions were too coarse
+                    # ("Cover page of a manual…" rather than describing the figure).
 
-                    w, h = page_dims[page_number]
+                    for img in images:
 
-                    bbox = [0, 0, w, h]
+                        if not img.get("significant", False):
 
-                    image_tasks.append((cropper, state, page_number, bbox, dpi,
+                            continue
 
-                                        timeout_s, vision_cfg, hash_to_first_block,
+                        bbox = img["bbox"]
 
-                                        hash_occurrence_count, debug_dir, blocks, errors, debug))
+                        image_tasks.append((cropper, state, page_number, bbox, dpi,
+
+                                            timeout_s, vision_cfg, hash_to_first_block,
+
+                                            hash_occurrence_count, debug_dir, blocks, errors, debug))
 
                 elif kind == "scanned" and not images:
 
@@ -175,13 +182,19 @@ class VisionEnrichmentTool(Tool):
 
                                                 hash_occurrence_count, debug_dir, blocks, errors, debug))
  
+            from backend.core import usage as _usage
+
             with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
 
                 futures = []
 
                 for task in image_tasks:
 
-                    futures.append(executor.submit(self._process_pdf_image_task, *task))
+                    # A fresh context copy PER submit: a contextvars.Context can only
+                    # be entered once, so a single shared copy run concurrently by N
+                    # workers raises "cannot enter context: already entered". Each task
+                    # gets its own copy that still carries this run's usage sink.
+                    futures.append(executor.submit(_usage.copy_ctx().run, self._process_pdf_image_task, *task))
 
                 for future in as_completed(futures):
 
@@ -213,13 +226,17 @@ class VisionEnrichmentTool(Tool):
 
             logger.debug(f"\n🔍 Processing {len(pending_blocks)} pending vision blocks...")
 
+            from backend.core import usage as _usage
+
             with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
 
                 futures = []
 
                 for block in pending_blocks:
 
-                    futures.append(executor.submit(self._process_pending_block_task,
+                    # Fresh context copy per submit (see note above): one shared copy
+                    # entered by multiple workers raises "already entered".
+                    futures.append(executor.submit(_usage.copy_ctx().run, self._process_pending_block_task,
 
                                                    block, state, timeout_s, vision_cfg,
 

@@ -4,15 +4,24 @@
 **Part of:** AI-Accelerator document intelligence pipeline.
 
 Extracts text and visual regions from **scanned PDFs** (image-only pages) using OCR and computer vision.  
-Combines **PaddleOCR** (text recognition) with **YOLOv8 + contour detection** (diagrams, photos, figures).  
+**Pluggable OCR engine** (`ocr.engine`): **Surya** (torch + llama-server; text + layout in one pass) or **PaddleOCR** (PP-OCRv4) paired with **DocLayout-YOLO + contour detection** for diagrams/photos/figures.  
 Outputs `NormalizedBlock` objects that conform to the shared schema (`backend/core/schemas.py`).
+
+> **Isolation (important):** all OCR runs in a **separate subprocess** (`ocr_worker.py`,
+> spawned by `tool.py`). The native OCR stack (Paddle / Torch-Surya / llama-server) is
+> unstable when sharing the backend process with the torch embedder + vision threads on
+> macOS (fork-from-thread aborts, OpenMP segfaults), so it gets its own address space — a
+> child crash or timeout fails the document gracefully instead of taking the backend down.
+> Engine + timeouts come from config (`ocr.engine`, `ocr.surya_timeout_s`,
+> `ocr.subprocess_timeout_s`). See `docs/OCR_ENGINE_COMPARISON.md` for the tradeoffs
+> (default **paddle** on CPU, **surya** on GPU deployments).
 
 ---
 
 ## What this module does
 
-- **OCR** – uses PaddleOCR (PP-OCRv4) to extract text and character-level bounding boxes.
-- **Visual region detection** – applies YOLOv8 (if available) and OpenCV contour detection to locate meaningful non-text areas (images, charts, diagrams). Falls back to contour-only if YOLO fails.
+- **OCR** – Surya (one-pass text + layout) or PaddleOCR (PP-OCRv4); selected by `ocr.engine`.
+- **Visual region detection** – Surya's one-pass layout, or (paddle path) **DocLayout-YOLO** + OpenCV contour detection to locate meaningful non-text areas (images, charts, diagrams). Falls back to contour-only if the layout model is unavailable.
 - **Paragraph grouping** – merges OCR lines into paragraphs by empty lines.
 - **Placeholders** – creates `image_caption` blocks for each detected visual region with bounding boxes (in PDF coordinates).
 - **Page-level metadata** – **not** included in blocks; handled separately by `backend/extraction/page_profile.py`.
@@ -25,8 +34,10 @@ Outputs `NormalizedBlock` objects that conform to the shared schema (`backend/co
 
 | File | Description |
 |------|-------------|
-| `scanned.py` | Core extraction logic: `extract_scanned()` function, OCR, YOLO, contour detection. |
-| `tool.py` | Wraps `extract_scanned` as a `Tool` for use in the LangGraph pipeline. |
+| `scanned.py` | Core extraction logic: `extract_scanned()`, OCR + region detection, per-page Surya timeout→Paddle fallback. |
+| `ocr_backends.py` | Surya backend (`surya_page`, `warm_surya`) + platform helpers (`IS_MACOS`). |
+| `ocr_worker.py` | Subprocess entrypoint (`run_scanned_ocr`) — runs OCR isolated from the backend. |
+| `tool.py` | `ScannedPDFTool`: spawns the OCR subprocess, bounds it with a timeout, surfaces results/errors. |
 | `README.md` | This file. |
 
 ---

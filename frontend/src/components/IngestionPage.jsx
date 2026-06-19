@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
-import { uploadFile, getFiles, deleteFile, healthCheck } from '../api';
+import { uploadFile, getFiles, deleteFile, healthCheck, getProgress } from '../api';
 import {
   CloudArrowUpIcon,
   DocumentIcon,
@@ -10,7 +10,21 @@ import {
   TrashIcon,
   ChatBubbleLeftIcon,
   ArrowPathIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
+
+// The real ingestion steps (match tool `name`s in the metrics the API returns).
+// Each stage maps to one or more tool names; "Extract" covers whichever extractor
+// ran for this file type / pdf kind.
+const PIPELINE_STAGES = [
+  { label: 'Categorize', icon: '📂', match: ['categorize'] },
+  { label: 'Extract', icon: '📊', match: ['pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'cad_extract'] },
+  { label: 'Vision', icon: '👁️', match: ['vision_enrichment'] },
+  { label: 'Chunk', icon: '✂️', match: ['chunk'] },
+  { label: 'Enrich', icon: '🏷️', match: ['enrich_chunks'] },
+  { label: 'Embed', icon: '🔗', match: ['embed'] },
+  { label: 'Index', icon: '🗄️', match: ['index'] },
+];
 
 const IngestionPage = () => {
   const navigate = useNavigate();
@@ -20,6 +34,8 @@ const IngestionPage = () => {
   const [error, setError] = useState(null);
   const [serverConnected, setServerConnected] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
+  // metrics from the most recent upload: { name, status, metrics: [{step, ms, status}] }
+  const [lastRun, setLastRun] = useState(null);
 
   // Check server health on component mount
   useEffect(() => {
@@ -64,13 +80,18 @@ const IngestionPage = () => {
     for (const file of acceptedFiles) {
       try {
         setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }));
+        // /upload now returns immediately with status "processing"; the pipeline
+        // runs in the background and we poll per-step progress below.
         const res = await uploadFile(file);
-        setFiles((prev) => [res.data, ...prev]);
+        const doc = res.data;
+        setFiles((prev) => [doc, ...prev]);
+        setLastRun({ name: file.name, status: doc.status, metrics: [] });
         setUploadProgress((prev) => {
           const newProgress = { ...prev };
           delete newProgress[file.name];
           return newProgress;
         });
+        pollProgress(doc.document_id, file.name);
       } catch (err) {
         console.error('Upload failed:', err);
         setError(`Upload failed for ${file.name}: ${err.message}`);
@@ -83,6 +104,42 @@ const IngestionPage = () => {
     }
 
     setUploading(false);
+  };
+
+  // Poll a document's ingestion progress and update the pipeline cards + file row
+  // live, until it finishes (ready/failed).
+  const pollProgress = (docId, name) => {
+    let attempts = 0;
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const { data } = await getProgress(docId);
+        setLastRun({
+          name,
+          status: data.status,
+          metrics: data.metrics || [],
+          tokenUsage: data.token_usage,
+          indexedTokens: data.indexed_tokens,
+          chunks: data.chunks,
+        });
+        setFiles((prev) =>
+          prev.map((f) =>
+            (f.document_id === docId || f.id === docId)
+              ? { ...f, status: data.status, document_type: data.document_type,
+                  industry: data.industry, route: data.route, confidence: data.confidence }
+              : f
+          )
+        );
+        if (data.status === 'processing' && attempts < 800) {
+          setTimeout(tick, 900);
+        } else {
+          loadFiles(); // final refresh from the DB
+        }
+      } catch (e) {
+        if (attempts < 800) setTimeout(tick, 1500); // transient — keep trying
+      }
+    };
+    setTimeout(tick, 600);
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -138,11 +195,18 @@ const IngestionPage = () => {
               <h1 className="text-3xl font-bold text-white">Document Ingestion</h1>
               <p className="text-gray-400 mt-2">Upload and categorize your documents for intelligent processing</p>
             </div>
-            <div className="text-right">
+            <div className="flex items-center gap-3">
               <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${serverConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                 <div className={`w-2 h-2 rounded-full ${serverConnected ? 'bg-green-400' : 'bg-red-400'}`} />
                 {serverConnected ? 'Backend Connected' : 'Backend Offline'}
               </div>
+              <button
+                onClick={() => navigate('/settings')}
+                title="Configuration"
+                className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-slate-700/50 transition-colors"
+              >
+                <Cog6ToothIcon className="h-5 w-5" />
+              </button>
             </div>
           </div>
         </div>
@@ -209,35 +273,101 @@ const IngestionPage = () => {
           </div>
         )}
 
-        {/* Pipeline Status */}
+        {/* Pipeline Status — reflects the last upload's actual per-step metrics */}
         <div className="mb-8">
-          <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Processing Pipeline</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-            {[
-              { name: 'Categorize', icon: '📂' },
-              { name: 'Page Profile', icon: '📄' },
-              { name: 'Extraction', icon: '📊' },
-              { name: 'Vision', icon: '👁️' },
-              { name: 'Chunk', icon: '✂️' },
-              { name: 'Embed', icon: '🔗' },
-            ].map((step, idx) => (
-              <div key={step.name} className="relative">
-                <div className={`flex flex-col items-center p-4 rounded-lg border transition-all ${
-                  idx === 0 
-                    ? 'border-blue-500/50 bg-blue-500/10 shadow-lg shadow-blue-500/20' 
-                    : idx === 1 
-                      ? 'border-green-500/50 bg-green-500/10' 
-                      : 'border-slate-700 bg-slate-800/30'
-                }`}>
-                  <span className="text-2xl mb-2">{step.icon}</span>
-                  <span className="text-xs text-gray-300 text-center font-medium">{step.name}</span>
-                  {idx < 2 && (
-                    <div className={`absolute top-1/2 -right-2.5 w-4 h-4 rounded-full ${idx === 0 ? 'bg-blue-500' : 'bg-green-500'}`} />
-                  )}
-                </div>
-              </div>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Processing Pipeline</h2>
+            {lastRun ? (
+              <span className="text-xs text-gray-500 truncate max-w-[60%]">
+                {lastRun.name} ·{' '}
+                {lastRun.status === 'processing'
+                  ? 'processing…'
+                  : `${lastRun.status} · ${Math.round((lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0))}ms total`}
+              </span>
+            ) : (
+              <span className="text-xs text-gray-500">upload a document to see step status</span>
+            )}
           </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+            {(() => {
+              const metrics = lastRun?.metrics || [];
+              const processing = lastRun?.status === 'processing';
+              // index of the last stage that already has a metric -> the next one is "running"
+              const lastDone = PIPELINE_STAGES.reduce(
+                (acc, s, i) => (metrics.some((x) => s.match.includes(x.step)) ? i : acc), -1);
+              return PIPELINE_STAGES.map((stage, i) => {
+                const m = metrics.find((x) => stage.match.includes(x.step));
+                let state;
+                if (m) state = m.status === 'error' ? 'error' : 'done';
+                else if (!lastRun) state = 'idle';
+                else if (processing && i === lastDone + 1) state = 'running';
+                else if (processing) state = 'pending';
+                else state = 'skipped';
+                const box = {
+                  idle: 'border-slate-700 bg-slate-800/30',
+                  pending: 'border-slate-700 bg-slate-800/30 opacity-50',
+                  skipped: 'border-slate-700 bg-slate-800/20 opacity-50',
+                  running: 'border-blue-500/60 bg-blue-500/10 shadow-lg shadow-blue-500/20 animate-pulse',
+                  done: 'border-green-500/50 bg-green-500/10 shadow-lg shadow-green-500/10',
+                  error: 'border-red-500/50 bg-red-500/10',
+                }[state];
+                const note =
+                  state === 'done' ? `${Math.round(m.ms)}ms`
+                  : state === 'error' ? 'failed'
+                  : state === 'running' ? 'running…'
+                  : state === 'skipped' ? 'skipped'
+                  : '';
+                const noteColor =
+                  state === 'error' ? 'text-red-400'
+                  : state === 'running' ? 'text-blue-300'
+                  : 'text-gray-500';
+                return (
+                  <div
+                    key={stage.label}
+                    className={`flex flex-col items-center p-3 rounded-lg border transition-all ${box}`}
+                  >
+                    <span className="text-2xl mb-1">{stage.icon}</span>
+                    <span className="text-xs text-gray-300 text-center font-medium">{stage.label}</span>
+                    <span className={`text-[10px] mt-1 h-3 ${noteColor}`}>{note}</span>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+
+          {/* Token usage + indexed size (from the last run) */}
+          {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null) && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-gray-400">
+              {lastRun.tokenUsage && (
+                <span>
+                  <span className="text-gray-500">LLM/vision tokens:</span>{' '}
+                  <span className="text-gray-200 font-medium">
+                    {(lastRun.tokenUsage.total_tokens || 0).toLocaleString()}
+                  </span>{' '}
+                  ({(lastRun.tokenUsage.input_tokens || 0).toLocaleString()} in /{' '}
+                  {(lastRun.tokenUsage.output_tokens || 0).toLocaleString()} out,{' '}
+                  {lastRun.tokenUsage.calls || 0} calls)
+                  {lastRun.tokenUsage.by_kind &&
+                    Object.keys(lastRun.tokenUsage.by_kind).length > 0 && (
+                      <span className="text-gray-500">
+                        {' '}· {Object.entries(lastRun.tokenUsage.by_kind)
+                          .map(([k, v]) => `${k} ${v.input_tokens + v.output_tokens}`)
+                          .join(', ')}
+                      </span>
+                    )}
+                </span>
+              )}
+              {lastRun.indexedTokens != null && (
+                <span>
+                  <span className="text-gray-500">indexed:</span>{' '}
+                  <span className="text-gray-200 font-medium">
+                    {(lastRun.indexedTokens || 0).toLocaleString()}
+                  </span>{' '}
+                  tokens in {lastRun.chunks ?? 0} chunks
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Files Section */}

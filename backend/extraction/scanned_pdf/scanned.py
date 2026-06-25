@@ -1,6 +1,7 @@
 """Scanned PDF Handler – YOLO + OCR, outputs NormalizedBlock list."""
 
 import hashlib
+import json
 import logging
 import os
 import io
@@ -8,7 +9,7 @@ import cv2
 import fitz
 import uuid
 import numpy as np
-
+import re
 from collections import OrderedDict
 from PIL import Image
 from typing import List, Optional, Tuple
@@ -111,13 +112,15 @@ def get_ocr_engine():
         # lazy import (see module note): warm torch first so paddle can't corrupt it
         from backend.core.models import warm_up
         warm_up()
+        os.environ["FLAGS_use_mkldnn"] = "0"
         from paddleocr import PaddleOCR
 
         _ocr_engine = PaddleOCR(
             lang='en',
-            use_angle_cls=True,
-            ocr_version='PP-OCRv4',
-            show_log=False
+            use_textline_orientation=True,
+            # ocr_version='PP-OCRv4',
+            # show_log=False,
+            enable_hpi=False
         )
     return _ocr_engine
 
@@ -213,20 +216,24 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
         except Exception as e:
             _surya_failed_keys.add(key)
             logger.warning("Surya OCR failed/timed out (%s); falling back to PaddleOCR", e)
-
     ocr = get_ocr_engine()
-    img_np = np.array(pil_image)
-    result = ocr.ocr(img_np)
+    img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    results = ocr.predict(img_np)
 
     text_lines = []
     text_boxes = []
-    if result and result[0]:
-        for line in result[0]:
-            text_lines.append(line[1][0])
-            box = line[0]
-            xs = [int(p[0]) for p in box]
-            ys = [int(p[1]) for p in box]
-            text_boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    for page in results:
+        rec_texts = page["rec_texts"]
+        rec_boxes = page["rec_boxes"]
+
+        for txt, box in zip(rec_texts, rec_boxes):
+            text_lines.append(txt)
+
+            x1, y1, x2, y2 = map(int, box)
+
+            text_boxes.append(
+                (x1, y1, x2, y2)
+            )
     out = ("\n".join(text_lines), text_boxes)
     _cache_put(_ocr_cache, key, out)
     return out
@@ -299,9 +306,10 @@ def detect_visual_regions(
 
     # ----- Combine and merge overlapping boxes (IOU > 0.3) -----
     all_boxes = yolo_boxes + contour_boxes
+
     if not all_boxes:
         return []
-
+    all_boxes = list(dict.fromkeys(all_boxes))
     # Simple merging
     merged = list(all_boxes)
     changed = True
@@ -339,12 +347,14 @@ def detect_visual_regions(
 
     # ----- Final filtering: area and shape heuristics -----
     filtered = []
+
     for (x1, y1, x2, y2) in merged:
+
         w = x2 - x1
         h = y2 - y1
         area = w * h
 
-        # Minimum area threshold (ignores tiny logos/decorations)
+        # Minimum area threshold
         if area < min_area:
             continue
 
@@ -352,8 +362,42 @@ def detect_visual_regions(
         if w > img_w * 0.7 and h < 150:
             continue
 
-        # Avoid huge regions on text‑heavy pages (false positive table detection)
+        # Avoid huge regions on text-heavy pages
         if area > 0.4 * page_area and page_text_lines > 80:
+            continue
+
+        # -----------------------------
+        # OCR boxes inside this region
+        # -----------------------------
+        inside_boxes = []
+
+        for bx1, by1, bx2, by2 in text_boxes:
+
+            # overlap test
+            ix1 = max(x1, bx1)
+            iy1 = max(y1, by1)
+            ix2 = min(x2, bx2)
+            iy2 = min(y2, by2)
+
+            if ix2 > ix1 and iy2 > iy1:
+                inside_boxes.append((bx1, by1, bx2, by2))
+
+        # Too many OCR boxes ⇒ paragraph text
+        if len(inside_boxes) > 40:
+            continue
+
+        # -----------------------------
+        # Text coverage
+        # -----------------------------
+        text_area = sum(
+            (bx2 - bx1) * (by2 - by1)
+            for bx1, by1, bx2, by2 in inside_boxes
+        )
+
+        coverage = text_area / area
+
+        # Region dominated by text
+        if coverage > 0.75:
             continue
 
         filtered.append((x1, y1, x2, y2))
@@ -361,29 +405,51 @@ def detect_visual_regions(
     _cache_put(_region_cache, cache_key, filtered)
     return filtered
 
+def table_to_markdown(table_data):
+
+    headers = table_data.get("headers", [])
+    rows = table_data.get("rows", [])
+    if not headers and rows:
+        headers = [f"Column{i+1}" for i in range(len(rows[0]))]
+
+    lines = []
+
+    lines.append(
+        "| " + " | ".join(headers) + " |"
+    )
+
+    lines.append(
+        "| " + " | ".join(["---"]*len(headers)) + " |"
+    )
+
+    for row in rows:
+
+        values = [str(x).replace("\n","<br>") for x in row]
+
+        lines.append(
+            "| " + " | ".join(values) + " |"
+        )
+
+    return "\n".join(lines)
 
 def extract_scanned(
     pdf_path: str,
     document_id: str,
-    use_gemma: bool = False,
-    min_visual_area: int = 50000
+    config: dict = None,
+    min_visual_area: int = 50000,
+    out_queue=None,          # if set, stream ("page", page_num, blocks_dicts) per page
 ) -> List[NormalizedBlock]:
     """
     Extract content from a scanned PDF using OCR + YOLO for visual regions.
 
-    Args:
-        pdf_path: Path to the scanned PDF.
-        document_id: Unique document identifier.
-        use_gemma: If True, send detected visual regions to Gemma for description
-                   (placeholder – implement your own client).
-        min_visual_area: Minimum area (pixels² at 200 DPI) for a region to be
-                         considered a significant visual element. Default 50000.
+    When out_queue is provided the function streams results incrementally:
+      ("page", page_num, [block_dict, ...])   — after each page completes
+      ("page_error", page_num, reason)         — when a page is skipped
+    The return value still contains all successfully extracted blocks so
+    callers that don't use the queue continue to work unchanged.
 
-    Returns:
-        List[NormalizedBlock] containing:
-        - text blocks (type="text" or "heading") from OCR
-        - image_caption blocks for each detected visual region (with bbox)
-        - (page_metrics block removed – handled by page_profile)
+    Per-page and per-region errors are caught and skipped — a bad page or a
+    hung vision call never aborts the whole document.
     """
     # Fresh Surya health per document: retry it even if it stalled on a prior doc
     # (the llama-server may have recovered). Within THIS doc, a stalled page still
@@ -394,92 +460,262 @@ def extract_scanned(
     blocks: List[NormalizedBlock] = []
     filename = os.path.basename(pdf_path)
 
+    from backend.core.vision_client import describe_image
+    from backend.core.schemas import as_dicts
+
+    total_pages = len(doc)
     try:
-        for page_num in range(len(doc)):
+        for page_num in range(total_pages):
             page = doc[page_num]
             page_number = page_num + 1
             page_rect = page.rect
+            page_blocks: List[NormalizedBlock] = []   # blocks for THIS page only
 
-            # ---- Render page as image (for OCR and visual detection) ----
-            pil_img = page_to_pil(page, dpi=200)
-            img_w, img_h = pil_img.size
+            # ── Per-page try: a crash/hang on one page skips it, never kills all ──
+            try:
+                # ---- Render page as image ----
+                pil_img = page_to_pil(page, dpi=200)
+                img_w, img_h = pil_img.size
+                logger.info("Page %d/%d: rendered (%dx%d)", page_number, total_pages, img_w, img_h)
 
-            # ---- OCR: get text and text bounding boxes ----
-            ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
-            page_text_lines = len(ocr_text.splitlines())
+                # ---- OCR text + bounding boxes ----
+                ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
+                page_text_lines = len(ocr_text.splitlines())
+                logger.info("Page %d: %d chars, %d text boxes", page_number, len(ocr_text), len(text_boxes))
 
-            # ---- Detect meaningful visual regions (YOLO + contours) ----
-            visual_regions = detect_visual_regions(
-                pil_img, text_boxes, page_text_lines,
-                min_area=min_visual_area
-            )
+                # ---- Detect visual regions ----
+                visual_regions = detect_visual_regions(
+                    pil_img, text_boxes, page_text_lines,
+                    min_area=min_visual_area
+                )
+                logger.info("Page %d: %d visual regions", page_number, len(visual_regions))
 
-            # ---- Page metrics block REMOVED (handled by page_profile) ----
+                scale_x = page_rect.width / img_w
+                scale_y = page_rect.height / img_h
+                table_texts: List[str] = []
+                image_descriptions: List[str] = []
 
-            # ---- Convert OCR text to NormalizedBlock (text/heading) ----
-            # Simple grouping into paragraphs by empty lines
-            paragraphs = []
-            current_para = []
-            for line in ocr_text.split('\n'):
-                line = line.strip()
-                if not line:
-                    if current_para:
+                # ---- Enrich each visual region ----
+                for region_idx, (x1, y1, x2, y2) in enumerate(visual_regions):
+                    # ── Per-region try: a bad vision call skips this region only ──
+                    try:
+                        pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+                        block_id = str(uuid.uuid4())
+
+                        cropped_buf = io.BytesIO()
+                        pil_img.crop((x1, y1, x2, y2)).save(cropped_buf, format="PNG")
+                        image_bytes = cropped_buf.getvalue()
+
+                        # Step 1 — classify region
+                        CLASSIFY_PROMPT = """
+                                        Classify the region into exactly one category:
+
+                                        table
+                                        image
+                                        text
+
+                                        Definitions:
+
+                                        table:
+                                        - rows and columns
+                                        - key-value tables
+
+                                        image:
+                                        - screenshots
+                                        - photographs
+                                        - diagrams
+                                        - figures
+                                        - logos
+
+                                        text:
+                                        - paragraphs
+                                        - bullet lists
+                                        - instructions
+                                        - headings
+                                        - code blocks
+
+                                        Return ONLY one word.
+
+                                        table
+                                        image
+                                        text
+                                    """
+                        raw_kind = describe_image(image_bytes, CLASSIFY_PROMPT, config)
+                        raw_kind = raw_kind.strip().lower()
+                        if raw_kind.endswith("table"):
+                            kind = "table"
+                        elif raw_kind.endswith("image"):
+                            kind = "image"
+                        else:
+                            kind = "text"
+
+                        if kind == "table":
+                            TABLE_PROMPT = """
+                                    Determine whether the region actually contains a table.
+
+                                    If no table exists return:
+
+                                    {
+                                    "headers": [],
+                                    "rows": []
+                                    }
+
+                                    Do not invent rows.
+                                    If the table is a key-value form with labels in the first column and values in the second column, use:
+                                    {
+                                        "headers": ["Field", "Value"]
+                                    }
+
+                                    and store each label-value pair as one row.
+
+                                    Preserve multiline cell contents.
+                                    DO NOT explain.
+                                    DO NOT think step by step.
+                                    DO NOT reason.
+                                    DO NOT use markdown.
+                                    DO NOT output ```json.
+                                    Start with {
+                                    End with }
+                                    Output exactly one JSON object.
+
+                                    Return ONLY JSON.
+                                    Return Exactly as output format shown.
+                                    OUTPUT FORMAT:
+                                    {
+                                    "headers": ["COLNAME1", "COLNAME2",...],
+                                    "rows": [["ROW1COL1", "ROW1COL2",..], ["ROW2COL1", "ROW2COL2",..], ..]
+                                    }
+                                    """
+                            raw_response = describe_image(image_bytes, TABLE_PROMPT, config)
+                            clean = raw_response.replace("```json", "").replace("```", "")
+                            table_data = None
+                            for candidate in reversed(re.findall(r"\{[\s\S]*?\}", clean)):
+                                try:
+                                    obj = json.loads(candidate)
+                                    if isinstance(obj, dict) and "headers" in obj and "rows" in obj:
+                                        table_data = obj
+                                        break
+                                except Exception:
+                                    pass
+
+                            if table_data is None or (
+                                len(table_data.get("headers", [])) == 0
+                                and len(table_data.get("rows", [])) == 0
+                            ):
+                                continue
+
+                            flat_text = [str(cell) for row in table_data.get("rows", []) for cell in row]
+                            table_texts.append(" ".join(flat_text))
+                            markdown_text = table_to_markdown(table_data)
+                            block = NormalizedBlock(
+                                block_id=block_id,
+                                document_id=document_id,
+                                type="table",
+                                text=markdown_text,
+                                table_data=table_data,
+                                source_ref=SourceRef(filename=filename, page=page_number, bbox=pdf_bbox),
+                                confidence=0.85,
+                                metadata={"detected_region": True, "region_kind": "table"},
+                            )
+                            page_blocks.append(block)
+
+                        elif kind == "image":
+                            raw_image_path = f"uploads/images/{document_id}/{block_id}_raw.png"
+                            os.makedirs(os.path.dirname(raw_image_path), exist_ok=True)
+                            with open(raw_image_path, "wb") as f:
+                                f.write(image_bytes)
+                            IMAGE_PROMPT = """
+                                Describe the image.
+
+                                Return ONLY JSON:
+
+                                {
+                                "type":"",
+                                "description":"",
+                                "entities":[],
+                                "confidence":0.0
+                                }
+
+                                No reasoning.
+                                No markdown.
+                                """
+                            description = describe_image(image_bytes, IMAGE_PROMPT, config)
+                            if description:
+                                image_descriptions.append(description)
+                            block = NormalizedBlock(
+                                block_id=block_id,
+                                document_id=document_id,
+                                type="image",
+                                text=description or "[Image - awaiting vision enrichment]",
+                                source_ref=SourceRef(filename=filename, page=page_number, bbox=pdf_bbox),
+                                confidence=0.85 if description else 0.5,
+                                metadata={
+                                    "raw_image_path": raw_image_path,
+                                    "image_path": None,
+                                    "pending_vision": not bool(description),
+                                    "is_vector": False,
+                                    "detected_region": True,
+                                    "region_kind": kind,
+                                },
+                            )
+                            page_blocks.append(block)
+
+                        # kind == "text" → fall through; OCR text handles it below
+
+                    except Exception as region_exc:
+                        # Vision call timed out, API error, JSON failure — skip region
+                        logger.warning(
+                            "Page %d region %d skipped (%s: %s)",
+                            page_number, region_idx, type(region_exc).__name__, region_exc,
+                        )
+                        continue
+
+                # ---- OCR text → paragraph blocks ----
+                remaining_text = ocr_text
+                for txt in table_texts:
+                    remaining_text = remaining_text.replace(txt, "")
+                for txt in image_descriptions:
+                    remaining_text = remaining_text.replace(txt, "")
+
+                paragraphs: List[str] = []
+                current_para: List[str] = []
+                for line in remaining_text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    current_para.append(line)
+                    if line.endswith(".") or len(current_para) >= 5:
                         paragraphs.append(" ".join(current_para))
                         current_para = []
-                else:
-                    current_para.append(line)
-            if current_para:
-                paragraphs.append(" ".join(current_para))
+                if current_para:
+                    paragraphs.append(" ".join(current_para))
 
-            for para in paragraphs:
-                block_type = "heading" if (para.isupper() and len(para) < 100) else "text"
-                blocks.append(
-                    NormalizedBlock(
+                for para in paragraphs:
+                    block_type = "heading" if (para.isupper() and len(para) < 100) else "text"
+                    page_blocks.append(NormalizedBlock(
                         block_id=str(uuid.uuid4()),
                         document_id=document_id,
                         type=block_type,
                         text=para,
                         source_ref=SourceRef(filename=filename, page=page_number),
                         confidence=0.8,
-                    )
-                )
+                    ))
 
-            # ---- Create placeholders for each visual region ----
-            scale_x = page_rect.width / img_w
-            scale_y = page_rect.height / img_h
-            for (x1, y1, x2, y2) in visual_regions:
-                pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+                # ── Page succeeded: accumulate + stream ──
+                blocks.extend(page_blocks)
+                logger.info("Page %d: done, %d blocks (total so far: %d)",
+                            page_number, len(page_blocks), len(blocks))
+                if out_queue is not None:
+                    out_queue.put(("page", page_number, as_dicts(page_blocks)))
 
-                # (Optional) send cropped region to Gemma
-                description = None
-                if use_gemma:
-                    # Placeholder – replace with actual gemma_client call
-                    # from backend.vision.gemma_client import describe_image_with_gemma
-                    # cropped = pil_img.crop((x1, y1, x2, y2))
-                    # img_bytes = io.BytesIO()
-                    # cropped.save(img_bytes, format="PNG")
-                    # description = describe_image_with_gemma(img_bytes.getvalue())
-                    pass
-
-                blocks.append(
-                    NormalizedBlock(
-                        block_id=str(uuid.uuid4()),
-                        document_id=document_id,
-                        type="image_caption",
-                        text=description or "[Image - awaiting vision enrichment]",
-                        source_ref=SourceRef(
-                            filename=filename,
-                            page=page_number,
-                            bbox=pdf_bbox
-                        ),
-                        confidence=0.5,
-                        metadata={
-                            "pending_vision": not bool(description),
-                            "is_vector": False,
-                            "detected_region": True,
-                        }
-                    )
-                )
+            except Exception as page_exc:
+                # Entire page failed (OCR crash, render error, etc.) — skip it
+                import traceback as _tb
+                reason = f"{type(page_exc).__name__}: {page_exc}"
+                logger.error("Page %d skipped — %s\n%s", page_number, reason, _tb.format_exc())
+                if out_queue is not None:
+                    out_queue.put(("page_error", page_number, reason))
+                # continue to next page
 
     finally:
         doc.close()

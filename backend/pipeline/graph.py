@@ -45,6 +45,10 @@ def _make_node(tool: Tool, raw_config: dict):
         entry = {"step": tool.name, "ms": elapsed_ms, "status": status}
         if error:
             entry["error"] = error
+        # a tool may attach a per-step decision report (e.g. docling_pdf's extraction
+        # routing) — surface it on the step metric so it's persisted + visible.
+        if isinstance(result, dict) and result.get("extraction_report") is not None:
+            entry["report"] = result["extraction_report"]
         logger.info("step %s %s %.1fms", tool.name, status, elapsed_ms)
 
         # Return the tool's updates, but own the `metrics` channel: strip any
@@ -75,7 +79,7 @@ def _resolve_steps(config: PipelineConfig, registry: ToolRegistry):
 
     steps: list[str] = []
     extractor_ft: dict[str, str] = {}
-    pdf_kind_of: dict[str, str] = {}
+    pdf_kind_of: dict[str, set[str]] = {}   # tool -> {pdf kinds it serves}
     route_extractor_of: dict[str, set[str]] = {}
 
     for s in config.steps:
@@ -92,11 +96,15 @@ def _resolve_steps(config: PipelineConfig, registry: ToolRegistry):
                 if tool_name in registry:
                     steps.append(tool_name)
                     extractor_ft[tool_name] = file_type
-            # 3. pdf sub-kind extractors (digital/scanned/mixed)
+            # 3. pdf sub-kind extractors (digital/scanned/mixed). One tool may serve
+            # several kinds (e.g. docling_pdf handles all three) — add the node ONCE
+            # and collect every kind it serves, so it runs for any of them.
             for kind, tool_name in pdf_extractors.items():
                 if tool_name in registry:
-                    steps.append(tool_name)
-                    pdf_kind_of[tool_name] = kind
+                    if tool_name not in pdf_kind_of:
+                        steps.append(tool_name)
+                        pdf_kind_of[tool_name] = set()
+                    pdf_kind_of[tool_name].add(kind)
         elif s in registry:  # toggle: listed AND registered
             steps.append(s)
 
@@ -140,12 +148,12 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
                 return False
             return state.get("file_type") == ft
 
-        # pdf sub-kind extractor: file_type==pdf AND detected kind matches
-        kind = pdf_kind_of.get(step)
-        if kind is not None:
+        # pdf sub-kind extractor: file_type==pdf AND detected kind is one this tool serves
+        kinds = pdf_kind_of.get(step)
+        if kinds is not None:
             if route in override_routes:
                 return False
-            return state.get("file_type") == "pdf" and state.get("pdf_kind") == kind
+            return state.get("file_type") == "pdf" and state.get("pdf_kind") in kinds
 
         # route gate: gated step runs only for its allowed routes; ungated always runs
         allowed = gates.get(step)

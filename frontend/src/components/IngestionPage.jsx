@@ -26,6 +26,22 @@ const PIPELINE_STAGES = [
   { label: 'Index', icon: '🗄️', match: ['index'] },
 ];
 
+// Human-readable duration from milliseconds: ms < 1s, then s, m + s, h + m.
+// Used for per-step notes and the run total so long OCR steps read as "2m 14s"
+// instead of "134000ms".
+const fmtDuration = (ms) => {
+  if (ms == null || isNaN(ms)) return '';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSec = ms / 1000;
+  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
+  const totalMin = Math.floor(totalSec / 60);
+  const sec = Math.round(totalSec % 60);
+  if (totalMin < 60) return `${totalMin}m ${sec}s`;
+  const hr = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return `${hr}h ${min}m`;
+};
+
 const IngestionPage = () => {
   const navigate = useNavigate();
   const [files, setFiles] = useState([]);
@@ -282,7 +298,7 @@ const IngestionPage = () => {
                 {lastRun.name} ·{' '}
                 {lastRun.status === 'processing'
                   ? 'processing…'
-                  : `${lastRun.status} · ${Math.round((lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0))}ms total`}
+                  : `${lastRun.status} · ${fmtDuration((lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0))} total`}
               </span>
             ) : (
               <span className="text-xs text-gray-500">upload a document to see step status</span>
@@ -312,7 +328,7 @@ const IngestionPage = () => {
                   error: 'border-red-500/50 bg-red-500/10',
                 }[state];
                 const note =
-                  state === 'done' ? `${Math.round(m.ms)}ms`
+                  state === 'done' ? fmtDuration(m.ms)
                   : state === 'error' ? 'failed'
                   : state === 'running' ? 'running…'
                   : state === 'skipped' ? 'skipped'
@@ -335,39 +351,44 @@ const IngestionPage = () => {
             })()}
           </div>
 
-          {/* Token usage + indexed size (from the last run) */}
-          {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null) && (
-            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-gray-400">
-              {lastRun.tokenUsage && (
-                <span>
-                  <span className="text-gray-500">LLM/vision tokens:</span>{' '}
-                  <span className="text-gray-200 font-medium">
-                    {(lastRun.tokenUsage.total_tokens || 0).toLocaleString()}
-                  </span>{' '}
-                  ({(lastRun.tokenUsage.input_tokens || 0).toLocaleString()} in /{' '}
-                  {(lastRun.tokenUsage.output_tokens || 0).toLocaleString()} out,{' '}
-                  {lastRun.tokenUsage.calls || 0} calls)
-                  {lastRun.tokenUsage.by_kind &&
-                    Object.keys(lastRun.tokenUsage.by_kind).length > 0 && (
-                      <span className="text-gray-500">
-                        {' '}· {Object.entries(lastRun.tokenUsage.by_kind)
-                          .map(([k, v]) => `${k} ${v.input_tokens + v.output_tokens}`)
-                          .join(', ')}
-                      </span>
-                    )}
-                </span>
-              )}
-              {lastRun.indexedTokens != null && (
-                <span>
-                  <span className="text-gray-500">indexed:</span>{' '}
-                  <span className="text-gray-200 font-medium">
-                    {(lastRun.indexedTokens || 0).toLocaleString()}
-                  </span>{' '}
-                  tokens in {lastRun.chunks ?? 0} chunks
-                </span>
-              )}
-            </div>
-          )}
+          {/* Timing + token usage summary (from the last run) — labeled stat cards */}
+          {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null || (lastRun.metrics || []).length > 0) && (() => {
+            const tu = lastRun.tokenUsage || {};
+            const totalMs = (lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0);
+            const Stat = ({ label, value, sub }) => (
+              <div className="flex flex-col px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/60 min-w-[110px]">
+                <span className="text-[10px] uppercase tracking-wider text-gray-500">{label}</span>
+                <span className="text-sm font-semibold text-gray-100">{value}</span>
+                {sub != null && <span className="text-[10px] text-gray-500 mt-0.5">{sub}</span>}
+              </div>
+            );
+            return (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {totalMs > 0 && (
+                  <Stat label="Total time" value={fmtDuration(totalMs)}
+                        sub={`${(lastRun.metrics || []).length} steps`} />
+                )}
+                {lastRun.tokenUsage && (
+                  <>
+                    <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
+                          sub={`${tu.calls || 0} LLM/vision calls`} />
+                    <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                    <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                  </>
+                )}
+                {lastRun.indexedTokens != null && (
+                  <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
+                        sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
+                )}
+                {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
+                  Object.entries(tu.by_kind).map(([k, v]) => (
+                    <Stat key={k} label={k}
+                          value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
+                          sub="tokens" />
+                  ))}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Files Section */}

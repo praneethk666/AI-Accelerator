@@ -9,13 +9,16 @@ the whole pipeline down. Steps are opt-in by registration, so a skipped tool jus
 means its step won't run.
 
 Tool -> name map (must match config extractors/steps):
-    categorize        CategorizeTool
-    pdf_digital       PDFDigitalTool          scanned_pdf  ScannedPDFTool
-    mixed_pdf         MixedPDFTool            excel_extraction  ExcelExtractorTool
-    ppt_extraction    PPTExtractorTool        cad_extract  CADExtractionTool
+    categorize        CategorizeTool          docling_pdf  DoclingPDFTool (hybrid PDF)
+    excel_extraction  ExcelExtractorTool      ppt_extraction  PPTExtractorTool
+    cad_extract       CADExtractionTool
     vision_enrichment VisionEnrichmentTool
     chunk  ChunkTool  embed  EmbedTool        index  IndexTool
     retrieval  RetrievalTool                  answerer  AnswererTool
+
+The legacy native PDF path (pdf_digital/scanned_pdf/mixed_pdf + the VLM-every-page
+helpers in vision_ocr) was removed once docling_pdf became the validated default
+extractor for all pdf kinds.
 """
 from __future__ import annotations
 
@@ -29,9 +32,7 @@ logger = logging.getLogger(__name__)
 # the graph orders execution from config.steps, not from this list.
 _TOOL_SPECS: list[tuple[str, str]] = [
     ("backend.categorize.categorize_tool", "CategorizeTool"),
-    ("backend.extraction.digital_pdf.tool", "PDFDigitalTool"),
-    ("backend.extraction.scanned_pdf.tool", "ScannedPDFTool"),
-    ("backend.extraction.mixed_pdf.tool", "MixedPDFTool"),
+    ("backend.extraction.docling_pdf.tool", "DoclingPDFTool"),
     ("backend.extraction.excel.tool", "ExcelExtractorTool"),
     ("backend.extraction.ppt.tool", "PPTExtractorTool"),
     ("backend.extraction.cad.cad_extract", "CADExtractionTool"),

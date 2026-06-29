@@ -133,24 +133,39 @@ def chunk_blocks(
     document_id: str | None = None,
     strategy: str = "recursive",
     semantic_model: str = "minishlab/potion-base-32M",
+    section_aware: bool = True,
 ) -> list[dict]:
     """Turn NormalizedBlock dicts into Chunk dicts.
 
-    Consecutive text/heading blocks are merged into one stream BEFORE splitting, so
-    a procedure that flows across a page break (or is interrupted by a stripped
-    header/footer) stays continuous instead of fragmenting at block boundaries.
-    Tables and image captions are atomic — they flush the text stream and emit
-    their own chunk (citations stay intact)."""
+    Consecutive text blocks are merged into one stream BEFORE splitting, so a
+    procedure that flows across a page break (or a stripped header/footer) stays
+    continuous instead of fragmenting at block boundaries. Tables and image captions
+    are atomic — they flush the stream and emit their own chunk (citations intact).
+
+    Layout-aware (section_aware): a HEADING starts a new section — it flushes the
+    previous section and leads the next chunk's text — so chunks align to document
+    sections instead of spanning several. Each chunk carries source_ref["section"]
+    (the active heading), which enrich_chunks promotes to a searchable tag. When
+    section_aware is False, headings are merged inline as soft markers (legacy)."""
     chunks: list[dict] = []
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
+    current_section = None        # active heading -> tags the section's chunks
+
+    def _ref(ref):
+        # attach the active section without clobbering one an extractor already set
+        if not section_aware or not current_section:
+            return ref
+        r = dict(ref or {})
+        r.setdefault("section", current_section)
+        return r
 
     def flush():
         nonlocal buf_parts, buf_ref
         stream = "\n".join(p for p in buf_parts if p).strip()
         if stream:
             for piece in _split(stream, size, overlap, strategy, semantic_model):
-                chunks.append(_make_chunk({"type": "text", "source_ref": buf_ref},
+                chunks.append(_make_chunk({"type": "text", "source_ref": _ref(buf_ref)},
                                           piece, document_id))
         buf_parts, buf_ref = [], None
 
@@ -159,6 +174,13 @@ def chunk_blocks(
         if btype not in CONTENT_TYPES:
             continue
         text = (block.get("text") or "").strip()
+
+        if section_aware and btype == "heading" and text:
+            flush()                                  # close the previous section
+            current_section = text
+            buf_ref = block.get("source_ref")
+            buf_parts.append(text)                   # lead the section with its title
+            continue
 
         if btype in ATOMIC_TYPES:  # table / image_caption -> atomic, breaks the stream
             flush()
@@ -169,11 +191,12 @@ def chunk_blocks(
             ):
                 continue
             if text or block.get("table_data"):
-                chunks.append(_make_chunk(block, text, document_id))
+                b = dict(block)
+                b["source_ref"] = _ref(block.get("source_ref"))
+                chunks.append(_make_chunk(b, text, document_id))
             continue
 
-        # text / heading -> accumulate into the running stream (headings included
-        # inline as soft section markers)
+        # text (and headings when not section_aware) -> accumulate into the stream
         if text:
             if buf_ref is None:
                 buf_ref = block.get("source_ref")
@@ -196,6 +219,7 @@ class ChunkTool:
             strategy=cfg.get("strategy", "recursive"),
             semantic_model=config.get("embeddings", {}).get(
                 "chunking_model", "minishlab/potion-base-32M"),
+            section_aware=cfg.get("section_aware", True),
         )
         state.setdefault("chunks", []).extend(chunks)
         return state

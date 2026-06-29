@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 # (backend.core.models.warm_up) loads torch first so scanned+embed also coexist.
 
 from backend.core.schemas import NormalizedBlock, SourceRef
+from backend.extraction.scanned_pdf import surya_structure
 
 logger = logging.getLogger(__name__)
 
@@ -151,18 +152,22 @@ def get_layout_model():
     return _yolo_model
 
 
-def _layout_region_boxes(pil_image: "Image.Image"):
-    """Figure/table/chart boxes from the doc-layout model, or [] if unavailable."""
+def _layout_region_boxes(pil_image: "Image.Image", classes=None):
+    """Region boxes from the doc-layout model, or [] if unavailable. `classes`
+    overrides which layout classes to keep (default _LAYOUT_FIGURE_CLASSES). The
+    figure-union path passes {'figure','chart'} so YOLO 'table' regions aren't
+    mistaken for figures (tables are handled by TableFormer)."""
     model = get_layout_model()
     if model is None:
         return []
+    keep = classes or _LAYOUT_FIGURE_CLASSES
     try:
         result = model.predict(np.array(pil_image), imgsz=1024, conf=0.25, verbose=False)[0]
         names = result.names
         boxes = []
         for b in result.boxes:
             cls_name = names.get(int(b.cls), "") if isinstance(names, dict) else ""
-            if cls_name in _LAYOUT_FIGURE_CLASSES:
+            if cls_name in keep:
                 x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
                 if (x2 - x1) > 20 and (y2 - y1) > 20:
                     boxes.append((x1, y1, x2, y2))
@@ -232,6 +237,40 @@ def extract_ocr_text_and_boxes(pil_image: Image.Image) -> Tuple[str, List[Tuple[
     return out
 
 
+def ocr_lines_with_boxes(pil_image: Image.Image):
+    """OCR an image and return [(text, (x1,y1,x2,y2)), ...] per line. Used to fill
+    Surya table cells (table_rec returns geometry only). Uses PaddleOCR for reliable
+    line-level text+box pairs (Surya's page result exposes full text, not per-line
+    pairs); table crops are small so this is cheap."""
+    ocr = get_ocr_engine()
+    result = ocr.ocr(np.array(pil_image))
+    lines = []
+    if result and result[0]:
+        for line in result[0]:
+            box = line[0]
+            xs = [int(p[0]) for p in box]
+            ys = [int(p[1]) for p in box]
+            lines.append((line[1][0], (min(xs), min(ys), max(xs), max(ys))))
+    return lines
+
+
+def _text_coverage(box, text_boxes) -> float:
+    """Fraction of `box`'s area covered by OCR text lines (approximate — text lines
+    barely overlap each other, so summed intersections ≈ union). ~0.8+ means the
+    region is essentially a block of text; near 0 means a graphic. Used to reject
+    paragraphs/bullet lists that contour detection mis-flags as visuals. A genuine
+    circuit diagram / flowchart is sparse (lines + whitespace + scattered labels) so
+    its coverage stays low and it survives."""
+    bx1, by1, bx2, by2 = box
+    barea = max(1, (bx2 - bx1) * (by2 - by1))
+    covered = 0
+    for (x1, y1, x2, y2) in text_boxes:
+        ix1, iy1 = max(bx1, x1), max(by1, y1)
+        ix2, iy2 = min(bx2, x2), min(by2, y2)
+        covered += max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    return min(1.0, covered / barea)
+
+
 def detect_visual_regions(
     pil_image: Image.Image,
     text_boxes: List[Tuple[int, int, int, int]],
@@ -296,6 +335,16 @@ def detect_visual_regions(
         if w < 40 or h < 40:
             continue
         contour_boxes.append((x, y, x + w, y + h))
+
+    # ----- Drop contour blobs that are mostly OCR text -----
+    # Contour detection masks text then finds blobs, but any text the OCR boxes don't
+    # perfectly cover survives and dilates into a "region", so paragraphs / bullet
+    # lists get mis-detected as visuals. YOLO boxes are class-aware (already only
+    # figure/table/chart/formula) so we KEEP them all — preserving big circuit
+    # diagrams, flowcharts and tables even though they contain text. We only
+    # text-filter the UNCLASSIFIED contour boxes: a real graphic is sparse so its
+    # text coverage is low; a text block is ~0.8+.
+    contour_boxes = [b for b in contour_boxes if _text_coverage(b, text_boxes) < 0.6]
 
     # ----- Combine and merge overlapping boxes (IOU > 0.3) -----
     all_boxes = yolo_boxes + contour_boxes
@@ -366,7 +415,8 @@ def extract_scanned(
     pdf_path: str,
     document_id: str,
     use_gemma: bool = False,
-    min_visual_area: int = 50000
+    min_visual_area: int = 50000,
+    layout_engine: str = "contour",
 ) -> List[NormalizedBlock]:
     """
     Extract content from a scanned PDF using OCR + YOLO for visual regions.
@@ -408,11 +458,45 @@ def extract_scanned(
             ocr_text, text_boxes = extract_ocr_text_and_boxes(pil_img)
             page_text_lines = len(ocr_text.splitlines())
 
-            # ---- Detect meaningful visual regions (YOLO + contours) ----
-            visual_regions = detect_visual_regions(
-                pil_img, text_boxes, page_text_lines,
-                min_area=min_visual_area
-            )
+            scale_x = page_rect.width / img_w
+            scale_y = page_rect.height / img_h
+
+            # ---- Detect regions. Surya layout (GPU) classifies Table/Figure/Text and
+            # gives STRUCTURED tables; otherwise fall back to the YOLO+contour detector.
+            visual_regions = None
+            if layout_engine == "surya":
+                classified = surya_structure.classify_regions(pil_img)
+                if classified is not None:
+                    figure_boxes, table_boxes = classified
+                    for tb in table_boxes:
+                        x1, y1, x2, y2 = (int(v) for v in tb)
+                        crop = pil_img.crop((x1, y1, x2, y2))
+                        td = surya_structure.recognize_table(crop, ocr_lines_with_boxes(crop))
+                        if td:
+                            blocks.append(
+                                NormalizedBlock(
+                                    block_id=str(uuid.uuid4()),
+                                    document_id=document_id,
+                                    type="table",
+                                    text=surya_structure.table_data_to_markdown(td),
+                                    table_data=td,
+                                    source_ref=SourceRef(
+                                        filename=filename, page=page_number,
+                                        bbox=[x1 * scale_x, y1 * scale_y,
+                                              x2 * scale_x, y2 * scale_y],
+                                    ),
+                                    confidence=0.85,
+                                )
+                            )
+                        else:
+                            # couldn't structure it — caption the region as a visual
+                            figure_boxes.append(tb)
+                    visual_regions = [tuple(int(v) for v in b) for b in figure_boxes]
+            if visual_regions is None:
+                visual_regions = detect_visual_regions(
+                    pil_img, text_boxes, page_text_lines,
+                    min_area=min_visual_area,
+                )
 
             # ---- Page metrics block REMOVED (handled by page_profile) ----
 
@@ -445,8 +529,6 @@ def extract_scanned(
                 )
 
             # ---- Create placeholders for each visual region ----
-            scale_x = page_rect.width / img_w
-            scale_y = page_rect.height / img_h
             for (x1, y1, x2, y2) in visual_regions:
                 pdf_bbox = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
 

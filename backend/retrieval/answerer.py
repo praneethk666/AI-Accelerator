@@ -38,12 +38,21 @@ from backend.retrieval.pg_store import PGStore
 logger = logging.getLogger(__name__)
 
 _ANSWER_SYSTEM = (
-    "You are a precise document-intelligence assistant. "
-    "Answer the user's question using ONLY the context passages provided. "
-    "For every fact add an inline citation like [filename, p.N]. "
-    "If the answer is not in the context say: "
-    "'I could not find this in the provided documents.' "
-    "Do not invent information."
+    "You are a precise document-intelligence assistant for technical and enterprise "
+    "documents (service manuals, datasheets, reports).\n"
+    "Rules:\n"
+    "- Answer using ONLY the provided context passages. Never use outside knowledge "
+    "or guess.\n"
+    "- Cite every fact inline as [filename, p.N], using the passage you drew it from; "
+    "if several support it, cite the most specific.\n"
+    "- Copy exact values VERBATIM — part numbers, model names, measurements, torque "
+    "specs, fault codes. Never paraphrase or round a number.\n"
+    "- If a relevant table or figure caption is in the context, use it and cite it.\n"
+    "- If the context only partially answers, answer what it supports and state plainly "
+    "what is missing.\n"
+    "- If the answer is not in the context, reply EXACTLY: "
+    "'I could not find this in the provided documents.'\n"
+    "- Be direct: lead with the answer, don't restate the question, no filler."
 )
 
 
@@ -90,7 +99,9 @@ class AnswererTool:
                 + f"\n\nQuestion: {query}"
             )
 
-            llm      = get_llm(config)
+            # answering is reasoning-heavy → use llm.answer_model if set (a stronger
+            # model), falling back to the default llm.model.
+            llm      = get_llm(config, model=config["llm"].get("answer_model"))
             response = llm.invoke([
                 {"role": "system", "content": _ANSWER_SYSTEM},
                 {"role": "user",   "content": user_msg},

@@ -20,14 +20,9 @@ import os
 import random
 import re
 import time
-import warnings
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
-
-# google.generativeai prints a multi-line FutureWarning on every import; the SDK
-# still works. Silence it so the logs stay readable (we pin the package on purpose).
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
 
 # Substrings that mark a transient/retryable vision error: provider rate limits
 # (429 / quota) and transient server errors (500/503). Google's free tier is only
@@ -44,6 +39,12 @@ def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:
     provider = vcfg.get("provider", "google")
     model = vcfg.get("model", "gemma-4-31b-it")
     max_retries = int(vcfg.get("max_retries", 5))
+
+    # Proactively pace calls to stay under the free-tier RPM (e.g. Gemma ~15/min ->
+    # ~4s). Spaces distinct calls across the vision worker threads; the retry backoff
+    # below remains the safety net for any 429 that slips through.
+    from backend.core import pacing
+    pacing.pace("vision", float(vcfg.get("min_interval_s", 0) or 0))
 
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
@@ -129,30 +130,35 @@ def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) 
 
 
 def _describe_google(image_bytes: bytes, prompt: str, model: str, config: dict) -> str:
-    import google.generativeai as genai
-    import PIL.Image
-    import io
+    # New google-genai SDK (the old google.generativeai is deprecated AND can't set
+    # thinking config). Gemma 4 has a built-in reasoning mode that's ON by default on
+    # AI Studio, so it "thinks out loud" before the JSON; thinking_level=MINIMAL
+    # suppresses it at the source → pure JSON, and fewer tokens (faster/cheaper).
+    # block_builder._extract_json stays as a backup for any reply that still narrates.
+    from google import genai
+    from google.genai import types
 
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise EnvironmentError("GOOGLE_API_KEY is not set. Add it to your .env file.")
 
-    genai.configure(api_key=api_key)
-    client = genai.GenerativeModel(model)
-    image = PIL.Image.open(io.BytesIO(image_bytes))
+    client = genai.Client(api_key=api_key)
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+    contents = [prompt, image_part]
 
-    # Ask for JSON-only output. Real Gemini models ENFORCE this (no prose);
-    # gemma accepts it but may still "think out loud" — block_builder._extract_json
-    # is the universal cleaner either way. Fall back to a plain call if a model
-    # rejects the response_mime_type config.
     with _trace(prompt, model) as t:
         try:
-            resp = client.generate_content(
-                [prompt, image],
-                generation_config={"response_mime_type": "application/json"},
+            resp = client.models.generate_content(
+                model=model, contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
+                ),
             )
         except Exception:
-            resp = client.generate_content([prompt, image])
+            # A model may reject thinking_config or the mime type (e.g. non-Gemma) —
+            # fall back to a plain call; the JSON extractor still cleans the reply.
+            resp = client.models.generate_content(model=model, contents=contents)
         result = resp.text
         _record_google_usage(resp)
         t["output"] = result

@@ -16,21 +16,47 @@
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  provider: groq
-  model: llama-3.1-8b-instant
-  api_key: ${GROQ_API_KEY}
-  # base_url:               # set for openai-compatible endpoints
-  # temperature: 0.2
+  # ACTIVE (PRODUCTION): OpenAI gpt-4o-mini — tighter field-rule following + generous PAID rate
+  # limit (no TPM wall), ~$0.15/1M in. Needs OPENAI_API_KEY in .env.
+  provider: openai
+  model: gpt-4o-mini
+  answer_model: gpt-4o-mini
+  api_key: ${OPENAI_API_KEY}
+  temperature: 0.2
   # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
+  # TESTING (free): Groq — llama-3.3-70b for field extraction is consistent; free
+  # tier caps at ~6000-12000 TPM so it throttles big VOLUME but is fine for samples/validation.
+  # provider: groq
+  # model: llama-3.1-8b-instant       # bulk/cheap tasks (chunk enrichment)
+  # answer_model: llama-3.3-70b-versatile   # answering, query planning
+  # api_key: ${GROQ_API_KEY}
+  # Anthropic Claude: excellent structured-JSON field discipline, cheap. Needs ANTHROPIC_API_KEY.
+  # provider: anthropic
+  # model: claude-haiku-4-5
+  # answer_model: claude-haiku-4-5
+  # api_key: ${ANTHROPIC_API_KEY}
 
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
 vision:
-  provider: google
-  model: gemma-4-31b-it     # multimodal; gemma-3-27b-it is NOT on the AI Studio API
-  api_key: ${GOOGLE_API_KEY}
-  # base_url:               # set for vision.provider: openai
+  # ONE vision model for ALL vision tasks (categorize + figure captioning), matching
+  # vision_ocr so cropping/grounding/transcription all use the same model.
+  # ACTIVE: self-hosted Qwen3-VL-4B-Instruct on NEI-GPU (vLLM, OpenAI-compatible).
+  # NO rate limits, data stays in AWS. Stop the box after each batch to control cost.
+  provider: openai
+  model: qwen3-vl
+  base_url: http://100.49.250.232:8000/v1
+  api_key: ${VLLM_API_KEY}
+  # FALLBACK — Gemini 2.5 Flash on Google AI Studio (free tier, 20 req/day for vision):
+  # provider: google
+  # model: gemini-2.5-flash
+  # api_key: ${GOOGLE_API_KEY}
+  # Previous (Z.ai GLM — free, OpenAI-compatible; rate-limited under load):
+  # provider: openai
+  # model: glm-4.6v-flash
+  # base_url: https://api.z.ai/api/paas/v4
+  # api_key: ${ZAI_API_KEY}
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
@@ -38,14 +64,16 @@ vision:
   # to wait ~12s, and we retry up to max_retries times, so keep this generous.
   timeout_s: 150
   max_retries: 5            # retry 429/500/503 with backoff (honors server retry_delay)
-  max_concurrency: 2        # parallel calls per doc; lower = fewer free-tier 429 bursts
+  max_concurrency: 4        # NEI-GPU has no rate limits — run 4 concurrent vision calls.
+  min_interval_s: 0         # no pacing needed on self-hosted vLLM.
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
   prompt:
     default: >
-      Describe what this image shows in 2–3 sentences. Be specific about
-      diagrams, charts, component labels, dimensions, and any text visible.
+      Describe what this image shows in 2-3 sentences. Be specific about the type of
+      visual (diagram, chart, photo, schematic) and capture component labels, part
+      numbers, dimensions, and any visible text VERBATIM (do not paraphrase numbers).
     automotive: >
       You are analyzing a page from a vehicle/equipment service manual. Capture
       exploded views and assembly diagrams, part names and part numbers, callout
@@ -59,6 +87,54 @@ vision:
 # ── OCR (scanned pages) ───────────────────────────────────────────────────────
 # OCR runs in an ISOLATED subprocess (scanned_pdf/ocr_worker.py) so the native OCR
 # stack can't crash the backend. Pick the engine per DEPLOYMENT:
+# ── Vision-OCR (page transcription for COMPLEX pages) ─────────────────────────
+# Routed VLM transcription: when native text is garbled (broken fonts) or a page has
+# tables/figures, render the page and let a document VLM transcribe it (clean text +
+# correct markdown tables) — what pymupdf/OCR get wrong. Runs ONLY on flagged pages
+# (mode: complex), so it's cheap. provider: openai covers any OpenAI-compatible VLM
+# API (here Z.ai GLM-4.6V-Flash, free). Set mode: off to disable, always to force.
+vision_ocr:
+  enabled: true
+  mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on
+                            # hard pages) | always (VLM-ONLY: skips Paddle/pymupdf entirely)
+  # ACTIVE: self-hosted Qwen3-VL on NEI-GPU — matches the `vision:` block above.
+  provider: openai
+  model: qwen3-vl
+  base_url: http://100.49.250.232:8000/v1
+  api_key: ${VLLM_API_KEY}
+  # FALLBACK — Gemini 2.5 Flash (Google AI Studio, free tier):
+  # provider: google
+  # model: gemini-2.5-flash
+  # api_key: ${GOOGLE_API_KEY}
+  # Previous (Z.ai GLM — free, OpenAI-compatible; rate-limited under load):
+  # provider: openai
+  # base_url: https://api.z.ai/api/paas/v4
+  # model: glm-4.6v-flash
+  # api_key: ${ZAI_API_KEY}
+  dpi: 100                  # page render resolution sent to the VLM (100 on T4 — 200 DPI creates
+                            # ~3800 visual tokens per page which overflows T4 FlashInfer kernels)
+  min_interval_s: 0         # no pacing on self-hosted vLLM
+  max_retries: 3
+  timeout_s: 120
+  # Grounding: one VLM call returns text + tables AND figure bounding boxes, so the
+  # VLM locates visuals (no separate region detector for those pages). Coordinate
+  # space the model returns: pixel | fraction (0–1) | per_mille (0–1000, Qwen-style).
+  # EXPERIMENTAL — validate bbox alignment per model before relying on it.
+  # figure_source: how figures are LOCATED for cropping (the VLM always does the
+  # text+table EXTRACTION; this only decides who draws the figure boxes).
+  #   docling (default): Docling's layout model locates figures — SPLITS collages that
+  #     DocLayout-YOLO merges (validated on the Argo cover: 4 distinct figures). Boxes
+  #     computed once per doc; the VLM captions each crop with page context.
+  #   yolo: DocLayout-YOLO (free/CPU, but merges side-by-side figures into one box).
+  #   grounding: trust the VLM's own boxes — ONLY with a true grounding VLM (Qwen3-VL),
+  #     NOT GLM (it mislocates / returns none). Needs grounding_coords calibration.
+  figure_source: docling
+  grounding: false          # only used when figure_source: grounding
+  grounding_coords: pixel   # pixel | fraction | per_mille (per the grounding model)
+  # Only on text-ish routes; CAD/circuit routes have their own vision handling.
+  route_gates: [text_default, diagram_heavy, image_route]
+  # max_pages_per_doc: 0    # 0 = unlimited; cap to bound cost on huge docs
+
 # engine: surya | paddle
 #   surya  — torch + llama.cpp; ONE pass gives text + layout, 90+ languages, best
 #            accuracy on complex layouts. Needs the llama-server binary
@@ -68,7 +144,17 @@ vision:
 #   paddle — PaddleOCR text + DocLayout-YOLO/contour regions. CNN recognition,
 #            reliable and fast on CPU. DEFAULT for CPU/dev/Mac.
 ocr:
-  engine: paddle            # CPU default; switch to 'surya' on GPU deployments
+  engine: paddle            # CPU default. NOTE: Surya is impractical on Mac/M2 — its
+                            # llama-server recognition exceeds ~90s/page (times out, falls
+                            # back to Paddle anyway). Use 'surya' only on a real CUDA GPU.
+  # Region detection + table handling:
+  #   auto    -> Surya layout+table_rec when engine=surya (GPU), else contour (default)
+  #   surya   -> force Surya layout: classifies Figure/Table/Text, and runs table_rec
+  #              to produce STRUCTURED tables (rows/cols) instead of image captions.
+  #              Best quality, GPU-recommended (transformer models, slow on CPU).
+  #   contour -> lightweight YOLO+contour detector (CPU-friendly), tables stay as
+  #              OCR text + vision caption.
+  layout_engine: auto
   # Surya can stall on a cold/unhealthy llama-server. Each page is bounded by this
   # many seconds; on timeout (or any error) that page falls back to PaddleOCR so a
   # stall can't hang an ingestion. Warm Surya pages take ~20-25s, so keep headroom.
@@ -77,6 +163,77 @@ ocr:
   # caps the whole document's OCR; if exceeded, the child is killed and the doc is
   # marked failed instead of hanging. 22 scanned pages ran in ~5 min, so allow room.
   subprocess_timeout_s: 1800
+
+# ── Extraction platform (Docling) ─────────────────────────────────────────────
+# Docling (IBM, MIT) is the maintained document-AI engine: layout model + reading
+# order, TableFormer for real table structure, OCR for scanned pages, figure
+# localization. ONE tool (docling_pdf) covers digital/scanned/mixed. It runs on CPU
+# (M2 dev) and auto-accelerates on a CUDA GPU — same code, just set device.
+# Active when pdf_extractors point at docling_pdf (see below).
+extraction:
+  deskew: true                # auto-rotate a sideways SCAN (rotated invoice / 90-270°
+                              # page with no /Rotate) to upright before the VLM, via
+                              # Tesseract OSD. No-op if tesseract missing or page upright.
+  stitch_tables: true         # merge tables that continue across pages (the
+                              # continuation page repeats no header) — inherit the
+                              # lead table's header. Runs after extract, before chunk.
+  stitch_arbitration: true    # for ambiguous boundaries (same column count, all-text
+                              # columns) ask the LLM "continuation or separate?" — avoids
+                              # false-merging a different table. Off => leave unmerged.
+  docling:
+    # Docling runs with OCR OFF: it gives clean text+tables for DIGITAL pages and
+    # figure boxes for all pages, fast (no wasted RapidOCR — which tested worst on
+    # scans, 0.57 vs GLM 0.99). Scanned/garbled pages are rescued by the VLM below.
+    do_ocr: false
+    do_table_structure: true  # TableFormer: recover rows/cols (vs flat text)
+    images_scale: 2.0         # internal render scale for layout/figures
+    min_picture_pts: 24       # universal speck floor only: skip a region smaller than this
+                              # on a side (rule line / bullet / stray mark) — not worth a
+                              # VLM call. Logos / banners / mis-tagged text are dropped by
+                              # the SEMANTIC GATE (the caption call classifies each crop),
+                              # NOT by geometry — so wide schematics/CAD aren't wrongly cut.
+    min_picture_area_frac: 0.004  # (legacy; unused — the semantic gate handles noise now)
+    figure_union: true        # union Docling + DocLayout-YOLO figures (tested: Docling
+                              # splits collages, YOLO catches figures Docling misses).
+                              # Only YOLO 'figure'/'chart' classes — NOT 'table' (those
+                              # stay with TableFormer; previously tables leaked in as images)
+    # Per-page router: VLM-transcribe ONLY pages whose text is missing (scanned) or
+    # garbled (broken fonts). Clean digital pages cost 0 tokens.
+    page_rescue: true
+    # Budget for VLM page-transcriptions per doc (0 = unlimited). Past the cap, scanned
+    # pages fall back to free local PaddleOCR — bounds cost on huge scanned docs.
+    max_vlm_pages: 0
+    device: auto              # auto | cpu | cuda | mps  (cuda on the GPU box)
+    num_threads: 4
+  # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
+  # per-page VLM rescue); the tunable knob is TABLES:
+  #   auto    -> TableFormer for simple tables, VLM only for COMPLEX ones (merged
+  #              cells or multi-line headers). Best of both — free where safe, VLM
+  #              where TableFormer clips (validated on the Mendoza forms). Default.
+  #   docling -> always TableFormer (free). vlm -> always crop+GLM.
+  by_kind:
+    digital: { table_source: auto }
+    scanned: { table_source: auto }
+    mixed:   { table_source: auto }
+    default: { table_source: auto }
+  # Large-format / diagram pages (CAD, circuit schematics, oversized engineering sheets).
+  # A VLM downsamples a whole big sheet until the tiny designators/labels are illegible,
+  # so we render high-DPI and TILE such pages, transcribe each tile, then merge. Triggers
+  # on MEASURED signals (vector density / physical size) + the document_type — never on a
+  # filename. Tile count is derived from page size vs vlm_max_px (A4/Letter = 1 tile).
+  large_format:
+    enabled: true
+    dpi: 200                  # render DPI for tiling
+    vlm_max_px: 2600          # max legible tile edge (px); keeps A4/Letter whole, tiles A3/D/E
+    overlap: 0.12             # tile overlap so a component on a seam isn't cut
+    merge: llm                # llm = dedup-merge tiles via the text LLM; concat = join
+    max_tiles: 24             # safety cap on tiles per page
+  # CAD / circuit extraction (route_extractors: cad_route/circuit_route -> cad_extract).
+  # Adaptive: normal sheets use the region-JSON prompt; oversized sheets tile (above).
+  # Every page is fault-tolerant (one bad page is skipped, not fatal).
+  cad:
+    max_pages: 0              # cap VLM pages per CAD/circuit doc (0 = unlimited). Set for
+                              # huge 1000+ page schematic sets to bound cost/time.
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
@@ -96,6 +253,8 @@ chunking:
   strategy: semantic        # semantic | recursive
   size: 400                 # tokens (not characters)
   overlap: 50               # tokens
+  section_aware: true       # break chunks at headings (section-scoped) + tag the
+                            # section; tables/images stay atomic (never split).
 
 # ── Enrichment ────────────────────────────────────────────────────────────────
 # enrich_chunks stamps tags + (when summarize) an LLM one-line summary + semantic
@@ -103,14 +262,22 @@ chunking:
 enrichment:
   summarize: true
   keyword_count: 6           # fallback frequency keywords if the LLM is off/fails
-  batch_size: 10             # chunks summarized per LLM call (low call count = no rate limits)
+  min_interval_s: 2          # proactive pacing: >=2s between enrichment LLM calls (Groq
+                             # free tier ~30/min). Set 0 on a paid key. Backoff is the net.
+  batch_size: 5              # chunks summarized per LLM call. Smaller batches => shorter
+                             # JSON replies that are far less likely to truncate or
+                             # partially fail (fewer keyword fallbacks); the tradeoff is
+                             # more calls. 5 balances reliability vs rate-limit exposure.
   # Instruction describing what to produce per chunk (summary + meaningful keywords).
   # The pipeline adds the numbered chunks and asks for a JSON array — don't put a
   # chunk in here. Editable in the Settings UI.
   prompt: >
-    You label document chunks for search. For each chunk, write a one-sentence
-    summary of what it is about and 6-10 meaningful, specific keywords/phrases that
-    capture its content (real terms a user would search — never filler/stopwords).
+    You label document chunks for a technical search index. For each chunk produce a
+    one-sentence summary stating what it is about and what a reader would learn (in the
+    document's own terms), plus 6-10 SPECIFIC search terms taken from the chunk —
+    part numbers, model names, component/procedure names, specs and units, domain
+    terms. Never use stopwords, generic words (information, section, manual), or terms
+    not present in the chunk.
 
 # ── Query pipeline ────────────────────────────────────────────────────────────
 query:
@@ -221,10 +388,17 @@ extractors:
 
 # pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
 # sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.
+# docling_pdf is the HYBRID per-page extractor (industry-standard, token-efficient):
+# Docling does text + structured tables (TableFormer, auto-escalating complex ones to
+# the VLM) + figure localization (unioned with DocLayout-YOLO) — NO per-page LLM tokens
+# on clean digital pages. The VLM (GLM) is spent only where vision is required:
+# scanned/garbled pages (extraction.docling.page_rescue, cost-capped with Paddle
+# fallback) and figure captions. To force the VLM on EVERY page instead, revert these
+# to pdf_digital/scanned_pdf/mixed_pdf and set vision_ocr.mode: always (costlier).
 pdf_extractors:
-  digital: pdf_digital
-  scanned: scanned_pdf
-  mixed: mixed_pdf
+  digital: docling_pdf
+  scanned: docling_pdf
+  mixed: docling_pdf
 
 # route_extractors: a route overrides extraction entirely. CAD/circuit drawings
 # are PDFs but need vision extraction (cad_extract) with the right diagram prompt,

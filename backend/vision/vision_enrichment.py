@@ -53,6 +53,36 @@ from .prompts import VISION_PROMPT, build_vision_prompt   # route-aware prompt b
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _page_text_context(state, page_number, max_chars: int = 1200) -> str:
+    """Text already extracted from the SAME page — fed to the captioner so it sees the
+    figure in context (part numbers, model names, the figure's own caption line)
+    instead of in isolation. Pulled from the text/table blocks for that page."""
+    if page_number is None:
+        return ""
+    parts = []
+    for b in (state.get("blocks") or []):
+        if b.get("type") not in ("text", "heading", "table"):
+            continue
+        ref = b.get("source_ref") or {}
+        if ref.get("page") != page_number:
+            continue
+        t = (b.get("text") or "").strip()
+        if t:
+            parts.append(t)
+    return "\n".join(parts).strip()[:max_chars]
+
+
+def _prompt_with_context(base: str, state, page_number) -> str:
+    ctx = _page_text_context(state, page_number)
+    if not ctx:
+        return base
+    return (base + "\n\nSURROUNDING PAGE TEXT (context — may name the part numbers, "
+            "model, or this figure's caption; use it to describe the image precisely, "
+            "but describe ONLY what the image shows):\n" + ctx)
+
+
 class VisionEnrichmentTool(Tool):
 
     name = "vision_enrichment"
@@ -520,10 +550,12 @@ class VisionEnrichmentTool(Tool):
 
             logger.debug(f"💾 Debug image: {debug_path}")
  
-        description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
+        _base = vision_cfg.get("_resolved_prompt") or VISION_PROMPT
+        description = run_with_timeout(describe_image, timeout_s, image_bytes,
+                                       _prompt_with_context(_base, state, page_number), vision_cfg)
 
         logger.debug(f"📄 Description (first 200 chars): {description[:200]}")
- 
+
         # Build a NormalizedBlock (type="image_caption") with the description
 
         block = build_image_caption_block(state, page_number, bbox, description)

@@ -10,6 +10,7 @@ langchain-groq
 langchain-ollama
 langchain-openai
 langchain-google-genai     # native Google/Gemini/Vertex LLM provider
+langchain-anthropic        # Claude models (provider: anthropic)
 langgraph
 langchain-mcp-adapters
 
@@ -18,7 +19,14 @@ langfuse
 
 # ── PDF extraction ────────────────────────────────────────────────────────────
 pymupdf              # fitz — PDF rendering and text extraction
-paddleocr            # OCR for scanned pages
+docling>=2.103       # document-AI extraction platform (layout + TableFormer tables +
+                     # reading order + OCR + figure localization). Used by the
+                     # docling_pdf extractor — the default PDF path. CPU on Mac,
+                     # auto-accelerates on a CUDA GPU. NOTE: pulls httpx>=0.28, which
+                     # conflicts with surya-ocr<0.28 (Surya is unused on Mac/CPU; the
+                     # OpenAI/Z.ai client works fine on httpx 0.28). On a Surya GPU box,
+                     # resolve by pinning httpx per that deployment.
+paddleocr            # OCR for scanned pages (native fallback extractor)
 paddlepaddle         # PaddleOCR backend (CPU); use paddlepaddle-gpu for GPU
 
 # ── OCR (scanned pages) ───────────────────────────────────────────────────────
@@ -36,7 +44,10 @@ doclayout-yolo       # document-layout detector — fallback when ocr.engine=pad
 huggingface-hub      # downloads model weights (also a ST dep)
 opencv-python-headless  # cv2 — used by scanned PDF pipeline (contour detection, morphology)
 Pillow               # image manipulation
-google-generativeai  # Gemma via Google AI Studio (vision.provider: google)
+google-genai>=1.0.0  # Gemma/Gemini via Google AI Studio (vision.provider: google).
+                     # The current SDK: supports thinking_config (thinking_level) to
+                     # turn OFF Gemma 4's reasoning mode — the deprecated
+                     # google-generativeai package cannot set it.
 ollama               # Gemma via local Ollama (vision.provider: ollama)
 
 # ── Excel / PowerPoint extraction ─────────────────────────────────────────────

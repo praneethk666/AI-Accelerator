@@ -1,12 +1,14 @@
 """Shared LLM factory. Every tool that needs an LLM calls get_llm(config).
 
 Providers (config["llm"]["provider"]):
-  groq    — ChatGroq (native)
-  google  — ChatGoogleGenerativeAI (Gemini / Vertex AI Studio, native)
-  ollama  — ChatOllama (local, no key)
-  openai  — ChatOpenAI, AND any OpenAI-COMPATIBLE endpoint via base_url. This one
-            key covers NVIDIA NIM, OpenRouter, Together, Fireworks, vLLM, LM Studio,
-            even Gemini's OpenAI-compat endpoint — point base_url at the provider.
+  groq      — ChatGroq (native)
+  google    — ChatGoogleGenerativeAI (Gemini / Vertex AI Studio, native)
+  ollama    — ChatOllama (local, no key)
+  openai    — ChatOpenAI, AND any OpenAI-COMPATIBLE endpoint via base_url. This one
+              key covers NVIDIA NIM, OpenRouter, Together, Fireworks, vLLM, LM Studio,
+              even Gemini's OpenAI-compat endpoint — point base_url at the provider.
+  anthropic — ChatAnthropic (Claude models). Excellent structured-JSON field discipline
+              and cheap for bulk extraction. Needs ANTHROPIC_API_KEY.
 
 config["llm"] keys (all optional except provider/model):
   provider, model
@@ -25,6 +27,7 @@ Recipes (config/global.yaml):
   OpenRouter:  provider: openai  model: <org/model>
                base_url: https://openrouter.ai/api/v1         api_key: ${OPENROUTER_API_KEY}
   Local vLLM:  provider: openai  model: <served-name>  base_url: http://localhost:8000/v1
+  Anthropic:   provider: anthropic  model: claude-haiku-4-5  api_key: ${ANTHROPIC_API_KEY}
 
 Langfuse tracing is wired automatically when LANGFUSE_* env vars are set; absent,
 calls still work (tracing silently skipped).
@@ -36,7 +39,8 @@ import os
 from langchain_core.language_models import BaseChatModel
 
 
-def get_llm(config: dict, max_tokens: int | None = None) -> BaseChatModel:
+def get_llm(config: dict, max_tokens: int | None = None,
+            model: str | None = None) -> BaseChatModel:
     """Build the configured chat model.
 
     max_tokens caps the completion length. It's provider-agnostic here — each SDK
@@ -44,10 +48,14 @@ def get_llm(config: dict, max_tokens: int | None = None) -> BaseChatModel:
     ollama: num_predict) — so callers pass one number and we map it. An explicit
     arg wins; otherwise we fall back to llm.max_tokens in config if set. Used e.g.
     by enrich_chunks to guarantee a batch's JSON array isn't truncated.
+
+    model overrides llm.model for a single call so different tasks can use different
+    models on the SAME provider — e.g. a strong reasoning model for answering vs the
+    cheap/fast default for bulk enrichment. None -> the configured llm.model.
     """
     llm_cfg = config["llm"]
     provider = llm_cfg["provider"]
-    model = llm_cfg["model"]
+    model = model or llm_cfg["model"]
     api_key = _clean(llm_cfg.get("api_key"))
     temperature = llm_cfg.get("temperature")
     if max_tokens is None:
@@ -91,12 +99,29 @@ def get_llm(config: dict, max_tokens: int | None = None) -> BaseChatModel:
             kw["base_url"] = llm_cfg["base_url"]
         if max_tokens:
             kw["max_tokens"] = max_tokens
-        return ChatOpenAI(model=model, **_with_key(kw, "api_key", api_key))
+        llm = ChatOpenAI(model=model, **_with_key(kw, "api_key", api_key))
+        # Structured Outputs: if a json_schema is configured and we're on a native OpenAI
+        # endpoint (no base_url = not vLLM/OpenRouter), bind the schema so the model is
+        # GUARANTEED to return valid JSON matching our invoice field structure.
+        schema = llm_cfg.get("json_schema")
+        if schema and not llm_cfg.get("base_url"):
+            try:
+                llm = llm.with_structured_output(schema, method="json_schema")
+            except Exception:
+                pass  # schema binding not available on this langchain version — ignore
+        return llm
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        kw = dict(common)
+        if max_tokens:
+            kw["max_tokens"] = max_tokens
+        return ChatAnthropic(model=model, **_with_key(kw, "api_key", api_key))
 
     raise ValueError(
         f"Unknown LLM provider {provider!r}. "
-        "Use 'groq', 'google', 'ollama', or 'openai' (openai + base_url covers any "
-        "OpenAI-compatible API such as NVIDIA NIM / OpenRouter / vLLM)."
+        "Use 'groq', 'google', 'ollama', 'openai' (openai + base_url covers any "
+        "OpenAI-compatible API such as NVIDIA NIM / OpenRouter / vLLM), or 'anthropic'."
     )
 
 

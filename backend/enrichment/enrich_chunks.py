@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections import Counter
 
 from backend.core.tool import PipelineState
@@ -33,13 +34,21 @@ _STOPWORDS = {
 }
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}")
 
+# Min seconds between enrichment LLM calls (free-tier RPM pacing). Set per run from
+# config in run(); read by _enrich_batch which is the single LLM call site.
+_ENRICH_INTERVAL_S = 0.0
+
 # Instruction describing WHAT to produce per chunk. Editable via config
 # enrichment.prompt / the Settings UI. The code wraps it with the numbered chunks
 # and asks for a JSON array, so the instruction should NOT include a chunk itself.
 _DEFAULT_INSTRUCTION = (
-    "You label document chunks for search. For each chunk, write a one-sentence "
-    "summary of what it is about and 6-10 meaningful, specific keywords/phrases that "
-    "capture its content (real terms a user would search — never filler/stopwords)."
+    "You label document chunks for a technical search index. For EACH chunk produce:\n"
+    "- summary: one precise sentence stating what the chunk is about and what a reader "
+    "would learn from it, in the document's own terms.\n"
+    "- keywords: 6-10 SPECIFIC, high-value search terms taken from the chunk — include "
+    "part numbers, model names, component/procedure names, specs and units, and domain "
+    "terms. Never include stopwords, generic words (e.g. 'information', 'section', "
+    "'manual'), or terms not present in the chunk."
 )
 
 
@@ -53,6 +62,8 @@ class EnrichChunksTool:
         top_k = ecfg.get("keyword_count", 6)
         summarize = ecfg.get("summarize", True)
         batch_size = max(1, int(ecfg.get("batch_size", 10)))
+        global _ENRICH_INTERVAL_S
+        _ENRICH_INTERVAL_S = float(ecfg.get("min_interval_s", 0) or 0)
         instruction = (ecfg.get("prompt") or _DEFAULT_INSTRUCTION).strip()
         chunks = state.get("chunks", [])
 
@@ -149,6 +160,36 @@ def _enrich_group(llm, instruction: str, group: list, usage, results: dict) -> N
     _enrich_group(llm, instruction, group[mid:], usage, results)
 
 
+def _retry_after_s(msg: str, default: float) -> float:
+    """Parse the server's suggested wait ('try again in 2.52s') from a 429 body."""
+    m = re.search(r"try again in ([\d.]+)\s*s", msg or "")
+    return (float(m.group(1)) + 0.5) if m else default
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    s = (str(exc) + type(exc).__name__).lower()
+    return "429" in s or "rate_limit" in s or "ratelimit" in s
+
+
+def _invoke_with_backoff(llm, prompt: str, attempts: int = 4):
+    """Invoke the LLM, REACTIVELY backing off on 429s (honoring the server's retry
+    hint). Groq free tier caps tokens-per-minute (TPM 6000), so a batch can tip over
+    even when request-pacing is fine — waiting a couple seconds and retrying turns
+    that failure into a success instead of a frequency-keyword fallback."""
+    delay = 2.0
+    for i in range(attempts):
+        try:
+            return llm.invoke(prompt)
+        except Exception as exc:
+            if not _is_rate_limit(exc) or i == attempts - 1:
+                raise
+            wait = _retry_after_s(str(exc), delay)
+            logger.info("enrich: rate-limited; waiting %.1fs then retrying (%d/%d)",
+                        wait, i + 1, attempts - 1)
+            time.sleep(wait)
+            delay = min(delay * 2, 30.0)
+
+
 def _enrich_batch(llm, instruction: str, texts: list[str], usage) -> list | None:
     """One LLM call describing several chunks; returns a JSON array aligned to texts."""
     parts = [
@@ -160,7 +201,11 @@ def _enrich_batch(llm, instruction: str, texts: list[str], usage) -> list | None
     for idx, t in enumerate(texts):
         parts.append(f'\n--- Chunk {idx} ---\n{t[:1500]}')
     try:
-        reply = llm.invoke("\n".join(parts))
+        # Pace under the free-tier RPM (e.g. Groq ~30/min -> ~2s); covers split-retry
+        # calls too since every LLM call funnels through here.
+        from backend.core import pacing
+        pacing.pace("enrichment", _ENRICH_INTERVAL_S)
+        reply = _invoke_with_backoff(llm, "\n".join(parts))
         um = getattr(reply, "usage_metadata", None) or {}
         usage.record("enrichment", um.get("input_tokens"), um.get("output_tokens"))
         return _extract_json_array(getattr(reply, "content", str(reply)))

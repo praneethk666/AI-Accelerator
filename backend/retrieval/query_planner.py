@@ -73,7 +73,8 @@ class QueryPlannerTool:
 
 
 def _plan(query: str, history: list, config: dict, max_subs: int) -> dict:
-    llm = get_llm(config)
+    # query rewriting/decomposition benefits from a stronger model → answer_model.
+    llm = get_llm(config, model=config["llm"].get("answer_model"))
     prompt = _PROMPT.format(
         history=_format_history(history), query=query, max_subs=max_subs
     )

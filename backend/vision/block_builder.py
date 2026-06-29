@@ -48,24 +48,57 @@ def _strip_fences(text: str) -> str:
     return t.strip()
 
 
+def _balanced_objects(t):
+    """Yield every top-level {...} substring in `t`, brace-balanced and string-aware
+    (braces inside JSON string values don't open/close objects). Used to recover the
+    real JSON from a reasoning-heavy reply that may contain several objects."""
+    objs = []
+    depth = start = 0
+    in_str = esc = False
+    start = -1
+    for i, ch in enumerate(t):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                objs.append(t[start:i + 1])
+                start = -1
+    return objs
+
+
 def _extract_json(text):
     """Pull the JSON object out of a model reply that may include reasoning.
 
-    "Thinking" models (e.g. gemma-4) emit prose/analysis before the JSON, so a
-    plain json.loads on the whole reply fails and we'd otherwise store the raw
-    reasoning as the caption. Strip fences, try direct parse, then fall back to the
-    outermost {...} span."""
+    "Thinking" models (e.g. gemma-4) emit prose/analysis before the JSON — and
+    often MORE than one object (a fenced ```json example in their "format as JSON"
+    step, then the final answer). The old first-{ .. last-} span swallowed both
+    objects plus the fence between them and failed to parse, so we stored the raw
+    reasoning as the caption. Now: strip fences + direct parse for clean replies,
+    else scan for balanced {...} objects and return the LAST that parses (the
+    model's final answer)."""
     t = _strip_fences(text)
     try:
         return json.loads(t)
     except Exception:
         pass
-    start, end = t.find("{"), t.rfind("}")
-    if 0 <= start < end:
+    for obj in reversed(_balanced_objects(text or "")):
         try:
-            return json.loads(t[start:end + 1])
+            return json.loads(obj)
         except Exception:
-            return None
+            continue
     return None
 
 

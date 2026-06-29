@@ -20,7 +20,7 @@ The graph then picks **exactly one extractor**, in this priority order:
 | Priority | Config map | Keyed by | Example |
 |---|---|---|---|
 | 1 | `route_extractors` | `route` | `cad_route → cad_extract` (route overrides everything) |
-| 2 | `pdf_extractors` | `pdf_kind` | `digital → pdf_digital`, `scanned → scanned_pdf`, `mixed → mixed_pdf` |
+| 2 | `pdf_extractors` | `pdf_kind` | `digital`, `scanned`, `mixed` all → `docling_pdf` (the unified hybrid extractor) |
 | 3 | `extractors` | `file_type` | `excel → excel_extraction`, `ppt → ppt_extraction` |
 
 After extraction, **`route_gates`** decide which optional steps run for that route
@@ -53,7 +53,7 @@ customer/deployment gets its own profile; the code is identical.
 ### OCR — for scanned pages (`ocr.engine`)
 ```yaml
 ocr:
-  engine: paddle            # paddle | surya  (runs in an isolated subprocess)
+  engine: paddle            # paddle | surya  (used by docling_pdf's scanned/garbled page rescue)
   surya_timeout_s: 90       # per-page Surya cap; on stall/error the page uses paddle
   subprocess_timeout_s: 1800  # whole-document OCR cap before the child is killed
 ```
@@ -64,10 +64,12 @@ ocr:
   and can stall over long docs — **switch to `surya` on a GPU box**, where
   `llama-server` runs on-GPU.
 
-OCR runs in an **isolated subprocess** (`scanned_pdf/ocr_worker.py`): the native OCR
-stack (Paddle / Torch-Surya / llama-server) can't crash the backend, and a child
-crash/timeout just fails that document gracefully. Engine choice is per deployment —
-set it in the active config or a per-customer profile.
+OCR is invoked **in-process by `docling_pdf`** when it rescues a scanned or garbled
+page (Docling's own OCR for the page body, plus the Paddle/Surya engine in
+`scanned_pdf/scanned.py` for region text). Engine choice is per deployment — set it
+in the active config or a per-customer profile. (The old standalone `scanned_pdf`
+tool + `ocr_worker.py` subprocess were removed when `docling_pdf` became the single
+unified PDF extractor.)
 
 ### Vision — captions for images/diagrams (`vision`)
 ```yaml

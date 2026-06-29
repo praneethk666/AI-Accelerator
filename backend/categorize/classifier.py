@@ -88,6 +88,27 @@ def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]
     return None
 
 
+def _coerce_doctype(doc_type: str, supported_types: list[str]) -> str:
+    """Force a single, known document_type. Models sometimes echo a compound label
+    ('invoice / financial_statement / ...'); return the first supported type it names
+    (preferring the longest match so 'financial_statement' beats 'statement'), else the
+    raw value if it's already a single clean token, else 'report'."""
+    raw = (doc_type or "").strip().lower()
+    if raw in [t.lower() for t in supported_types]:
+        return raw
+    norm = re.sub(r"[^a-z0-9]+", " ", raw)
+    # Earliest-mentioned known type wins (matches prompt order); tie-break longest match.
+    hits = []
+    for t in supported_types:
+        m = re.search(rf"\b{re.escape(t.lower().replace('_', ' '))}\b", norm)
+        if m:
+            hits.append((m.start(), -len(t), t))
+    if hits:
+        return min(hits)[2]
+    # A single unknown token is fine to keep (custom type); a multi-token echo -> report.
+    return raw if raw and " " not in norm.strip() and "/" not in raw else "report"
+
+
 def _heuristic_doctype(
     filename: str, file_path: str, supported_types: list[str]
 ) -> Tuple[str, float, str]:
@@ -307,6 +328,10 @@ def categorize(
                 break
 
         reasoning_parts = []
+        # Industry read from the same vision pass (set in the vision branch below).
+        # Vision works on scanned PDFs too (it reads rendered page images), so this
+        # is the only industry signal that survives when there's no text layer.
+        vision_industry: Optional[str] = None
 
         if matched_type:
             best["document_type"] = matched_type
@@ -341,31 +366,36 @@ def categorize(
             if toc_text:
                 extra_context += f"\nTable of Contents excerpt:\n{toc_text[:500]}"
 
-            prompt = f"""Analyze this document image and classify its document_type.
+            # Industries vision may choose from (config-driven; falls back to general).
+            known_industries = list(
+                (config.get("categorization", {}).get("industry_keywords", {}) or {}).keys()
+            ) or ["general"]
+            industries_line = ", ".join(known_industries)
 
-IMPORTANT CAD DETECTION:
-- CAD/Engineering drawings have: title blocks, revision blocks, part numbers, scales, dimensions (mm/inch)
-- CAD drawings show: mechanical views, sections, details, BOM tables, technical notations
-- If you see ANY of these CAD indicators, classify as cad_drawing or circuit_diagram{cad_hint}
+            prompt = f"""Classify this document by its DOMINANT content across the pages shown.
 
 DOCUMENT TYPES:
-- circuit_diagram: electrical schematics, circuit boards, wiring diagrams
-- cad_drawing: mechanical CAD drawings, 3D design blueprints, engineering drawings (IF NOT circuit/schematic)
-- schematic: technical diagrams, flow diagrams
-- invoice: bills, receipts, payment documents
-- financial_statement: balance sheets, P&L, financial reports
-- purchase_order: POs, shipping documents
-- contract: legal agreements, terms & conditions
-- policy: company policies, procedures
-- research_paper: academic papers, technical papers
-- report: general reports, analyses, white papers
-- manual: user guides, instruction manuals
-- presentation: slides, PowerPoint decks
+- manual: service/user/instruction manuals (procedures, parts, troubleshooting) — choose
+  this for a manual EVEN IF it contains diagrams or photos.
+- circuit_diagram: the document IS primarily an electrical schematic / wiring diagram.
+- cad_drawing: the document IS primarily a mechanical engineering drawing — title block,
+  revision block, dimensioned views, BOM. NOT a manual that merely includes drawings.
+- schematic: primarily technical/flow diagrams.
+- invoice: a tax invoice / bill (line items, HSN, tax, totals).
+- financial_statement: balance sheet, P&L, ledger and similar.
+- purchase_order: a purchase order.
+- contract: an agreement / contract.
+- policy: a policy or terms document.
+- research_paper: an academic / research paper.
+- report: a general report (use this as the fallback).
+- presentation: slides / a deck.{cad_hint}
 
 Return ONLY a JSON object with these exact keys:
-- "document_type": exactly one of the types above
-- "confidence": a float between 0 and 1
-- "reasoning": a short explanation (mention CAD indicators if present)
+- "document_type": EXACTLY ONE value from the list above — a single token (e.g. "invoice").
+  Never return a list, never join multiple with "/", never copy a whole line.
+- "industry": exactly one of: {industries_line} (use "general" only if none clearly fit)
+- "confidence": a float 0-1 reflecting how strongly the visible evidence supports it
+- "reasoning": one short sentence citing the visual evidence you used
 
 Document context:{extra_context}
 
@@ -380,8 +410,17 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                 if json_match:
                     result = json.loads(json_match.group())
                     doc_type = result.get("document_type", "report")
+                    # Defensive: a degraded model can echo a compound label
+                    # ("invoice / financial_statement / ...") instead of one token.
+                    # Collapse to the first KNOWN type it mentions, else 'report'.
+                    doc_type = _coerce_doctype(doc_type, supported_types)
                     conf = float(result.get("confidence", 0.0) or 0.0)
                     reasoning = result.get("reasoning", "Vision classification completed.")
+                    # Keep only a recognized industry; ignore "general"/unknown so the
+                    # downstream cascade can still try filename/text before defaulting.
+                    vi = (result.get("industry") or "").strip().lower()
+                    if vi in known_industries and vi != "general":
+                        vision_industry = vi
                 else:
                     # Fallback if JSON extraction fails
                     doc_type = "report"
@@ -425,10 +464,14 @@ Respond with ONLY the JSON object, no other text, no markdown."""
         # ---- Industry detection (3 signals order) ----
         industry_kw = config.get("categorization", {}).get("industry_keywords", {})
 
-        industry = None
+        # Signal order: explicit filename keyword > vision read (works on scanned,
+        # no text layer needed) > embedded-text keyword > configured default.
         industry = _score_industry_from_filename(filename, industry_kw)
         if industry:
             reasoning_parts.append(f"Industry inferred from filename: '{industry}'.")
+        elif vision_industry:
+            industry = vision_industry
+            reasoning_parts.append(f"Industry inferred from vision: '{industry}'.")
         else:
             text_first_3 = extract_text(file_path, max_pages=3)
             industry = _score_industry_from_text(text_first_3, industry_kw)

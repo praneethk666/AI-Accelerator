@@ -52,7 +52,14 @@ cold-start hang, fork-from-thread abort (Surya spawning `llama-server`), and an
 OpenMP segfault (PaddlePaddle's runtime vs Torch's). Those are coexistence bugs,
 not Surya bugs — in a clean process Surya runs fine.
 
-So OCR now runs in an **isolated subprocess** (`scanned_pdf/ocr_worker.py`,
+> **Superseded (2026-06):** the standalone `scanned_pdf` tool + `ocr_worker.py`
+> subprocess described below were **removed** when `docling_pdf` became the single
+> unified PDF extractor. OCR now runs **in-process inside `docling_pdf`** (Docling's
+> own OCR + the Paddle/Surya engine in `scanned_pdf/scanned.py` for region text).
+> The crash analysis below is kept for historical rationale; the isolation it argues
+> for is no longer how the code is structured.
+
+So OCR previously ran in an **isolated subprocess** (`scanned_pdf/ocr_worker.py`,
 spawned by `scanned_pdf/tool.py`):
 - A fresh `spawn` process per scanned doc — its own address space, so Paddle /
   Torch-Surya / `llama-server` can't collide with the backend's torch.

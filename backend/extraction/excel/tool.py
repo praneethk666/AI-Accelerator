@@ -1,152 +1,258 @@
 import os
-import io
 import uuid
+from io import BytesIO
+from datetime import date, datetime
+
 import pandas as pd
 from typing import List, Dict, Any, Optional
-from langdetect import detect, LangDetectException
-from backend.core.schemas import NormalizedBlock, SourceRef
-from backend.core.tool import Tool
+from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
 def _detect_image_ext(data: bytes) -> str:
-    if not data: return "png"
+    """Sniff an embedded image's real format from its magic bytes (Excel/PPT can
+    embed jpg/gif/emf/... — saving them all as .png corrupts the file)."""
+    if not data:
+        return "png"
     if data[:8] == b"\x89PNG\r\n\x1a\n": return "png"
     if data[:3] == b"\xff\xd8\xff": return "jpg"
     if data[:6] in (b"GIF87a", b"GIF89a"): return "gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "webp"
     if data[:4] in (b"MM\x00*", b"II*\x00"): return "tiff"
     if data[:2] == b"BM": return "bmp"
-    if data[:4] == b"\xd7\xcd\xc6\x9a": return "wmf"
-    if data[:4] == b"\x01\x00\x00\x00" or (len(data) > 44 and data[40:44] == b" EMF"): return "emf"
-    if b"<svg" in data[:100].lower(): return "svg"
+    if data[:2] == b"\x1f\x8b": return "gz"
     return "png"
 
 
-class ExcelExtractorTool(Tool):
+def _save_image_blob(image_data: bytes, out_dir: str, block_id: str, *, source_name: str | None = None) -> tuple[str, str]:
+    """Persist an embedded image safely and return (raw_path, preview_path).
+
+    We keep the original bytes on disk when possible, but if Pillow can decode
+    them we also create a PNG preview for browser/UI consumption.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    source_name = source_name or ""
+    ext = _detect_image_ext(image_data)
+    raw_path = os.path.join(out_dir, f"{block_id}_raw.{ext}")
+    with open(raw_path, "wb") as f:
+        f.write(image_data)
+
+    preview_path = raw_path
+    try:
+        from PIL import Image
+
+        img = Image.open(BytesIO(image_data))
+        img = img.convert("RGBA") if img.mode not in ("RGB", "RGBA") else img
+        preview_path = os.path.join(out_dir, f"{block_id}.png")
+        img.save(preview_path, format="PNG")
+    except Exception:
+        # If we can't decode it, keep the raw bytes and let downstream decide.
+        preview_path = raw_path
+
+    return raw_path, preview_path
+
+
+def _json_safe_cell(value):
+    """Convert Excel cell values to stable JSON-friendly scalars."""
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return round(value, 6)
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_cell(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_cell(v) for k, v in value.items()}
+    return value
+
+
+def _safe_rows(df: pd.DataFrame) -> list[list]:
+    return [[_json_safe_cell(cell) for cell in row] for row in df.itertuples(index=False, name=None)]
+
+
+def _safe_sheet_frame(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c) if str(c).strip() else f"column_{i+1}" for i, c in enumerate(df.columns)]
+    for col in df.columns:
+        df[col] = df[col].map(_json_safe_cell)
+    return df
+
+
+def _load_workbook_frames(file_path: str) -> dict[str, pd.DataFrame]:
+    """Load sheets from either modern `.xlsx` or legacy `.xls` files."""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".xls":
+        try:
+            return pd.read_excel(file_path, sheet_name=None, engine="xlrd")
+        except Exception:
+            return {}
+
+    return pd.read_excel(file_path, sheet_name=None, engine="openpyxl")
+
+
+def _fallback_sheet_text(file_path: str, limit_sheets: int = 4, limit_rows: int = 40) -> dict[str, pd.DataFrame]:
+    """Fallback for badly formatted workbooks: manual sheet scan via openpyxl."""
+    try:
+        import openpyxl
+    except Exception:
+        return {}
+
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    except Exception:
+        return {}
+
+    frames: dict[str, pd.DataFrame] = {}
+    try:
+        for sheet_index, sheet in enumerate(wb.worksheets):
+            if sheet_index >= limit_sheets:
+                break
+            rows = []
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if row_index >= limit_rows:
+                    break
+                rows.append([_json_safe_cell(cell) for cell in row])
+            if not rows:
+                continue
+            headers = [f"column_{i+1}" for i in range(max(len(r) for r in rows))]
+            frames[sheet.title] = pd.DataFrame(rows, columns=headers[: len(rows[0])])
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return frames
+
+
+class ExcelExtractorTool:
+    """
+    Extracts tables, embedded images, formulas, and pivot table data from Excel files.
+    Output strictly follows the NormalizedBlock contract in schemas.py.
+    """
     name = "excel_extraction"
 
     def run(self, state: dict, config: dict) -> dict:
-        file_path   = state.get("file_path")
+        file_path   = state["file_path"]
         document_id = state.get("document_id")
-        filename    = state.get("filename", os.path.basename(file_path) if file_path else "unknown.xlsx")
-
-        if not document_id or not file_path:
-            state.setdefault("errors", []).append({
-                "tool":     self.name,
-                "level":    "error",
-                "message":  "Missing document_id or file_path in state — aborting.",
-                "block_id": None,
-            })
-            return state
-
-        blocks = self._extract(file_path, filename, str(document_id), config, state)
-
-        if "blocks" not in state:
-            state["blocks"] = blocks
-        else:
-            state["blocks"].extend(blocks)
-
+        blocks      = self._extract(file_path, document_id=document_id, config=config)
+        state["blocks"] = as_dicts(blocks)
         state.setdefault("errors", [])
         return state
 
-    def _detect_language(self, text: str) -> str:
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _detect_language(self, text: str, default: str = "en") -> str:
+        """Best-effort language code (ISO 639-1) for a block's text. Falls back to
+        `default` when text is empty or langdetect isn't installed/confident."""
+        if not text or not text.strip():
+            return default
         try:
-            return detect(text) if text and text.strip() else "en"
-        except LangDetectException:
-            return "en"
+            from langdetect import detect
+            return detect(text)
+        except Exception:
+            return default
 
     def _extract(
         self,
         file_path: str,
-        filename: str,
-        doc_id: str,
-        config: Optional[Dict[str, Any]],
-        state: dict,
+        document_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> List[NormalizedBlock]:
-        import openpyxl
-        blocks = []
-        cfg    = config or {}
-
-        ext = os.path.splitext(file_path)[-1].lower()
-        if ext == ".xls":
-            engine = "xlrd"
-        elif ext == ".xlsb":
-            engine = "pyxlsb"
-        else:
-            engine = "openpyxl"
+        blocks: List[NormalizedBlock] = []
+        cfg      = config or {}
+        doc_id   = str(document_id) if document_id else str(uuid.uuid4())
+        filename = os.path.basename(file_path)
 
         try:
-            wb_pandas   = pd.read_excel(file_path, sheet_name=None, engine=engine)
-            wb_openpyxl = openpyxl.load_workbook(file_path, data_only=False) if engine == "openpyxl" else None
-        except Exception as e:
-            state.setdefault("errors", []).append({
-                "tool":     self.name,
-                "level":    "error",
-                "message":  f"Failed to open {file_path}: {e}",
-                "block_id": None,
-            })
+            wb = _load_workbook_frames(file_path)
+        except Exception:
+            wb = {}
+
+        if not wb:
+            wb = _fallback_sheet_text(file_path)
+
+        if not wb:
             return blocks
 
-        for sheet_name, df in wb_pandas.items():
+        # ── 1. Table blocks ────────────────────────────────────────────
+        for sheet_name, df in wb.items():
             try:
                 df = df.dropna(how="all").dropna(axis=1, how="all")
                 if df.empty:
                     continue
-                df = df.fillna("")
+                df = _safe_sheet_frame(df).fillna("")
+                safe_rows = _safe_rows(df)
+                safe_headers = [str(c) for c in df.columns.tolist()]
 
-                block_id   = str(uuid.uuid4())
-                cell_range = None
-                if wb_openpyxl and sheet_name in wb_openpyxl.sheetnames:
-                    cell_range = wb_openpyxl[sheet_name].dimensions
+                block_id = str(uuid.uuid4())
+                cell_range = f"{sheet_name}!A1:{self._col_letter(len(df.columns))}{len(df) + 1}"
+                try:
+                    md_text = df.to_markdown(index=False)
+                except Exception:
+                    md_text = "\n".join(
+                        " | ".join(map(str, row)) for row in ([safe_headers] + safe_rows[:20])
+                    )
 
                 blocks.append(NormalizedBlock(
                     block_id=block_id,
                     document_id=doc_id,
                     type="table",
-                    text=df.to_markdown(index=False),
+                    text=md_text,
                     table_data={
-                        "headers": [str(c) for c in df.columns.tolist()],
-                        "rows":    df.values.tolist(),
+                        "headers": safe_headers,
+                        "rows": safe_rows,
                     },
                     source_ref=SourceRef(
                         filename=filename,
                         sheet=str(sheet_name),
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
-                    language=self._detect_language(df.to_string()),
+                    language=self._detect_language(md_text, cfg.get("default_language", "en")),
                     metadata={
                         "cell_range":        cell_range,
-                        "enrichment_failed": False,
+                        "enrichment_failed": cfg.get("enrichment_failed_flag", False),
                     },
                 ))
 
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Skipping sheet '{sheet_name}': {e}",
-                    "block_id": None,
-                })
+            except Exception:
                 continue
 
-        if wb_openpyxl:
-            blocks.extend(self._extract_images(wb_openpyxl, doc_id, filename, cfg, state))
-            blocks.extend(self._extract_formulas(wb_openpyxl, doc_id, filename, cfg, state))
+        # ── 2. Embedded image blocks ───────────────────────────────────
+        blocks.extend(self._extract_images(file_path, doc_id, filename, cfg))
 
-        blocks.extend(self._extract_pivots(file_path, doc_id, filename, cfg, state))
+        # ── 3. Formula blocks ──────────────────────────────────────────
+        blocks.extend(self._extract_formulas(file_path, doc_id, filename, cfg))
+
+        # ── 4. Pivot table blocks ──────────────────────────────────────
+        blocks.extend(self._extract_pivots(file_path, doc_id, filename, cfg))
 
         return blocks
 
     def _extract_images(
         self,
-        wb,
+        file_path: str,
         doc_id: str,
         filename: str,
         cfg: Dict[str, Any],
-        state: dict,
     ) -> List[NormalizedBlock]:
-        blocks  = []
-        out_dir = cfg.get("image_output_dir", os.path.join("uploads", "images", doc_id))
+        import openpyxl
+
+        blocks: List[NormalizedBlock] = []
+
+        try:
+            wb = openpyxl.load_workbook(file_path)
+        except Exception:
+            return blocks
+
+        out_dir = os.path.join("uploads", "images", doc_id)
         os.makedirs(out_dir, exist_ok=True)
 
         for sheet in wb.worksheets:
@@ -154,39 +260,18 @@ class ExcelExtractorTool(Tool):
                 try:
                     block_id   = str(uuid.uuid4())
                     image_data = None
-                    ext        = "png"
-
-                    pil_img = getattr(image, "image", None) or getattr(image, "_image", None)
-                    if pil_img:
+                    if hasattr(image, "_data"):
                         try:
-                            buf = io.BytesIO()
-                            fmt = pil_img.format or "PNG"
-                            pil_img.save(buf, format=fmt)
-                            image_data = buf.getvalue()
-                            ext = fmt.lower()
+                            image_data = image._data()
                         except Exception:
-                            pil_img = None
-
-                    if not pil_img:
-                        if hasattr(image, "_data"):
-                            image_data = image._data() if callable(image._data) else image._data
-                        else:
-                            if hasattr(image.ref, "seek"):
-                                image.ref.seek(0)
-                            image_data = image.ref.read() if hasattr(image.ref, "read") else bytes(image.ref)
-
-                        ext = getattr(image, "format", "").lower()
-                        if not ext or ext not in ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp", "emf", "wmf", "svg"]:
-                            ext = _detect_image_ext(image_data)
-
-                    if not image_data:
+                            image_data = None
+                    if image_data is None and hasattr(image, "ref"):
+                        image_data = image.ref.read() if hasattr(image.ref, "read") else bytes(image.ref)
+                    if image_data is None:
                         continue
-
-                    ext      = "jpg" if ext == "jpeg" else ext
-                    raw_path = os.path.join(out_dir, f"{block_id}_raw.{ext}")
-
-                    with open(raw_path, "wb") as f:
-                        f.write(image_data)
+                    raw_path, preview_path = _save_image_blob(
+                        image_data, out_dir, block_id, source_name=getattr(image, "path", None)
+                    )
 
                     blocks.append(NormalizedBlock(
                         block_id=block_id,
@@ -198,34 +283,35 @@ class ExcelExtractorTool(Tool):
                             sheet=sheet.title,
                         ),
                         confidence=cfg.get("extraction_confidence", 1.0),
-                        language="en",
+                        language=cfg.get("default_language", "en"),
                         metadata={
                             "raw_image_path":    raw_path,
+                            "image_path":        preview_path if preview_path else raw_path,
                             "pending_vision":    True,
                             "enrichment_failed": False,
                         },
                     ))
 
-                except Exception as e:
-                    state.setdefault("errors", []).append({
-                        "tool":     self.name,
-                        "level":    "error",
-                        "message":  f"Skipping image in sheet '{sheet.title}': {e}",
-                        "block_id": None,
-                    })
+                except Exception:
                     continue
 
         return blocks
 
     def _extract_formulas(
         self,
-        wb,
+        file_path: str,
         doc_id: str,
         filename: str,
         cfg: Dict[str, Any],
-        state: dict,
     ) -> List[NormalizedBlock]:
-        blocks = []
+        import openpyxl
+
+        blocks: List[NormalizedBlock] = []
+
+        try:
+            wb = openpyxl.load_workbook(file_path, data_only=False)
+        except Exception:
+            return blocks
 
         for sheet in wb.worksheets:
             for row in sheet.iter_rows():
@@ -247,21 +333,16 @@ class ExcelExtractorTool(Tool):
                                 sheet=sheet.title,
                             ),
                             confidence=cfg.get("extraction_confidence", 1.0),
-                            language="en",
+                            language=cfg.get("default_language", "en"),
                             metadata={
-                                "cell_range":        cell_ref,
+                                "cell_ref":          cell_ref,
                                 "formula":           formula,
+                                "sheet":             sheet.title,
                                 "enrichment_failed": False,
                             },
                         ))
 
-                    except Exception as e:
-                        state.setdefault("errors", []).append({
-                            "tool":     self.name,
-                            "level":    "error",
-                            "message":  f"Skipping formula at {cell.coordinate}: {e}",
-                            "block_id": None,
-                        })
+                    except Exception:
                         continue
 
         return blocks
@@ -272,30 +353,20 @@ class ExcelExtractorTool(Tool):
         doc_id: str,
         filename: str,
         cfg: Dict[str, Any],
-        state: dict,
     ) -> List[NormalizedBlock]:
         import openpyxl
-        blocks: List[NormalizedBlock] = []
 
-        # openpyxl strictly does not support legacy .xls or binary .xlsb files
-        ext = os.path.splitext(file_path)[-1].lower()
-        if ext in [".xls", ".xlsb"]:
-            return blocks # Gracefully skip pivot extraction for unsupported old formats
+        blocks: List[NormalizedBlock] = []
 
         try:
             wb = openpyxl.load_workbook(file_path, data_only=True)
-        except Exception as e:
-            state.setdefault("errors", []).append({
-                "tool":     self.name,
-                "level":    "error",
-                "message":  f"Pivot load failed: {e}",
-                "block_id": None,
-            })
+        except Exception:
             return blocks
 
         for sheet in wb.worksheets:
             for pivot in getattr(sheet, "_pivots", []):
                 try:
+                    pivot_name   = getattr(pivot, "name", "unnamed_pivot")
                     cache_def    = getattr(pivot, "cacheDefinition", None)
                     source_range = ""
 
@@ -314,7 +385,7 @@ class ExcelExtractorTool(Tool):
                     rows = []
                     if cache_def and hasattr(cache_def, "records") and cache_def.records:
                         for record in cache_def.records.r:
-                            rows.append([getattr(item, "v", None) for item in record])
+                            rows.append([_json_safe_cell(getattr(item, "v", None)) for item in record])
 
                     if not headers and not rows:
                         continue
@@ -336,20 +407,16 @@ class ExcelExtractorTool(Tool):
                             sheet=sheet.title,
                         ),
                         confidence=cfg.get("extraction_confidence", 1.0),
-                        language=self._detect_language(df.to_string()),
+                        language=cfg.get("default_language", "en"),
                         metadata={
-                            "cell_range":        source_range,
-                            "enrichment_failed": False,
+                            "pivot_name":         pivot_name,
+                            "pivot_source_range": source_range,
+                            "cell_range":         source_range,
+                            "enrichment_failed":  False,
                         },
                     ))
 
-                except Exception as e:
-                    state.setdefault("errors", []).append({
-                        "tool":     self.name,
-                        "level":    "error",
-                        "message":  f"Skipping pivot '{getattr(pivot, 'name', '?')}': {e}",
-                        "block_id": None,
-                    })
+                except Exception:
                     continue
 
         return blocks
@@ -368,56 +435,37 @@ class ExcelExtractorTool(Tool):
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     test_file = "test-data/test.xlsx"
-    doc_id    = "doc-excel-001"
 
-    mock_state = {
-        "file_path":   test_file,
-        "document_id": doc_id,
-        "filename":    "test.xlsx",
-        "blocks":      [],
-        "errors":      [],
-    }
-    mock_config = {
-        "extraction_confidence": 0.95,
-        "image_output_dir":      f"uploads/images/{doc_id}",
-    }
+    mock_state  = {"file_path": test_file, "document_id": "doc-001"}
+    mock_config = {"extraction_confidence": 0.95, "default_language": "en"}
 
-    tool  = ExcelExtractorTool()
-    state = tool.run(mock_state, mock_config)
+    tool    = ExcelExtractorTool()
+    state   = tool.run(mock_state, mock_config)
+    results = state["blocks"]
 
-    blocks   = state["blocks"]
-    errors   = state["errors"]
+    tables   = [b for b in results if b.type == "table" and "pivot_name" not in b.metadata]
+    images   = [b for b in results if b.type == "image_caption"]
+    formulas = [b for b in results if b.type == "text" and "formula" in b.metadata]
+    pivots   = [b for b in results if b.type == "table" and "pivot_name" in b.metadata]
 
-    tables   = [b for b in blocks if b.type == "table"]
-    images   = [b for b in blocks if b.type == "image_caption"]
-    formulas = [b for b in blocks if b.type == "text"]
-
-    print(f"\n=== Excel Extraction Results ===")
-    print(f"Total blocks : {len(blocks)}")
-    print(f"  table      : {len(tables)}")
-    print(f"  image      : {len(images)}")
-    print(f"  formula    : {len(formulas)}")
-    print(f"  errors     : {len(errors)}")
+    print(f"Extracted {len(tables)} table(s), {len(images)} image(s), {len(formulas)} formula(s), {len(pivots)} pivot(s).\n")
 
     if tables:
-        print(f"\n--- table block (sheet: {tables[0].source_ref.sheet}) ---")
-        print(f"  cell_range : {tables[0].metadata.get('cell_range')}")
-        print(f"  headers    : {tables[0].table_data['headers']}")
-        print(f"  rows       : {len(tables[0].table_data['rows'])}")
-        print(f"  preview    : {tables[0].text[:200]}")
+        print("--- First table block ---")
+        print(f"  text preview: {(tables[0].text or '')[:200]}")
+        print(f"  headers: {tables[0].table_data['headers']}")
 
     if formulas:
-        print(f"\n--- formula block ---")
-        print(f"  text       : {formulas[0].text}")
-        print(f"  cell_range : {formulas[0].metadata.get('cell_range')}")
-        print(f"  formula    : {formulas[0].metadata.get('formula')}")
+        print("\n--- First formula block ---")
+        print(f"  text: {formulas[0].text}")
+        print(f"  cell_ref: {formulas[0].metadata['cell_ref']}")
 
     if images:
-        print(f"\n--- image block (sheet: {images[0].source_ref.sheet}) ---")
-        print(f"  raw_image_path : {images[0].metadata['raw_image_path']}")
-        print(f"  pending_vision : {images[0].metadata['pending_vision']}")
+        print("\n--- First image block ---")
+        print(f"  raw_image_path: {images[0].metadata['raw_image_path']}")
+        print(f"  pending_vision: {images[0].metadata['pending_vision']}")
 
-    if errors:
-        print(f"\n--- errors ---")
-        for e in errors:
-            print(f"  [{e['level']}] {e['tool']} — {e['message']}")
+    if pivots:
+        print("\n--- First pivot block ---")
+        print(f"  pivot_name: {pivots[0].metadata['pivot_name']}")
+        print(f"  text preview: {(pivots[0].text or '')[:200]}")

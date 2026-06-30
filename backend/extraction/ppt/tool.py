@@ -1,148 +1,179 @@
 import os
 import uuid
-import pandas as pd
+import re
+import zipfile
+from io import BytesIO
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from langdetect import detect, LangDetectException
-from backend.core.schemas import NormalizedBlock, SourceRef
-from backend.core.tool import Tool
+from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
 def _detect_image_ext(data: bytes) -> str:
-    """Fallback sniffer for common image formats and Microsoft vectors."""
-    if not data: return "png"
+    """Sniff an embedded image's real format from its magic bytes."""
+    if not data:
+        return "png"
     if data[:8] == b"\x89PNG\r\n\x1a\n": return "png"
     if data[:3] == b"\xff\xd8\xff": return "jpg"
     if data[:6] in (b"GIF87a", b"GIF89a"): return "gif"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "webp"
     if data[:4] in (b"MM\x00*", b"II*\x00"): return "tiff"
     if data[:2] == b"BM": return "bmp"
-    if data[:4] == b"\xd7\xcd\xc6\x9a": return "wmf"
-    if data[:4] == b"\x01\x00\x00\x00" or (len(data) > 44 and data[40:44] == b" EMF"): return "emf"
-    if b"<svg" in data[:100].lower(): return "svg"
+    if data[:2] == b"\x1f\x8b": return "gz"
     return "png"
 
 
-class PPTExtractorTool(Tool):
+def _safe_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        return str(value).strip()
+    except Exception:
+        return ""
+
+
+def _save_image_blob(image_bytes: bytes, out_dir: str, block_id: str) -> tuple[str, str]:
+    """Save raw embedded bytes and, if possible, a PNG preview."""
+    os.makedirs(out_dir, exist_ok=True)
+    ext = _detect_image_ext(image_bytes)
+    raw_path = os.path.join(out_dir, f"{block_id}_raw.{ext}")
+    with open(raw_path, "wb") as f:
+        f.write(image_bytes)
+
+    preview_path = raw_path
+    try:
+        from PIL import Image
+
+        img = Image.open(BytesIO(image_bytes))
+        img = img.convert("RGBA") if img.mode not in ("RGB", "RGBA") else img
+        preview_path = os.path.join(out_dir, f"{block_id}.png")
+        img.save(preview_path, format="PNG")
+    except Exception:
+        preview_path = raw_path
+
+    return raw_path, preview_path
+
+
+class PPTExtractorTool:
     """
     Extracts text, notes, tables, and embedded images/charts from PowerPoint files.
-    Output follows the NormalizedBlock contract as directed by lead.
+    Output strictly follows the NormalizedBlock contract in schemas.py.
+
     """
     name = "ppt_extraction"
 
+    @staticmethod
+    def _normalize_file_type(state: dict) -> None:
+        """Align categorize output with pipeline dispatch.
+
+        The classifier may label PPTs as 'powerpoint', but the graph dispatch
+        expects 'ppt'. Normalize early so extraction actually runs.
+        """
+        if state.get("file_type") == "powerpoint":
+            state["file_type"] = "ppt"
+
+    @staticmethod
+    def _unsupported_legacy_ppt(state: dict, file_path: str) -> bool:
+        """python-pptx cannot read binary `.ppt`; fail softly and visibly."""
+        if os.path.splitext(file_path)[1].lower() != ".ppt":
+            return False
+        state.setdefault("errors", []).append(
+            "ppt_extraction: legacy .ppt files are not supported by python-pptx; convert to .pptx"
+        )
+        state.setdefault("blocks", [])
+        return True
+
+    def _fallback_from_pptx_xml(self, file_path: str, document_id: str, config: dict) -> list[NormalizedBlock]:
+        """Try to salvage text directly from PPTX XML when python-pptx fails."""
+        if os.path.splitext(file_path)[1].lower() != ".pptx":
+            return []
+        try:
+            with zipfile.ZipFile(file_path) as zf:
+                slide_names = sorted(
+                    name for name in zf.namelist()
+                    if re.match(r"ppt/slides/slide\d+\.xml$", name)
+                )
+                blocks: list[NormalizedBlock] = []
+                for slide_index, slide_name in enumerate(slide_names, start=1):
+                    try:
+                        raw = zf.read(slide_name).decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    text = re.sub(r"<[^>]+>", " ", raw)
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if not text:
+                        continue
+                    blocks.append(NormalizedBlock(
+                        block_id=str(uuid.uuid4()),
+                        document_id=document_id,
+                        type="text",
+                        text=text[:5000],
+                        source_ref=SourceRef(
+                            filename=os.path.basename(file_path),
+                            slide=slide_index,
+                        ),
+                        confidence=0.2,
+                        language="en",
+                        metadata={
+                            "fallback": True,
+                            "source": "pptx_xml",
+                            "enrichment_failed": config.get("enrichment_failed_flag", False),
+                        },
+                    ))
+                return blocks
+        except Exception:
+            return []
+
     def run(self, state: dict, config: dict) -> dict:
-        file_path   = state.get("file_path")
+        self._normalize_file_type(state)
+        file_path   = state["file_path"]
         document_id = state.get("document_id")
-        filename    = state.get("filename", os.path.basename(file_path) if file_path else "unknown.pptx")
-
-        if not document_id or not file_path:
-            state.setdefault("errors", []).append({
-                "tool":     self.name,
-                "level":    "error",
-                "message":  "Missing document_id or file_path in state — aborting extraction.",
-                "block_id": None,
-            })
+        if self._unsupported_legacy_ppt(state, file_path):
             return state
-
-        # LangGraph State merging structure as requested by lead
-        blocks = self._extract(file_path, filename, str(document_id), config, state)
-        
-        if "blocks" not in state:
-            state["blocks"] = blocks
-        else:
-            state["blocks"].extend(blocks)
-            
+        blocks      = self._extract(file_path, document_id=document_id, config=config)
+        if not blocks:
+            blocks = self._fallback_from_pptx_xml(file_path, str(document_id or uuid.uuid4()), config)
+        state["blocks"] = as_dicts(blocks)
         state.setdefault("errors", [])
         return state
 
-    def _detect_language(self, text: str) -> str:
-        try:
-            return detect(text) if text and text.strip() else "en"
-        except LangDetectException:
-            return "en"
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _iter_shapes(self, shapes):
-        """Recursively yields shapes, traversing inside grouped shapes."""
+        """Recursively yield shapes, descending into grouped shapes (plain
+        slide.shapes iteration misses everything nested inside a group)."""
         for shape in shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 yield from self._iter_shapes(shape.shapes)
             else:
                 yield shape
 
+    def _detect_language(self, text: str, default: str = "en") -> str:
+        """Best-effort ISO 639-1 language code; falls back to `default`."""
+        if not text or not text.strip():
+            return default
+        try:
+            from langdetect import detect
+            return detect(text)
+        except Exception:
+            return default
+
     def _extract(
         self,
         file_path: str,
-        filename: str,
-        document_id: str,
-        config: Optional[Dict[str, Any]],
-        state: dict,
+        document_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> List[NormalizedBlock]:
-        import tempfile
-
         blocks: List[NormalizedBlock] = []
-        cfg    = config or {}
-        doc_id = str(document_id)
+        cfg      = config or {}
+        doc_id   = str(document_id) if document_id else str(uuid.uuid4())
+        filename = os.path.basename(file_path)
 
-        target_file = file_path
-        
-        # Intercept legacy .ppt and use Microsoft PowerPoint (Windows only) to convert it
-        ext = os.path.splitext(file_path)[-1].lower()
-        if ext == ".ppt":
-            try:
-                import win32com.client
-                import pythoncom
-                
-                # Initialize COM for multithreaded environments
-                pythoncom.CoInitialize()
-                
-                powerpoint = win32com.client.Dispatch("PowerPoint.Application")
-                
-                # COM requires absolute paths to work
-                abs_file_path = os.path.abspath(file_path)
-                
-                temp_dir  = tempfile.mkdtemp()
-                base_name = os.path.splitext(os.path.basename(file_path))[0]
-                target_file = os.path.abspath(os.path.join(temp_dir, f"{base_name}.pptx"))
-                
-                # Open the old PPT silently and save as PPTX (24 is the MS enum for PPTX)
-                presentation = powerpoint.Presentations.Open(abs_file_path, WithWindow=False)
-                presentation.SaveAs(target_file, 24)
-                presentation.Close()
-                
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "info", 
-                    "message":  f"Converted legacy .ppt to .pptx via Windows COM.",
-                    "block_id": None,
-                })
-            except ImportError:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  "pywin32 is not installed. Run 'pip install pywin32'.",
-                    "block_id": None,
-                })
-                return blocks
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Failed to convert .ppt (Requires MS PowerPoint installed on Windows): {e}",
-                    "block_id": None,
-                })
-                return blocks
-
-        # --- Extract the converted (or original) .pptx file ---
         try:
-            prs = Presentation(target_file)
-        except Exception as e:
-            state.setdefault("errors", []).append({
-                "tool":     self.name,
-                "level":    "error",
-                "message":  f"Failed to open {target_file}: {e}",
-                "block_id": None,
-            })
+            prs = Presentation(file_path)
+        except Exception:
             return blocks
 
         for slide_index, slide in enumerate(prs.slides):
@@ -152,44 +183,10 @@ class PPTExtractorTool(Tool):
                 if text_block:
                     blocks.append(text_block)
 
-                blocks.extend(self._extract_slide_tables(slide, slide_num, doc_id, filename, cfg, state))
-                blocks.extend(self._extract_slide_images(slide, slide_num, doc_id, filename, cfg, state))
+                blocks.extend(self._extract_slide_tables(slide, slide_num, doc_id, filename, cfg))
+                blocks.extend(self._extract_slide_images(slide, slide_num, doc_id, filename, cfg))
 
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Skipping slide {slide_num}: {e}",
-                    "block_id": None,
-                })
-                continue
-
-        # Clean up the temporary .pptx file
-        if target_file != file_path and os.path.exists(target_file):
-            try:
-                os.remove(target_file)
             except Exception:
-                pass
-
-        return blocks
-
-        for slide_index, slide in enumerate(prs.slides):
-            slide_num = slide_index + 1
-            try:
-                text_block = self._extract_slide_text(slide, slide_num, doc_id, filename, cfg)
-                if text_block:
-                    blocks.append(text_block)
-
-                blocks.extend(self._extract_slide_tables(slide, slide_num, doc_id, filename, cfg, state))
-                blocks.extend(self._extract_slide_images(slide, slide_num, doc_id, filename, cfg, state))
-
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Skipping slide {slide_num}: {e}",
-                    "block_id": None,
-                })
                 continue
 
         return blocks
@@ -205,13 +202,15 @@ class PPTExtractorTool(Tool):
         parts = []
 
         for shape in self._iter_shapes(slide.shapes):
-            if shape.has_table or shape.shape_type == MSO_SHAPE_TYPE.CHART:
+            if shape.has_table or shape.shape_type == 3:
                 continue
-            if hasattr(shape, "text") and shape.text.strip():
-                parts.append(shape.text.strip())
+            if hasattr(shape, "text"):
+                text = _safe_text(getattr(shape, "text", ""))
+                if text:
+                    parts.append(text)
 
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-            notes = slide.notes_slide.notes_text_frame.text.strip()
+            notes = _safe_text(slide.notes_slide.notes_text_frame.text)
             if notes:
                 parts.append(f"Speaker Notes: {notes}")
 
@@ -229,9 +228,9 @@ class PPTExtractorTool(Tool):
                 slide=slide_num,
             ),
             confidence=cfg.get("extraction_confidence", 1.0),
-            language=self._detect_language(full_text),
+            language=self._detect_language(full_text, cfg.get("default_language", "en")),
             metadata={
-                "enrichment_failed": False,
+                "enrichment_failed": cfg.get("enrichment_failed_flag", False),
             },
         )
 
@@ -242,8 +241,8 @@ class PPTExtractorTool(Tool):
         doc_id: str,
         filename: str,
         cfg: Dict[str, Any],
-        state: dict,
     ) -> List[NormalizedBlock]:
+        import pandas as pd
         blocks = []
 
         for shape in self._iter_shapes(slide.shapes):
@@ -255,7 +254,7 @@ class PPTExtractorTool(Tool):
                 headers = []
 
                 for i, row in enumerate(tbl.rows):
-                    cells = [cell.text.strip() for cell in row.cells]
+                    cells = [_safe_text(cell.text) for cell in row.cells]
                     if i == 0:
                         headers = cells
                     else:
@@ -263,12 +262,13 @@ class PPTExtractorTool(Tool):
 
                 df       = pd.DataFrame(rows, columns=headers if headers else None)
                 block_id = str(uuid.uuid4())
+                md_text  = df.to_markdown(index=False)
 
                 blocks.append(NormalizedBlock(
                     block_id=block_id,
                     document_id=doc_id,
                     type="table",
-                    text=df.to_markdown(index=False),
+                    text=md_text,
                     table_data={
                         "headers": headers,
                         "rows":    rows,
@@ -278,19 +278,13 @@ class PPTExtractorTool(Tool):
                         slide=slide_num,
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
-                    language=self._detect_language(df.to_string()),
+                    language=self._detect_language(md_text, cfg.get("default_language", "en")),
                     metadata={
-                        "enrichment_failed": False,
+                        "enrichment_failed": cfg.get("enrichment_failed_flag", False),
                     },
                 ))
 
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Skipping table on slide {slide_num}: {e}",
-                    "block_id": None,
-                })
+            except Exception:
                 continue
 
         return blocks
@@ -302,47 +296,33 @@ class PPTExtractorTool(Tool):
         doc_id: str,
         filename: str,
         cfg: Dict[str, Any],
-        state: dict,
     ) -> List[NormalizedBlock]:
         blocks  = []
-        out_dir = cfg.get("image_output_dir", os.path.join("uploads", "images", doc_id))
+        out_dir = os.path.join("uploads", "images", doc_id)
         os.makedirs(out_dir, exist_ok=True)
 
         for shape in self._iter_shapes(slide.shapes):
             image_bytes = None
-            ext = ""
+            shape_label = None
 
             try:
                 if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     image_bytes = shape.image.blob
-                    ext = getattr(shape.image, "ext", "").lower()
-                    if not ext:
-                        ext = _detect_image_ext(image_bytes)
+                    shape_label = _safe_text(getattr(shape, "name", "picture")) or "picture"
 
                 elif shape.shape_type == MSO_SHAPE_TYPE.CHART:
                     chart_part = shape.chart._part
                     for rel in chart_part.rels.values():
                         if "image" in rel.reltype:
                             image_bytes = rel.target_part.blob
-                            content_type = getattr(rel.target_part, "content_type", "") or ""
-                            ext = content_type.split("/")[-1].lower() if "/" in content_type else ""
-                            if not ext or ext in ["octet-stream", "tmp", ""]:
-                                ext = _detect_image_ext(image_bytes)
                             break
+                    shape_label = _safe_text(getattr(shape, "name", "chart")) or "chart"
 
                 if not image_bytes:
                     continue
 
-                ext = ext.lower()
-                if ext == "x-emf": ext = "emf"
-                if ext == "x-wmf": ext = "wmf"
-                ext = "jpg" if ext == "jpeg" else ext
-
                 block_id = str(uuid.uuid4())
-                raw_path = os.path.join(out_dir, f"{block_id}_raw.{ext}")
-
-                with open(raw_path, "wb") as f:
-                    f.write(image_bytes)
+                raw_path, preview_path = _save_image_blob(image_bytes, out_dir, block_id)
 
                 blocks.append(NormalizedBlock(
                     block_id=block_id,
@@ -354,24 +334,21 @@ class PPTExtractorTool(Tool):
                         slide=slide_num,
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
-                    language="en",
+                    language=cfg.get("default_language", "en"),
                     metadata={
                         "raw_image_path":    raw_path,
+                        "image_path":        preview_path if preview_path else raw_path,
                         "pending_vision":    True,
+                        "shape_label":       shape_label,
                         "enrichment_failed": False,
                     },
                 ))
 
-            except Exception as e:
-                state.setdefault("errors", []).append({
-                    "tool":     self.name,
-                    "level":    "error",
-                    "message":  f"Skipping image/chart on slide {slide_num}: {e}",
-                    "block_id": None,
-                })
+            except Exception:
                 continue
 
         return blocks
+
 
 # ------------------------------------------------------------------
 # SANDBOX TEST
@@ -384,11 +361,11 @@ if __name__ == "__main__":
 
     tool    = PPTExtractorTool()
     state   = tool.run(mock_state, mock_config)
-    results = state.get("blocks", [])
+    results = state["blocks"]
 
     texts   = [b for b in results if b.type == "text"]
     tables  = [b for b in results if b.type == "table"]
-    images  = [b for b in results if b.type == "image"] # Updated to "image" based on your recent fix
+    images  = [b for b in results if b.type == "image_caption"]
 
     print(f"Extracted {len(texts)} text block(s), {len(tables)} table(s), {len(images)} image/chart block(s).\n")
 

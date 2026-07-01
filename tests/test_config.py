@@ -18,7 +18,7 @@ def test_global_yaml_loads_and_has_pipeline_profiles():
     assert cfg["ingestion"]["steps"][0] == "categorize"
     assert "vision_enrichment" in cfg["ingestion"]["route_gates"]
     assert cfg["query"]["steps"] == ["query_planner", "retrieval", "answerer"]
-    assert cfg["pdf_extractors"]["digital"] == "pdf_digital"
+    assert cfg["pdf_extractors"]["digital"] == "docling_pdf"
     assert cfg["route_extractors"]["cad_route"] == "cad_extract"
     # the categorization block parses (had a missing-space bug)
     assert "manufacturing" in cfg["categorization"]["industry_keywords"]

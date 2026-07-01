@@ -12,9 +12,19 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.embeddings.local_embedder import embed_text  # noqa: E402
+DIM = 256  # test vectors are fixed-dim; storage tests only need round-trip fidelity
 
-DIM = 256  # matches embed_text's default dim
+
+def embed_text(text: str, dim: int = DIM) -> list[float]:
+    """Deterministic fake embedding for storage round-trip tests (no model needed).
+
+    Storage tests exercise persistence + filtering, not semantic quality, so a
+    stable hash-derived unit vector is enough."""
+    import hashlib
+
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    raw = (digest * ((dim // len(digest)) + 1))[:dim]
+    return [b / 255.0 for b in raw]
 
 
 def _pg_up() -> bool:

@@ -385,6 +385,7 @@ type_to_route:
 extractors:
   excel: excel_extraction
   ppt: ppt_extraction
+  docx: word_extraction
 
 # pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
 # sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.

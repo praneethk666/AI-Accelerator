@@ -9,7 +9,9 @@ CAD/circuit instructions in global.yaml), else a generic default.
 
 # Shared output format — keeps captions structured (description + searchable
 # entities) regardless of which focus instruction is used.
-JSON_CONTRACT = """Return ONLY valid JSON, no markdown:
+JSON_CONTRACT = """Output a SINGLE JSON object and nothing else. Do NOT include any
+reasoning, analysis, preamble, or markdown. Your entire response MUST start with {
+and end with }.
 {
   "type": "diagram | flowchart | engineering_drawing | circuit | chart | photo | logo | other",
   "description": "concise, information-rich description (max 3 sentences)",
@@ -17,7 +19,7 @@ JSON_CONTRACT = """Return ONLY valid JSON, no markdown:
   "confidence": 0.0-1.0
 }
 Rules: confidence in [0,1]; description captures the main visual content;
-entities are highly searchable keywords; JSON only."""
+entities are highly searchable keywords; JSON only, no other text."""
 
 DEFAULT_FOCUS = """You are an expert document-understanding assistant. Analyze the
 image region and capture all visible content — diagrams, flowcharts, engineering
@@ -35,5 +37,14 @@ def build_vision_prompt(state: dict, config: dict) -> str:
     """
     prompts = (config.get("vision", {}) or {}).get("prompt", {}) or {}
     route = (state.get("route") or "").strip()
-    focus = prompts.get(route) or prompts.get("default") or DEFAULT_FOCUS
+    industry = (state.get("industry") or "").strip()
+    # Selection priority: route-specific (e.g. cad_route) > industry-specific
+    # (e.g. automotive) > generic default. Lets a customer tune captions per
+    # industry from config without code changes.
+    focus = (
+        prompts.get(route)
+        or prompts.get(industry)
+        or prompts.get("default")
+        or DEFAULT_FOCUS
+    )
     return f"{focus.strip()}\n\n{JSON_CONTRACT}"

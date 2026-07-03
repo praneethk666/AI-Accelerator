@@ -45,6 +45,10 @@ def _make_node(tool: Tool, raw_config: dict):
         entry = {"step": tool.name, "ms": elapsed_ms, "status": status}
         if error:
             entry["error"] = error
+        # a tool may attach a per-step decision report (e.g. docling_pdf's extraction
+        # routing) — surface it on the step metric so it's persisted + visible.
+        if isinstance(result, dict) and result.get("extraction_report") is not None:
+            entry["report"] = result["extraction_report"]
         logger.info("step %s %s %.1fms", tool.name, status, elapsed_ms)
 
         # Return the tool's updates, but own the `metrics` channel: strip any
@@ -75,7 +79,7 @@ def _resolve_steps(config: PipelineConfig, registry: ToolRegistry):
 
     steps: list[str] = []
     extractor_ft: dict[str, str] = {}
-    pdf_kind_of: dict[str, str] = {}
+    pdf_kind_of: dict[str, set[str]] = {}   # tool -> {pdf kinds it serves}
     route_extractor_of: dict[str, set[str]] = {}
 
     for s in config.steps:
@@ -92,11 +96,15 @@ def _resolve_steps(config: PipelineConfig, registry: ToolRegistry):
                 if tool_name in registry:
                     steps.append(tool_name)
                     extractor_ft[tool_name] = file_type
-            # 3. pdf sub-kind extractors (digital/scanned/mixed)
+            # 3. pdf sub-kind extractors (digital/scanned/mixed). One tool may serve
+            # several kinds (e.g. docling_pdf handles all three) — add the node ONCE
+            # and collect every kind it serves, so it runs for any of them.
             for kind, tool_name in pdf_extractors.items():
                 if tool_name in registry:
-                    steps.append(tool_name)
-                    pdf_kind_of[tool_name] = kind
+                    if tool_name not in pdf_kind_of:
+                        steps.append(tool_name)
+                        pdf_kind_of[tool_name] = set()
+                    pdf_kind_of[tool_name].add(kind)
         elif s in registry:  # toggle: listed AND registered
             steps.append(s)
 
@@ -140,12 +148,12 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
                 return False
             return state.get("file_type") == ft
 
-        # pdf sub-kind extractor: file_type==pdf AND detected kind matches
-        kind = pdf_kind_of.get(step)
-        if kind is not None:
+        # pdf sub-kind extractor: file_type==pdf AND detected kind is one this tool serves
+        kinds = pdf_kind_of.get(step)
+        if kinds is not None:
             if route in override_routes:
                 return False
-            return state.get("file_type") == "pdf" and state.get("pdf_kind") == kind
+            return state.get("file_type") == "pdf" and state.get("pdf_kind") in kinds
 
         # route gate: gated step runs only for its allowed routes; ungated always runs
         allowed = gates.get(step)
@@ -194,8 +202,13 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
     return sg.compile()
 
 
-def run_pipeline(tools, state: PipelineState, config) -> PipelineState:
-    """Build + run in one call. Accepts dicts (legacy) or a registry/PipelineConfig."""
+def run_pipeline(tools, state: PipelineState, config, on_step=None) -> PipelineState:
+    """Build + run in one call. Accepts dicts (legacy) or a registry/PipelineConfig.
+
+    on_step: optional callback invoked as on_step(entry, snapshot) after EACH step
+    completes, where entry is the step's {step, ms, status} metric. Lets the API
+    report live progress while ingestion runs (the UI polls it). When omitted the
+    graph is invoked normally (no streaming overhead)."""
     registry = tools if isinstance(tools, ToolRegistry) else _registry_from_dict(tools)
     cfg = (
         config
@@ -203,7 +216,33 @@ def run_pipeline(tools, state: PipelineState, config) -> PipelineState:
         else PipelineConfig.from_dict(config)
     )
     graph = build_pipeline(registry, cfg)
-    return graph.invoke(state)
+
+    from backend.core import usage  # per-run LLM/vision token accounting
+
+    if on_step is None:
+        with usage.using_sink() as sink:
+            final = graph.invoke(state)
+        if isinstance(final, dict):
+            final["token_usage"] = sink.totals()
+        return final
+
+    # stream_mode="values" yields the full accumulated state after each step;
+    # the metrics channel grows by one entry per step, so emit the new ones.
+    final = state
+    seen = 0
+    with usage.using_sink() as sink:
+        for snapshot in graph.stream(state, stream_mode="values"):
+            final = snapshot
+            metrics = snapshot.get("metrics", []) or []
+            while seen < len(metrics):
+                try:
+                    on_step(metrics[seen], snapshot)
+                except Exception:  # progress reporting must never break ingestion
+                    pass
+                seen += 1
+    if isinstance(final, dict):
+        final["token_usage"] = sink.totals()
+    return final
 
 
 def _registry_from_dict(tools: dict) -> ToolRegistry:

@@ -20,7 +20,17 @@ CREATE TABLE IF NOT EXISTS documents (
     confidence    REAL,                         -- categorize confidence (UI shows a bar)
     status        TEXT DEFAULT 'processing',   -- processing | ready | failed
     errors        JSONB DEFAULT '[]',
-    created_at    TIMESTAMP DEFAULT NOW()
+    -- live ingestion progress (DB is the single source of truth; the API reads
+    -- these, survives restarts + works across workers — no in-memory state).
+    current_step    TEXT,                       -- step running now (or 'done')
+    metrics         JSONB DEFAULT '[]',         -- [{step, ms, status}] per step, accumulated
+    token_usage     JSONB,                      -- {input_tokens, output_tokens, by_kind, ...}
+    indexed_tokens  INTEGER,                     -- tokens of text indexed
+    chunk_count     INTEGER,                     -- chunks produced
+    progress        REAL DEFAULT 0,             -- 0..1 (completed_steps / total_steps)
+    total_steps     INTEGER,
+    created_at    TIMESTAMP DEFAULT NOW(),
+    updated_at    TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -33,6 +43,18 @@ CREATE TABLE IF NOT EXISTS chunks (
     table_data    JSONB,        -- non-null only for table chunks
     image_path    TEXT,         -- non-null only for image_caption chunks
     created_at    TIMESTAMP DEFAULT NOW()
+);
+
+-- Rendered full-page images, one per PDF page that produced chunks. Lets the
+-- answerer/agent pull up the whole page and hand it to the vision model when a
+-- retrieved chunk is ambiguous (visual grounding / "show me the source").
+CREATE TABLE IF NOT EXISTS document_pages (
+    document_id UUID REFERENCES documents(document_id) ON DELETE CASCADE,
+    page        INTEGER NOT NULL,
+    image_path  TEXT NOT NULL,    -- served at /pages/<doc_id>/p{N}.jpg
+    width       INTEGER,
+    height      INTEGER,
+    PRIMARY KEY (document_id, page)
 );
 
 CREATE TABLE IF NOT EXISTS conversations (

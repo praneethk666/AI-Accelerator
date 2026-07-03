@@ -1,184 +1,211 @@
-"""
-backend/extraction/cad/tool.py
-──────────────────────────────
-CADExtractionTool — vision-based extraction for CAD drawings and circuit diagrams.
+"""CADExtractionTool — vision extraction for CAD drawings and circuit/schematic PDFs.
 
-CAD and circuit PDFs have no readable text layer — every page is a technical image.
-This tool renders each PDF page to an image and calls describe_image() to produce
-a structured description. That description becomes the chunk content.
+CAD and circuit sheets are technical images (usually no useful text layer). This tool
+renders each page and asks the VLM to extract structured regions (title block, parts /
+revision / wire-list tables, drawing views, notes). It serves both routes:
+    cad_route     -> document_type == "cad_drawing"      (mechanical prompt)
+    circuit_route -> document_type == "circuit_diagram"  (electrical prompt)
 
-  run(state, config)
-    READS  state["file_path"]      str  — path to the PDF
-           state["document_type"]  str  — "cad_drawing" | "circuit_diagram"
-    WRITES state["blocks"]         list[dict] — one NormalizedBlock-compatible
-                                               dict per page
-    ERRORS raises on describe_image failure or empty response — do not
-           produce empty blocks (ChunkTool would index empty content)
+Two things make it robust to REAL industrial drawings (validated need: Toyoda/JTEKT
+ANSI-D sheets, 1000+ page schematic sets):
 
-Covers both routes:
-    cad_route     → document_type == "cad_drawing"
-    circuit_route → document_type == "circuit_diagram"
+  1. LARGE-FORMAT TILING. An A2/A3/E-size sheet sent whole is downsampled until the tiny
+     dimensions, part numbers and reference designators are illegible. For oversized
+     pages we render high-DPI and TILE (backend.extraction.large_format), transcribe
+     each tile, and merge — so detail survives. Normal-size pages use the single-shot
+     region-JSON prompt (precise per-region boxes + table_data).
 
-Critical: pending_vision is always set False — this tool IS the vision step.
-VisionEnrichmentTool (Vishal) must not overwrite these descriptions.
+  2. FAULT TOLERANCE + COST CAP. One unreadable/garbled page must NOT kill a 1000-page
+     document, so every page is wrapped: on any failure we log and skip (or fall back to
+     a plain text block) instead of raising. extraction.cad.max_pages bounds VLM calls.
 
-Schema note:
-    Output is NormalizedBlock-compatible with two additional fields:
-        page_number  int  — 1-based page index
-        document_type str — propagated from state for downstream filtering
-
-    These extra fields are flagged here for discussion before PR merge.
-    ChunkTool (Manoj) must be aware that blocks from this tool carry
-    page_number and document_type at the top level.
+Critical: pending_vision is always False — this tool IS the vision step;
+VisionEnrichmentTool must not re-caption these.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import uuid
-from typing import Any
+
+import fitz
+
+from backend.core import prompts
 from backend.core.tool import PipelineState
 from backend.core.vision_client import describe_image
 from backend.extraction.cad.drawing_prompt import PROMPTS
-import json
+
 logger = logging.getLogger(__name__)
 
 
-class CADExtractionTool:
-    """
-    Vision-based extraction for CAD drawings and circuit diagrams.
+def _block(document_id, page, filename, btype, text, table_data=None, bbox=None,
+           confidence=0.8, metadata=None) -> dict:
+    md = {"source": "cad_extract", "pending_vision": False}
+    if metadata:
+        md.update(metadata)
+    return {
+        "block_id": str(uuid.uuid4()),
+        "document_id": document_id,
+        "type": btype,
+        "text": text,
+        "table_data": table_data,
+        "source_ref": {"filename": filename, "page": page,
+                       "sheet": None, "slide": None, "bbox": bbox},
+        "confidence": confidence,
+        "language": "en",
+        "metadata": md,
+    }
 
-    State contract:
-        READS  file_path      str  ← path to the PDF
-               document_type  str  ← "cad_drawing" | "circuit_diagram"
-        WRITES blocks         list ← one block per page
-    """
+
+def _vb_to_block(vb: dict, document_id, page, filename) -> dict | None:
+    if not isinstance(vb, dict):
+        return None
+    text = (vb.get("text") or "").strip()
+    if not text:
+        return None
+    return _block(
+        document_id, page, filename,
+        vb.get("type") or "text", text,
+        table_data=vb.get("table_data"),
+        bbox=(vb.get("source_ref") or {}).get("bbox") or vb.get("bbox"),
+        confidence=float(vb.get("confidence", 0.7) or 0.7),
+        metadata=vb.get("metadata") if isinstance(vb.get("metadata"), dict) else None,
+    )
+
+
+def _region_blocks(raw: str, document_id, page, filename) -> list[dict]:
+    """Parse the VLM's region-JSON reply into blocks. Robust to the dense-page failure
+    mode where the JSON array is truncated/malformed (hit the token limit): we first try
+    a clean parse, then SALVAGE every complete {...} block object individually (so a cut
+    array still yields its complete regions), and only as a last resort emit the cleaned
+    text. A single bad page never aborts the document and never leaks JSON into a chunk."""
+    import json as _json
+    from backend.vision.block_builder import _extract_json, _balanced_objects, _strip_fences
+    blocks: list[dict] = []
+
+    data = _extract_json(raw)
+    items = data if isinstance(data, list) else (
+        data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list)
+        else None)
+    if items:
+        blocks = [b for b in (_vb_to_block(vb, document_id, page, filename) for vb in items) if b]
+
+    if not blocks:
+        # Salvage: parse each balanced {...} object (recovers a truncated/partial array).
+        for obj in _balanced_objects(raw or ""):
+            try:
+                vb = _json.loads(obj)
+            except Exception:
+                continue
+            b = _vb_to_block(vb, document_id, page, filename)
+            if b:
+                blocks.append(b)
+
+    if not blocks:
+        # Nothing structured parsed — keep the content as plain text (fences stripped),
+        # but only if it isn't itself JSON scaffolding, so no '{"type":...}' leaks in.
+        txt = _strip_fences(raw).strip()
+        if txt and not txt.lstrip().startswith(("[", "{")):
+            blocks.append(_block(document_id, page, filename, "text", txt, confidence=0.5))
+    return blocks
+
+
+def _save_page_image(page, document_id, page_no, filename, dpi=150) -> dict | None:
+    """Render the whole sheet to a JPEG under uploads/images/<doc>/ and return an
+    image_caption block referencing it (visual grounding for the drawing). Best-effort."""
+    try:
+        img_dir = os.path.join("uploads", "images", document_id)
+        os.makedirs(img_dir, exist_ok=True)
+        bid = str(uuid.uuid4())
+        pix = page.get_pixmap(dpi=dpi)
+        with open(os.path.join(img_dir, f"{bid}.jpg"), "wb") as f:
+            f.write(pix.tobytes("jpeg", jpg_quality=80))
+        b = _block(document_id, page_no, filename, "image_caption", "[drawing]")
+        b["block_id"] = bid
+        b["metadata"]["image_path"] = f"/images/{document_id}/{bid}.jpg"
+        return b
+    except Exception as e:
+        logger.debug("cad_extract: page-image save failed p%s (%s)", page_no, e)
+        return None
+
+
+class CADExtractionTool:
+    """Vision-based extraction for CAD drawings and circuit diagrams (adaptive +
+    fault-tolerant)."""
 
     name: str = "cad_extract"
 
     def run(self, state: PipelineState, config: dict) -> dict:
-        file_path:     str = state["file_path"]
-        document_type: str = state["document_type"]
-        document_id:   str = state["document_id"]
-        dpi: int = config["vision"]["dpi"]
+        file_path = state["file_path"]
+        document_type = state.get("document_type") or "cad_drawing"
+        document_id = state["document_id"]
+        filename = os.path.basename(file_path)
 
-        prompt = PROMPTS[document_type]
+        prompt = PROMPTS.get(document_type)
         if prompt is None:
             raise ValueError(
                 f"CADExtractionTool: unsupported document_type {document_type!r}. "
                 "Expected 'cad_drawing' or 'circuit_diagram'."
             )
+        cadcfg = (config.get("extraction") or {}).get("cad") or {}
+        cap = int(cadcfg.get("max_pages", 0) or 0)          # 0 = unlimited VLM pages
+        dpi = int((config.get("vision") or {}).get("dpi", 150))
 
-        page_images = _render_pdf_pages(file_path, dpi=dpi)
-        if not page_images:
+        from backend.extraction.page_router import profile_page, classify_page, should_tile
+
+        try:
+            doc = fitz.open(file_path)
+        except Exception as e:
+            raise ValueError(f"CADExtractionTool: cannot open {file_path!r}: {e}")
+        if doc.page_count == 0:
+            raise ValueError(f"CADExtractionTool: PDF has no pages: {file_path!r}")
+
+        blocks: list[dict] = []
+        vlm_pages = 0
+        try:
+            for i in range(doc.page_count):
+                pg = i + 1
+                page = doc[i]
+                if cap and vlm_pages >= cap:
+                    logger.warning("cad_extract: hit max_pages=%d cap at page %d; "
+                                   "remaining pages skipped", cap, pg)
+                    break
+                try:
+                    page_class = classify_page(profile_page(page), document_type)
+                    if should_tile(page, page_class, config):
+                        # Oversized sheet: tile so small text/designators stay legible.
+                        from backend.extraction.large_format import transcribe_large_page
+                        md = transcribe_large_page(page, config, prompts.SCHEMATIC_TILE)
+                        from backend.extraction.vision_ocr import markdown_to_blocks
+                        page_blocks = markdown_to_blocks(md, document_id, pg, filename)
+                    else:
+                        # Normal sheet: single-shot region-JSON extraction (precise boxes).
+                        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"),
+                                             prompt, config)
+                        page_blocks = _region_blocks(raw, document_id, pg, filename)
+                    if page_blocks:
+                        vlm_pages += 1
+                        blocks.extend(page_blocks)
+                        img = _save_page_image(page, document_id, pg, filename, dpi=dpi)
+                        if img:
+                            blocks.append(img)
+                    else:
+                        logger.warning("cad_extract: page %d produced no blocks", pg)
+                    logger.info("cad_extract: page %d/%d -> %d block(s) [%s, %s]",
+                                pg, doc.page_count, len(page_blocks), document_type, page_class)
+                except Exception as e:
+                    # One bad page must not abort a 1000-page document.
+                    logger.warning("cad_extract: page %d failed (%s); skipping", pg, e)
+                    continue
+        finally:
+            doc.close()
+
+        if not blocks:
             raise ValueError(
-                f"CADExtractionTool: no pages rendered from {file_path!r}. "
-                "File may be empty or corrupt."
-            )
-
-        blocks = []
-        for page_number, image_bytes in enumerate(page_images, start=1):
-            description = describe_image(image_bytes, prompt, config)
-
-            if not description or not description.strip():
-                raise ValueError(
-                    f"CADExtractionTool: describe_image returned empty for "
-                    f"{file_path!r} page {page_number}. "
-                    "Cannot produce an empty block."
-                )
-            cleaned = clean_json_response(description)
-            print(f"Cleaned JSON for {file_path} page {page_number}:\n{cleaned}\n")
-            vision_blocks = json.loads(cleaned)
-            for vb in vision_blocks:
-
-                block = {
-                "block_id":     str(uuid.uuid4()),
-                "document_id":  document_id,
-                "type":         vb["type"],       # "cad_drawing" | "circuit_diagram"
-                "text":         vb["text"],        # ⚠ new field — see schema note above
-                # "document_type": document_type,      # ⚠ new field — see schema note above
-                "source_ref": {
-                    "filename": file_path.split("/")[-1],
-                    "page":     page_number,
-                    "bbox":     vb["bbox"],  # optional
-                },
-                "table_data":     vb["table_data"],
-                "image_path":     None,
-                "pending_vision": False,             # critical — do not set True
-                "language":       "en",
-                "confidence":     vb["confidence"],
-                "metadata":       vb["metadata"],   # reserved for future use
-            }
-                blocks.append(block)
-            logger.info(
-                "CADExtractionTool: page %d/%d extracted (%d chars) [%s]",
-                page_number, len(page_images), len(description), document_type,
-            )
-
+                f"CADExtractionTool: no blocks extracted from {file_path!r} "
+                "(all pages failed). Check the VLM provider/key.")
         state["blocks"] = blocks
-        logger.info(
-            "CADExtractionTool: wrote %d blocks for %r",
-            len(blocks), file_path,
-        )
+        logger.info("CADExtractionTool: wrote %d blocks for %r (%d VLM pages)",
+                    len(blocks), filename, vlm_pages)
         return state
-
-
-# ── PDF rendering ─────────────────────────────────────────────────────────────
-
-def _render_pdf_pages(file_path: str, dpi: int) -> list[bytes]:
-    """
-    Render each page of a PDF to PNG bytes using pymupdf (fitz).
-
-    DPI 150 balances detail vs token cost for vision API calls.
-    Raise immediately if the file cannot be opened — don't silently
-    return an empty list.
-    """
-    try:
-        import fitz  # pymupdf
-    except ImportError as e:
-        raise ImportError(
-            "pymupdf required for CAD extraction: pip install pymupdf"
-        ) from e
-
-    doc = fitz.open(file_path)
-    if doc.page_count == 0:
-        raise ValueError(f"PDF has no pages: {file_path!r}")
-
-    pages: list[bytes] = []
-    mat = fitz.Matrix(dpi / 72, dpi / 72)   # 72 dpi is fitz default
-
-    for page in doc:
-        pix  = page.get_pixmap(dpi=dpi, alpha=False)
-        pages.append(pix.tobytes("png"))
-
-    doc.close()
-    return pages
-import re
-
-def clean_json_response(raw: str) -> str:
-    raw = raw.strip()
-
-    raw = raw.replace("```json", "")
-    raw = raw.replace("```", "")
-
-    # find array beginning followed by {
-    m = re.search(r"\[\s*\{", raw)
-
-    if m:
-        start = m.start()
-    else:
-        # fallback for single object
-        m = re.search(r"\{\s*\"type\"", raw)
-
-        if not m:
-            raise ValueError("No JSON found")
-
-        start = m.start()
-
-    raw = raw[start:]
-
-    end_arr = raw.rfind("]")
-    end_obj = raw.rfind("}")
-
-    end = max(end_arr, end_obj)
-
-    return raw[:end + 1]

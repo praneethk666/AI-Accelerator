@@ -72,6 +72,44 @@ def _split_text(text: str, size: int, overlap: int) -> list[str]:
     return chunks
 
 
+_SEMANTIC_CHUNKER = None
+_SEMANTIC_DISABLED = False
+
+
+def _get_semantic_chunker(size: int, model: str):
+    """Cache one chonkie SemanticChunker. Returns None if chonkie/model unavailable
+    (caller falls back to token windowing)."""
+    global _SEMANTIC_CHUNKER, _SEMANTIC_DISABLED
+    if _SEMANTIC_DISABLED:
+        return None
+    if _SEMANTIC_CHUNKER is None:
+        try:
+            from chonkie import SemanticChunker
+            _SEMANTIC_CHUNKER = SemanticChunker(embedding_model=model, chunk_size=size)
+        except Exception:
+            _SEMANTIC_DISABLED = True
+            return None
+    return _SEMANTIC_CHUNKER
+
+
+def _split(text: str, size: int, overlap: int, strategy: str, model: str) -> list[str]:
+    """Split a text stream into chunks. 'semantic' uses chonkie (boundaries at topic
+    shifts); anything else (or any failure) uses the token sliding window."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if strategy == "semantic":
+        chunker = _get_semantic_chunker(size, model)
+        if chunker is not None:
+            try:
+                pieces = [c.text.strip() for c in chunker(text) if getattr(c, "text", "").strip()]
+                if pieces:
+                    return pieces
+            except Exception:
+                pass  # fall through to token windowing
+    return _split_text(text, size, overlap)
+
+
 def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
     chunk = {
         "chunk_id": str(uuid.uuid4()),
@@ -93,44 +131,78 @@ def chunk_blocks(
     size: int = DEFAULT_SIZE,
     overlap: int = DEFAULT_OVERLAP,
     document_id: str | None = None,
+    strategy: str = "recursive",
+    semantic_model: str = "minishlab/potion-base-32M",
+    section_aware: bool = True,
 ) -> list[dict]:
-    """Turn NormalizedBlock dicts into Chunk dicts."""
+    """Turn NormalizedBlock dicts into Chunk dicts.
+
+    Consecutive text blocks are merged into one stream BEFORE splitting, so a
+    procedure that flows across a page break (or a stripped header/footer) stays
+    continuous instead of fragmenting at block boundaries. Tables and image captions
+    are atomic — they flush the stream and emit their own chunk (citations intact).
+
+    Layout-aware (section_aware): a HEADING starts a new section — it flushes the
+    previous section and leads the next chunk's text — so chunks align to document
+    sections instead of spanning several. Each chunk carries source_ref["section"]
+    (the active heading), which enrich_chunks promotes to a searchable tag. When
+    section_aware is False, headings are merged inline as soft markers (legacy)."""
     chunks: list[dict] = []
-    pending_heading = ""  # merged into the next text block
+    buf_parts: list[str] = []     # accumulated consecutive text, across pages
+    buf_ref = None                # source_ref of the first buffered block (cite start)
+    current_section = None        # active heading -> tags the section's chunks
+
+    def _ref(ref):
+        # attach the active section without clobbering one an extractor already set
+        if not section_aware or not current_section:
+            return ref
+        r = dict(ref or {})
+        r.setdefault("section", current_section)
+        return r
+
+    def flush():
+        nonlocal buf_parts, buf_ref
+        stream = "\n".join(p for p in buf_parts if p).strip()
+        if stream:
+            for piece in _split(stream, size, overlap, strategy, semantic_model):
+                chunks.append(_make_chunk({"type": "text", "source_ref": _ref(buf_ref)},
+                                          piece, document_id))
+        buf_parts, buf_ref = [], None
+
     for block in blocks:
         btype = block.get("type")
         if btype not in CONTENT_TYPES:
             continue
         text = (block.get("text") or "").strip()
 
-        if btype == "heading":
-            pending_heading = (
-                (pending_heading + "\n\n" + text).strip() if pending_heading else text
-            )
+        if section_aware and btype == "heading" and text:
+            flush()                                  # close the previous section
+            current_section = text
+            buf_ref = block.get("source_ref")
+            buf_parts.append(text)                   # lead the section with its title
             continue
 
-        if btype in ATOMIC_TYPES:  # table / image_caption -> atomic
-            # an image still pending vision was never described — its text is a
-            # placeholder ("[Image - awaiting vision enrichment]"), not content.
-            # Don't index placeholders; vision_enrichment clears pending_vision
-            # and writes the real caption on the blocks it enriches.
+        if btype in ATOMIC_TYPES:  # table / image_caption -> atomic, breaks the stream
+            flush()
+            # an image still pending vision was never described — its placeholder
+            # text isn't content; vision_enrichment writes the real caption.
             if btype == "image_caption" and (block.get("metadata") or {}).get(
                 "pending_vision"
             ):
                 continue
             if text or block.get("table_data"):
-                chunks.append(_make_chunk(block, text, document_id))
+                b = dict(block)
+                b["source_ref"] = _ref(block.get("source_ref"))
+                chunks.append(_make_chunk(b, text, document_id))
             continue
 
-        # text block: prepend any pending heading, then split
-        if pending_heading:
-            text = f"{pending_heading}\n\n{text}".strip()
-            pending_heading = ""
-        for piece in _split_text(text, size, overlap):
-            chunks.append(_make_chunk(block, piece, document_id))
+        # text (and headings when not section_aware) -> accumulate into the stream
+        if text:
+            if buf_ref is None:
+                buf_ref = block.get("source_ref")
+            buf_parts.append(text)
 
-    if pending_heading:  # trailing heading with no following text
-        chunks.append(_make_chunk({"type": "heading"}, pending_heading, document_id))
+    flush()
     return chunks
 
 
@@ -144,6 +216,10 @@ class ChunkTool:
             size=cfg.get("size", DEFAULT_SIZE),
             overlap=cfg.get("overlap", DEFAULT_OVERLAP),
             document_id=state.get("document_id"),
+            strategy=cfg.get("strategy", "recursive"),
+            semantic_model=config.get("embeddings", {}).get(
+                "chunking_model", "minishlab/potion-base-32M"),
+            section_aware=cfg.get("section_aware", True),
         )
         state.setdefault("chunks", []).extend(chunks)
         return state

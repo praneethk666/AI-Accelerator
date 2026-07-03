@@ -9,10 +9,36 @@
 
 from __future__ import annotations
 
+import datetime
+import decimal
+import json
 import os
 
 import psycopg
 from psycopg.types.json import Json
+
+
+def _json_default(o):
+    """Make pandas/Excel cell values JSON-safe.
+
+    Excel table_data rows come from pandas, so they can hold Timestamp/datetime,
+    Decimal, or numpy scalars — none of which the stdlib JSON encoder handles.
+    Without this, writing a table chunk raises and the whole row fails to store.
+    """
+    if isinstance(o, (datetime.datetime, datetime.date, datetime.time)):
+        return o.isoformat()
+    if isinstance(o, decimal.Decimal):
+        return float(o)
+    if hasattr(o, "item"):      # numpy scalar (int64/float64/bool_)
+        return o.item()
+    if hasattr(o, "tolist"):    # numpy array
+        return o.tolist()
+    return str(o)
+
+
+def _Json(value):
+    """psycopg Json wrapper with the pandas/datetime-safe encoder."""
+    return Json(value, dumps=lambda o: json.dumps(o, default=_json_default))
 
 
 def dsn_from_env() -> str:
@@ -63,9 +89,9 @@ class PostgresStore:
                 chunk.get("document_id"),
                 chunk.get("text"),
                 chunk.get("token_count", 0),
-                Json(chunk.get("tags", {})),
-                Json(chunk.get("source_ref")),
-                Json(chunk.get("table_data")) if chunk.get("table_data") else None,
+                _Json(chunk.get("tags", {})),
+                _Json(chunk.get("source_ref")),
+                _Json(chunk.get("table_data")) if chunk.get("table_data") else None,
                 chunk.get("image_path"),
             ),
         )
@@ -112,19 +138,63 @@ class PostgresStore:
             (document_id, filename, file_type, file_path),
         )
 
-    def finalize_document(
-        self, document_id: str, *, document_type, industry, route, confidence,
-        status, errors
+    def update_progress(
+        self, document_id: str, *, metrics, current_step, progress,
+        total_steps=None, route=None, confidence=None,
+        document_type=None, industry=None,
     ) -> None:
-        """Record categorization results + final status after the pipeline runs."""
+        """Persist live per-step progress mid-pipeline. Called after each step so the
+        DB is the single source of truth the API serves (no in-memory state). COALESCE
+        keeps already-known fields (e.g. route set by categorize) from being nulled by
+        later steps that don't carry them."""
         self.conn.execute(
             """
-            UPDATE documents SET document_type = %s, industry = %s, route = %s,
-                                 confidence = %s, status = %s, errors = %s
-            WHERE document_id = %s
+            UPDATE documents SET
+                metrics       = %s,
+                current_step  = %s,
+                progress      = %s,
+                total_steps   = COALESCE(%s, total_steps),
+                route         = COALESCE(%s, route),
+                confidence    = COALESCE(%s, confidence),
+                document_type = COALESCE(%s, document_type),
+                industry      = COALESCE(%s, industry),
+                updated_at    = NOW()
+            WHERE document_id::text = %s
+            """,
+            (_Json(metrics or []), current_step, progress, total_steps, route,
+             confidence, document_type, industry, document_id),
+        )
+
+    def finalize_document(
+        self, document_id: str, *, document_type, industry, route, confidence,
+        status, errors, metrics=None, token_usage=None, indexed_tokens=None,
+        chunk_count=None,
+    ) -> None:
+        """Record categorization results, final aggregates, and terminal status after
+        the pipeline runs — the durable end-state the API reports."""
+        self.conn.execute(
+            """
+            UPDATE documents SET
+                document_type  = %s,
+                industry       = %s,
+                route          = %s,
+                confidence     = %s,
+                status         = %s,
+                errors         = %s,
+                metrics        = COALESCE(%s::jsonb, metrics),
+                token_usage    = %s,
+                indexed_tokens = %s,
+                chunk_count    = %s,
+                current_step   = 'done',
+                progress       = 1.0,
+                updated_at     = NOW()
+            WHERE document_id::text = %s
             """,
             (document_type, industry, route, confidence, status,
-             Json(errors or []), document_id),
+             _Json(errors or []),
+             _Json(metrics) if metrics is not None else None,
+             _Json(token_usage) if token_usage is not None else None,
+             indexed_tokens, chunk_count, document_id),
         )
 
     def list_documents(self) -> list[dict]:
@@ -138,18 +208,76 @@ class PostgresStore:
         return [_document_row(r) for r in rows]
 
     def get_document(self, document_id: str) -> dict | None:
+        """Full document + live progress (the API's progress source of truth)."""
         row = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at
+                   route, confidence, status, created_at,
+                   current_step, metrics, token_usage, indexed_tokens,
+                   chunk_count, progress, total_steps, updated_at, errors
             FROM documents WHERE document_id::text = %s
             """,
             (document_id,),
         ).fetchone()
-        return _document_row(row) if row else None
+        if not row:
+            return None
+        doc = _document_row(row)
+        doc.update({
+            "current_step": row[9],
+            "metrics": row[10] or [],
+            "token_usage": row[11],
+            "indexed_tokens": row[12],
+            "chunk_count": row[13],
+            "chunks": row[13],            # alias the UI/older callers expect
+            "progress": row[14],
+            "total_steps": row[15],
+            "updated_at": row[16].isoformat() if row[16] else None,
+            "errors": row[17] or [],
+        })
+        return doc
+
+    # ── document pages (rendered full-page images for visual grounding) ─────────
+
+    def insert_page_image(
+        self, document_id: str, page: int, image_path: str,
+        width=None, height=None,
+    ) -> None:
+        """Record one rendered page image (upsert by document_id+page)."""
+        self.conn.execute(
+            """
+            INSERT INTO document_pages (document_id, page, image_path, width, height)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (document_id, page) DO UPDATE SET
+                image_path = EXCLUDED.image_path,
+                width = EXCLUDED.width, height = EXCLUDED.height
+            """,
+            (document_id, page, image_path, width, height),
+        )
+
+    def list_page_images(self, document_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT page, image_path, width, height FROM document_pages
+            WHERE document_id::text = %s ORDER BY page
+            """,
+            (document_id,),
+        ).fetchall()
+        return [{"page": r[0], "image_path": r[1], "width": r[2], "height": r[3]}
+                for r in rows]
+
+    def get_page_image(self, document_id: str, page: int) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT page, image_path, width, height FROM document_pages
+            WHERE document_id::text = %s AND page = %s
+            """,
+            (document_id, page),
+        ).fetchone()
+        return ({"page": row[0], "image_path": row[1], "width": row[2], "height": row[3]}
+                if row else None)
 
     def delete_document(self, document_id: str) -> None:
-        # chunks cascade via the FK ON DELETE CASCADE
+        # chunks + document_pages cascade via the FK ON DELETE CASCADE
         self.conn.execute(
             "DELETE FROM documents WHERE document_id::text = %s", (document_id,)
         )

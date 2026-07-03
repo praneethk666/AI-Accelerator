@@ -53,6 +53,36 @@ from .prompts import VISION_PROMPT, build_vision_prompt   # route-aware prompt b
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _page_text_context(state, page_number, max_chars: int = 1200) -> str:
+    """Text already extracted from the SAME page — fed to the captioner so it sees the
+    figure in context (part numbers, model names, the figure's own caption line)
+    instead of in isolation. Pulled from the text/table blocks for that page."""
+    if page_number is None:
+        return ""
+    parts = []
+    for b in (state.get("blocks") or []):
+        if b.get("type") not in ("text", "heading", "table"):
+            continue
+        ref = b.get("source_ref") or {}
+        if ref.get("page") != page_number:
+            continue
+        t = (b.get("text") or "").strip()
+        if t:
+            parts.append(t)
+    return "\n".join(parts).strip()[:max_chars]
+
+
+def _prompt_with_context(base: str, state, page_number) -> str:
+    ctx = _page_text_context(state, page_number)
+    if not ctx:
+        return base
+    return (base + "\n\nSURROUNDING PAGE TEXT (context — may name the part numbers, "
+            "model, or this figure's caption; use it to describe the image precisely, "
+            "but describe ONLY what the image shows):\n" + ctx)
+
+
 class VisionEnrichmentTool(Tool):
 
     name = "vision_enrichment"
@@ -125,17 +155,24 @@ class VisionEnrichmentTool(Tool):
 
                 if kind == "scanned" and images:
 
-                    logger.debug(f"\n📄 Page {page_number}: scanned + images → FULL PAGE")
+                    # Crop each DETECTED region (figure/diagram) instead of sending the
+                    # whole page, so the caption describes the actual image — same as
+                    # the digital path below. Whole-page captions were too coarse
+                    # ("Cover page of a manual…" rather than describing the figure).
 
-                    w, h = page_dims[page_number]
+                    for img in images:
 
-                    bbox = [0, 0, w, h]
+                        if not img.get("significant", False):
 
-                    image_tasks.append((cropper, state, page_number, bbox, dpi,
+                            continue
 
-                                        timeout_s, vision_cfg, hash_to_first_block,
+                        bbox = img["bbox"]
 
-                                        hash_occurrence_count, debug_dir, blocks, errors, debug))
+                        image_tasks.append((cropper, state, page_number, bbox, dpi,
+
+                                            timeout_s, vision_cfg, hash_to_first_block,
+
+                                            hash_occurrence_count, debug_dir, blocks, errors, debug))
 
                 elif kind == "scanned" and not images:
 
@@ -175,13 +212,19 @@ class VisionEnrichmentTool(Tool):
 
                                                 hash_occurrence_count, debug_dir, blocks, errors, debug))
  
+            from backend.core import usage as _usage
+
             with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
 
                 futures = []
 
                 for task in image_tasks:
 
-                    futures.append(executor.submit(self._process_pdf_image_task, *task))
+                    # A fresh context copy PER submit: a contextvars.Context can only
+                    # be entered once, so a single shared copy run concurrently by N
+                    # workers raises "cannot enter context: already entered". Each task
+                    # gets its own copy that still carries this run's usage sink.
+                    futures.append(executor.submit(_usage.copy_ctx().run, self._process_pdf_image_task, *task))
 
                 for future in as_completed(futures):
 
@@ -213,13 +256,17 @@ class VisionEnrichmentTool(Tool):
 
             logger.debug(f"\n🔍 Processing {len(pending_blocks)} pending vision blocks...")
 
+            from backend.core import usage as _usage
+
             with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
 
                 futures = []
 
                 for block in pending_blocks:
 
-                    futures.append(executor.submit(self._process_pending_block_task,
+                    # Fresh context copy per submit (see note above): one shared copy
+                    # entered by multiple workers raises "already entered".
+                    futures.append(executor.submit(_usage.copy_ctx().run, self._process_pending_block_task,
 
                                                    block, state, timeout_s, vision_cfg,
 
@@ -503,10 +550,12 @@ class VisionEnrichmentTool(Tool):
 
             logger.debug(f"💾 Debug image: {debug_path}")
  
-        description = run_with_timeout(describe_image, timeout_s, image_bytes, vision_cfg.get("_resolved_prompt") or VISION_PROMPT, vision_cfg)
+        _base = vision_cfg.get("_resolved_prompt") or VISION_PROMPT
+        description = run_with_timeout(describe_image, timeout_s, image_bytes,
+                                       _prompt_with_context(_base, state, page_number), vision_cfg)
 
         logger.debug(f"📄 Description (first 200 chars): {description[:200]}")
- 
+
         # Build a NormalizedBlock (type="image_caption") with the description
 
         block = build_image_caption_block(state, page_number, bbox, description)

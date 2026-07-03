@@ -257,3 +257,5 @@ grafana_data/
 .DS_Store
 
 test-data/
+# Internal working docs — kept out of the public repo (back up separately)
+docs/

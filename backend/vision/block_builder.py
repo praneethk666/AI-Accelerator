@@ -16,15 +16,18 @@ def parse_caption(caption_json_str):
     entities = []
     vision_type = "other"
     confidence = 0.0
-    try:
-        data = json.loads(_strip_fences(caption_json_str))
+    data = _extract_json(caption_json_str)
+    if data is not None:
         description = (data.get("description") or "").strip()
         entities = data.get("entities") or []
         vision_type = data.get("type", "other")
-        confidence = float(data.get("confidence", 0.95))
+        try:
+            confidence = float(data.get("confidence", 0.95))
+        except (TypeError, ValueError):
+            confidence = 0.95
         if not isinstance(entities, list):
             entities = []
-    except Exception:
+    else:
         enrichment_failed = True
         description = str(caption_json_str).strip()
 
@@ -43,6 +46,60 @@ def _strip_fences(text: str) -> str:
         if t.lstrip().lower().startswith("json"):
             t = t.lstrip()[4:]
     return t.strip()
+
+
+def _balanced_objects(t):
+    """Yield every top-level {...} substring in `t`, brace-balanced and string-aware
+    (braces inside JSON string values don't open/close objects). Used to recover the
+    real JSON from a reasoning-heavy reply that may contain several objects."""
+    objs = []
+    depth = start = 0
+    in_str = esc = False
+    start = -1
+    for i, ch in enumerate(t):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                objs.append(t[start:i + 1])
+                start = -1
+    return objs
+
+
+def _extract_json(text):
+    """Pull the JSON object out of a model reply that may include reasoning.
+
+    "Thinking" models (e.g. gemma-4) emit prose/analysis before the JSON — and
+    often MORE than one object (a fenced ```json example in their "format as JSON"
+    step, then the final answer). The old first-{ .. last-} span swallowed both
+    objects plus the fence between them and failed to parse, so we stored the raw
+    reasoning as the caption. Now: strip fences + direct parse for clean replies,
+    else scan for balanced {...} objects and return the LAST that parses (the
+    model's final answer)."""
+    t = _strip_fences(text)
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    for obj in reversed(_balanced_objects(text or "")):
+        try:
+            return json.loads(obj)
+        except Exception:
+            continue
+    return None
 
 
 def build_image_caption_block(state, page_number, bbox, caption_json_str):

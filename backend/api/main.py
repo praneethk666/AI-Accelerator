@@ -34,10 +34,10 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.core.config import PipelineConfig, load_config  # noqa: E402
+from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
-from backend.pipeline.graph import run_pipeline  # noqa: E402
+from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.pipeline.query import run_query  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
 
@@ -91,29 +91,20 @@ warm_up(_config)
 _registry = build_default_registry()
 
 
-def _build_ingestion_cfg(cfg: dict) -> PipelineConfig:
-    return PipelineConfig.from_dict({
-        **cfg,
-        "steps": cfg.get("ingestion", {}).get("steps", []),
-        "route_gates": cfg.get("ingestion", {}).get("route_gates", {}),
-    })
-
-
-_ingestion_cfg = _build_ingestion_cfg(_config)
-
 CONFIG_DIR = os.path.dirname(CONFIG_PATH) or "config"
 
 
 def _reload_pipeline() -> None:
     """Re-read CONFIG_PATH and rebuild the pipeline objects in place after a config
     edit. Models are NOT re-warmed (routing/prompt/OCR/chunking edits don't change
-    the embedding/vision models); to switch those, edit + restart the server."""
-    global _config, _registry, _ingestion_cfg
+    the embedding/vision models); to switch those, edit + restart the server.
+    ingest_document derives the ingestion profile from _config on each call, so the
+    reloaded _config is all it needs — nothing else to rebuild here."""
+    global _config, _registry
     _config = load_config(CONFIG_PATH)
     # OCR engine/timeout are read from config by the isolated OCR subprocess at
     # ingest time, so there's nothing to set in-process here.
     _registry = build_default_registry()
-    _ingestion_cfg = _build_ingestion_cfg(_config)
 
 
 class ChatRequest(BaseModel):
@@ -249,12 +240,12 @@ def _save_page_images(document_id: str, pdf_path: str, pages: set, dpi: int = 15
 
 
 def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
-    """Run the full pipeline for one upload, persisting per-step progress to the DB."""
-    state = {"document_id": document_id, "file_path": dest,
-             "file_type": file_type, "errors": []}
+    """Run the full pipeline for one upload. Delegates run + status + finalize to the
+    shared ingest_document entry point; the API-only tail (live DB progress + PDF
+    page images) is injected via the on_step / on_complete hooks."""
     total = len(_INGEST_STEPS) or None
 
-    # One connection for the whole run (per-step UPDATEs + the final finalize).
+    # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
     try:
         pg = PostgresStore()
@@ -283,51 +274,28 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
             logger.warning("update_progress failed for %s (step=%s)",
                            document_id, entry.get("step"))
 
-    try:
-        result = run_pipeline(_registry, state, _ingestion_cfg, on_step=on_step)
-        # "failed" only if a STEP errored — a non-fatal "low confidence" warning
-        # in errors must not mark an otherwise-successful ingest as failed.
-        step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
-        status = "failed" if step_failed else "ready"
-    except Exception as exc:
-        logger.exception("ingestion failed for %s", filename)
-        result, status = {"errors": [str(exc)]}, "failed"
+    def on_complete(result: dict) -> None:
+        # API-only tail: full-page images for the PDF pages that produced chunks —
+        # for visual grounding ("pull up the page"). Only content pages; skip on
+        # failure or if the DB is down.
+        if pg is None or file_type != "pdf" or result.get("status") == "failed":
+            return
+        try:
+            chunks = result.get("chunks", []) or []
+            pages = {
+                int(c["source_ref"]["page"]) for c in chunks
+                if isinstance(c.get("source_ref"), dict)
+                and c["source_ref"].get("page") is not None
+            }
+            for p, web, w, h in _save_page_images(document_id, dest, pages):
+                pg.insert_page_image(document_id, p, web, w, h)
+            logger.info("saved %d page images for %s", len(pages), document_id)
+        except Exception:
+            logger.exception("page-image save failed for %s", document_id)
 
-    chunks = result.get("chunks", []) or []
-    indexed_tokens = sum(int(c.get("token_count") or 0) for c in chunks)
     try:
-        if pg is None:
-            pg = PostgresStore()
-        pg.finalize_document(
-            document_id,
-            document_type=result.get("document_type"),
-            industry=result.get("industry"),
-            route=result.get("route"),
-            confidence=result.get("confidence"),
-            status=status,
-            errors=result.get("errors"),
-            metrics=result.get("metrics"),
-            token_usage=result.get("token_usage"),     # LLM/vision tokens consumed
-            indexed_tokens=indexed_tokens,              # tokens of text indexed
-            chunk_count=len(chunks),
-        )
-        # Full-page images for the PDF pages that produced chunks — for visual
-        # grounding ("pull up the page" when a chunk is ambiguous). Only pages with
-        # content, so blank pages aren't rendered/stored.
-        if file_type == "pdf" and status != "failed":
-            try:
-                pages = {
-                    int(c["source_ref"]["page"]) for c in chunks
-                    if isinstance(c.get("source_ref"), dict)
-                    and c["source_ref"].get("page") is not None
-                }
-                for p, web, w, h in _save_page_images(document_id, dest, pages):
-                    pg.insert_page_image(document_id, p, web, w, h)
-                logger.info("saved %d page images for %s", len(pages), document_id)
-            except Exception:
-                logger.exception("page-image save failed for %s", document_id)
-    except Exception:
-        logger.exception("finalize_document failed for %s", document_id)
+        ingest_document(dest, document_id, config=_config, registry=_registry,
+                        on_step=on_step, on_complete=on_complete)
     finally:
         if pg is not None:
             pg.close()

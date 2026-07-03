@@ -276,6 +276,14 @@ class PostgresStore:
         return ({"page": row[0], "image_path": row[1], "width": row[2], "height": row[3]}
                 if row else None)
 
+    def delete_chunks(self, document_id: str) -> None:
+        # clear a document's chunk rows without touching the document itself —
+        # used to make re-ingestion idempotent (chunk_ids are regenerated per run,
+        # so old rows must go before re-indexing or they'd accumulate).
+        self.conn.execute(
+            "DELETE FROM chunks WHERE document_id::text = %s", (document_id,)
+        )
+
     def delete_document(self, document_id: str) -> None:
         # chunks + document_pages cascade via the FK ON DELETE CASCADE
         self.conn.execute(

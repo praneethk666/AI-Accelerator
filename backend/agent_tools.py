@@ -1,0 +1,34 @@
+"""Agent-callable tools registry.
+
+Agent tools are named, described, JSON-schema'd operations an LLM agent can invoke
+— distinct from pipeline-step Tools (which run inside the graph on shared state).
+This is the seam the agent-executor consumes: build_agent_registry() returns
+{name: tool}, and each tool exposes .name, .description, .input_schema, and
+run(**kwargs) -> dict (the standard tool-use shape).
+
+Add a tool: append it in build_agent_registry() (or register it there). Connectors
+(db/inventory/email/…) will land here too as they come online.
+"""
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class AgentTool(Protocol):
+    name: str
+    description: str
+    input_schema: dict  # JSON Schema for the tool's arguments
+
+    def run(self, **kwargs) -> dict: ...
+
+
+def build_agent_registry() -> dict[str, AgentTool]:
+    """Every agent-callable tool, keyed by name. The agent-executor advertises
+    these to the LLM and dispatches calls by name."""
+    from backend.pipeline.ingest import IngestDocumentTool
+
+    tools: list[AgentTool] = [
+        IngestDocumentTool(),
+    ]
+    return {t.name: t for t in tools}

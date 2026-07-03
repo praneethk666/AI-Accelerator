@@ -20,6 +20,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchAny,
     MatchValue,
     Modifier,
@@ -134,6 +135,17 @@ class QdrantStore:
 
     # back-compat alias: dense search was the original `search`
     search = search_dense
+
+    def delete_by_document(self, document_id: str) -> None:
+        """Delete every point belonging to a document (dense + sparse share one
+        point). Makes re-ingestion idempotent — point ids come from regenerated
+        chunk_ids, so stale points must be cleared before re-indexing."""
+        self.client.delete(
+            self.collection,
+            points_selector=FilterSelector(
+                filter=_build_filter({"document_id": document_id})
+            ),
+        )
 
     def close(self) -> None:
         self.client.close()

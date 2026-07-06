@@ -51,6 +51,7 @@ EXT_TO_FILE_TYPE = {
     ".pdf": "pdf",
     ".xlsx": "excel", ".xls": "excel", ".xlsm": "excel",
     ".pptx": "ppt", ".ppt": "ppt",
+    ".docx": "docx", ".doc": "docx",
     ".png": "image", ".jpg": "image", ".jpeg": "image", ".tif": "image", ".tiff": "image",
 }
 

@@ -27,8 +27,10 @@ def build_agent_registry() -> dict[str, AgentTool]:
     """Every agent-callable tool, keyed by name. The agent-executor advertises
     these to the LLM and dispatches calls by name."""
     from backend.pipeline.ingest import IngestDocumentTool
+    from backend.retrieval.search_documents import SearchDocumentsTool
 
     tools: list[AgentTool] = [
         IngestDocumentTool(),
+        SearchDocumentsTool(),
     ]
     return {t.name: t for t in tools}

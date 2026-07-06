@@ -55,6 +55,7 @@ openpyxl
 pandas
 tabulate             # df.to_markdown() for table text
 python-pptx
+python-docx          # native .docx extraction (Word tool)
 langdetect           # per-block language detection (multilingual docs)
 
 # ── Embeddings ────────────────────────────────────────────────────────────────

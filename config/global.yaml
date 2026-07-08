@@ -381,11 +381,14 @@ type_to_route:
 # tool's `name` (see backend/extraction/*/tool.py). Selection priority:
 #   route_extractors > pdf_extractors (by state.pdf_kind) > extractors (by file_type)
 #
-# extractors: simple file_type -> tool (1:1). `image` has no extractor yet.
+# extractors: simple file_type -> tool (1:1). 
 extractors:
   excel: excel_extraction
   ppt: ppt_extraction
   docx: word_extraction
+  image: image_extraction
+  
+
 
 # pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
 # sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.

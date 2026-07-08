@@ -224,6 +224,59 @@ def _table_markdown(table, doc) -> str:
         return ""
 
 
+def _markdown_table_data(md: str) -> dict | None:
+    """Best-effort table reconstruction from markdown.
+
+    Docling can sometimes recover a readable markdown table but not a structured
+    dataframe for scanned pages. When that happens we still want downstream tools
+    to receive table_data instead of null, so we parse simple pipe tables here.
+    """
+    lines = [line.strip() for line in (md or "").splitlines() if line.strip()]
+    rows: list[list[str]] = []
+    for line in lines:
+        if "|" not in line:
+            continue
+        # Pipe-table row: strip leading/trailing pipes and split cells.
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        # Skip separator rows like "| --- | --- |".
+        if cells and all(re.fullmatch(r"[:-]{2,}", c.replace(" ", "")) for c in cells):
+            continue
+        if any(c for c in cells):
+            rows.append(cells)
+
+    if len(rows) < 2:
+        return None
+
+    headers = [str(c) for c in rows[0]]
+    body = rows[1:]
+    if not any(any(cell for cell in row) for row in body):
+        return None
+
+    # Normalize ragged rows so the output is stable JSON.
+    width = len(headers)
+    norm_rows = [row + [""] * max(0, width - len(row)) for row in body]
+    norm_rows = [row[:width] for row in norm_rows]
+    return {"headers": headers, "rows": norm_rows}
+
+def _render_table_markdown(td: dict | None) -> str:
+    """{headers, rows} -> a markdown pipe table. Fallback text representation used
+    when export_to_markdown()/the VLM gave us nothing but export_to_dataframe() (or
+    the VLM's own markdown parse) DID produce structured cells — so the block's
+    citable `text` never regresses to a placeholder while `table_data` is populated."""
+    if not isinstance(td, dict):
+        return ""
+    headers = [str(h) for h in (td.get("headers") or [])]
+    rows = td.get("rows") or []
+    if not headers and not rows:
+        return ""
+    lines = []
+    if headers:
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    for r in rows:
+        lines.append("| " + " | ".join(str(c) for c in r) + " |")
+    return "\n".join(lines)
+
 def _prov(item):
     """(page_no, BoundingBox) of an item's first provenance, or (None, None)."""
     prov = getattr(item, "prov", None)
@@ -438,6 +491,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     md, td = _table_markdown(item, doc), _table_data(item, doc)
             else:
                 md, td = _table_markdown(item, doc), _table_data(item, doc)
+            if td is None:
+                td = _markdown_table_data(md)
             if report is not None:
                 report["tables"]["total"] += 1
                 report["tables"]["vlm_escalated" if use_vlm else "tableformer"] += 1
@@ -447,7 +502,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
             if bb and isinstance(page_no, int):
                 dtables[page_no].append(bb)   # so the YOLO union won't crop it as a figure
             blocks.append(_block(document_id, page_no, filename, "table",
-                                 md or "[table]", table_data=td, bbox=bb))
+                                 md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
 
         elif isinstance(item, PictureItem):
             page_no, bbox = _prov(item)

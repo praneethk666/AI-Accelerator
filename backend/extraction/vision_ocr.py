@@ -128,12 +128,22 @@ def _block(document_id, page, filename, btype, text, table_data=None) -> dict:
         "metadata": {"source": "vision_ocr"},
     }
 
+import re as _re
+_BR_RE = _re.compile(r"<br\s*/?>", _re.IGNORECASE)
+_TAG_RE = _re.compile(r"<[^>]+>")
+
+def _clean_cell(s: str) -> str:
+    """Normalize any HTML the model leaked into a cell: <br> -> '; ', strip any
+    other stray tags. Net for PAGE_TRANSCRIBE/TABLE_TRANSCRIBE's '; not <br>' rule."""
+    s = _BR_RE.sub("; ", s)
+    s = _TAG_RE.sub("", s)
+    return _re.sub(r"\s*;\s*", "; ", s).strip("; ").strip()
 
 def _parse_md_table(rows_md: list[str]) -> dict | None:
     """Markdown table lines -> {headers, rows}, dropping the |---| separator row."""
     rows = []
     for ln in rows_md:
-        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        cells = [_clean_cell(c) for c in ln.strip().strip("|").split("|")]
         if cells and all(c and set(c) <= set("-: ") for c in cells):
             continue  # separator row
         rows.append(cells)
@@ -152,6 +162,9 @@ def _strip_fences(md: str) -> str:
     return s.strip()
 
 
+import re as _re3
+_ATX_HEADING_RE = _re3.compile(r"^#{1,6}\s+\S")
+
 def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> list[dict]:
     """Split a VLM markdown transcription into text + structured table blocks."""
     lines = _strip_fences(md).splitlines()
@@ -163,7 +176,14 @@ def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> l
         # Require an alphanumeric char so fence/punctuation-only noise ('```', '---')
         # never becomes a chunk.
         if text and re.search(r"[A-Za-z0-9]", text):
-            btype = "heading" if (text.isupper() and len(text) < 100) else "text"
+            # A heading is either a Markdown ATX heading ("## Overview") OR a short
+            # ALL-CAPS line. The ATX check matters a lot downstream: chunk_tool's
+            # page-break flush and section_aware tagging both key off type=="heading",
+            # so missing "## Overview" / "### Sample Data File" (neither is ALL-CAPS)
+            # silently broke both page-boundary chunking and section tagging for every
+            # VLM-transcribed page.
+            is_heading = bool(_ATX_HEADING_RE.match(text)) or (text.isupper() and len(text) < 100)
+            btype = "heading" if is_heading else "text"
             blocks.append(_block(document_id, page, filename, btype, text))
         para.clear()
 
@@ -197,8 +217,27 @@ def transcribe_page(page, config: dict) -> str:
     from backend.extraction.orientation import upright_png
     png = upright_png(page, dpi, config)
     # describe_image reads config["vision"]; hand it the vision_ocr provider block.
-    return describe_image(png, prompts.PAGE_TRANSCRIBE, {"vision": cfg})
+    # return describe_image(png, prompts.PAGE_TRANSCRIBE, {"vision": cfg})
+    raw = describe_image(png, prompts.PAGE_TRANSCRIBE, {"vision": cfg})
+    return _unwrap_markdown(raw)
 
+def _unwrap_markdown(raw: str) -> str:
+    """The VLM sometimes wraps its page transcription as JSON instead of bare
+    markdown — either [{"content": "..."}], {"content": "..."}, or just ["..."]
+    (a single string in a list). Unwrap any of these so markdown_to_blocks() sees
+    real pipe-table lines and can build table_data — otherwise the whole JSON
+    string becomes one text block and structure is lost."""
+    from backend.vision.block_builder import _extract_json
+    data = _extract_json(raw)
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            return first.get("content") or raw
+        if isinstance(first, str) and first.strip():
+            return first
+    if isinstance(data, dict):
+        return data.get("content") or raw
+    return raw
 
 def _iou(a, b) -> float:
     ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
@@ -334,8 +373,11 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
     Figure blocks are preserved in every case.
 
     Budget: extraction.docling.max_vlm_pages caps VLM page-transcriptions per doc
-    (0 = unlimited). Past the cap, scanned pages fall back to free local PaddleOCR so a
-    1000-page scan still finishes without unbounded API cost."""
+    (0 = unlimited). Past the cap, ANY page needing rescue (scanned, garbled, or
+    duplicated) falls back to free local PaddleOCR re-reading the rendered page —
+    so a 1000-page scan still finishes without unbounded API cost, and a page with
+    broken font encoding or scrambled reading order still gets SOME rescue rather
+    than being kept as-is once the budget runs out."""
     from backend.extraction.page_router import profile_page, classify_page, should_tile
     cfg = (config.get("extraction") or {}).get("docling") or {}
     lf_enabled = ((config.get("extraction") or {}).get("large_format") or {}).get("enabled", True)
@@ -381,10 +423,15 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                         prompt = prompts.SCHEMATIC_TILE if page_class == "diagram" else prompts.PAGE_TRANSCRIBE
                         md = transcribe_large_page(doc[pg - 1], config, prompt)
                         figs = [b for b in pblocks if b.get("type") == "image_caption"]
-                        out.extend(markdown_to_blocks(md, document_id, pg, filename) + figs)
+                        new_blocks = markdown_to_blocks(md, document_id, pg, filename)
+                        out.extend(new_blocks + figs)
                         rescued += 1
                         _set_route(report, pg, "tiled_diagram", page_class)
                         if report is not None:
+                            tbl_count = sum(1 for nb in new_blocks if nb.get("type") == "table")
+                            if tbl_count:
+                                report["tables"]["total"] += tbl_count
+                                report["tables"]["vlm_escalated"] += tbl_count
                             report["pages"]["rescued"].append(
                                 {"page": pg, "via": "tiled", "reason": page_class})
                         continue
@@ -408,8 +455,14 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
             reason = "scanned" if is_scanned else ("garbled" if garbled else "duplicated")
             figs = [b for b in pblocks if b.get("type") == "image_caption"]
             if cap and rescued >= cap:
-                # past budget: free local OCR for scans; keep originals for garbled
-                txt = _paddle_page_text(doc[pg - 1]) if is_scanned else ""
+                # Past budget: free local re-OCR of the RENDERED page. This isn't
+                # limited to "scanned" (no text layer) pages — Paddle reads pixels,
+                # so it's just as blind to a broken font/ToUnicode map (garbled) and
+                # to Docling's scrambled reading order (duplicated) as it is to a
+                # missing text layer. Previously only `is_scanned` got this fallback
+                # and garbled/duplicated pages past the cap just kept their broken
+                # text with no rescue at all.
+                txt = _paddle_page_text(doc[pg - 1])
                 if txt:
                     out.extend(markdown_to_blocks(txt, document_id, pg, filename) + figs)
                     paddle_used += 1
@@ -427,6 +480,10 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                 rescued += 1
                 _set_route(report, pg, "vlm_rescue", reason)
                 if report is not None:
+                    tbl_count = sum(1 for nb in new_blocks if nb.get("type") == "table")
+                    if tbl_count:
+                        report["tables"]["total"] += tbl_count
+                        report["tables"]["vlm_escalated"] += tbl_count
                     report["pages"]["rescued"].append({"page": pg, "via": "vlm", "reason": reason})
             except Exception as e:
                 logger.warning("rescue: page %s VLM failed (%s); keeping originals", pg, e)

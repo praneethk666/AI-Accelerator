@@ -150,7 +150,12 @@ def chunk_blocks(
     chunks: list[dict] = []
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
+    buf_page = None               # page number of the first buffered block (cite start)
     current_section = None        # active heading -> tags the section's chunks
+
+    def _block_page(block):
+        ref = block.get("source_ref") or {}
+        return ref.get("page") if isinstance(ref, dict) else None
 
     def _ref(ref):
         # attach the active section without clobbering one an extractor already set
@@ -161,24 +166,29 @@ def chunk_blocks(
         return r
 
     def flush():
-        nonlocal buf_parts, buf_ref
+        nonlocal buf_parts, buf_ref, buf_page
         stream = "\n".join(p for p in buf_parts if p).strip()
         if stream:
             for piece in _split(stream, size, overlap, strategy, semantic_model):
                 chunks.append(_make_chunk({"type": "text", "source_ref": _ref(buf_ref)},
                                           piece, document_id))
-        buf_parts, buf_ref = [], None
+        buf_parts, buf_ref, buf_page = [], None, None
 
     for block in blocks:
         btype = block.get("type")
         if btype not in CONTENT_TYPES:
             continue
         text = (block.get("text") or "").strip()
+        pg = _block_page(block)
+
+        if buf_page is not None and pg is not None and pg != buf_page:
+            flush()  # page break flushes the stream; next block starts a new chunk
 
         if section_aware and btype == "heading" and text:
             flush()                                  # close the previous section
             current_section = text
             buf_ref = block.get("source_ref")
+            buf_page = pg
             buf_parts.append(text)                   # lead the section with its title
             continue
 

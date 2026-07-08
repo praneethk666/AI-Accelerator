@@ -163,51 +163,124 @@ def _strip_fences(md: str) -> str:
 
 
 import re as _re3
-_ATX_HEADING_RE = _re3.compile(r"^#{1,6}\s+\S")
+
+_ATX_HEADING_RE = _re3.compile(r"^(#{1,6})\s+(.+)$")
+_SETEXT_RE = _re3.compile(r"^[=-]{3,}$")
+
 
 def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> list[dict]:
-    """Split a VLM markdown transcription into text + structured table blocks."""
+    """
+    Split a VLM markdown transcription into structured blocks.
+
+    Supports:
+      - Markdown headings (#, ##, ### ...)
+      - Setext headings (Heading + ===== / -----)
+      - Markdown tables
+      - Paragraphs
+    """
+
     lines = _strip_fences(md).splitlines()
+
     blocks: list[dict] = []
     para: list[str] = []
 
     def flush():
+        if not para:
+            return
+
         text = " ".join(s.strip() for s in para if s.strip()).strip()
-        # Require an alphanumeric char so fence/punctuation-only noise ('```', '---')
-        # never becomes a chunk.
+
         if text and re.search(r"[A-Za-z0-9]", text):
-            # A heading is either a Markdown ATX heading ("## Overview") OR a short
-            # ALL-CAPS line. The ATX check matters a lot downstream: chunk_tool's
-            # page-break flush and section_aware tagging both key off type=="heading",
-            # so missing "## Overview" / "### Sample Data File" (neither is ALL-CAPS)
-            # silently broke both page-boundary chunking and section tagging for every
-            # VLM-transcribed page.
-            is_heading = bool(_ATX_HEADING_RE.match(text)) or (text.isupper() and len(text) < 100)
-            btype = "heading" if is_heading else "text"
-            blocks.append(_block(document_id, page, filename, btype, text))
+            is_heading = (text.isupper() and len(text) < 100)
+
+            blocks.append(
+                _block(document_id,page,filename,"heading" if is_heading else "text",text,))
+
         para.clear()
 
     i = 0
+
     while i < len(lines):
+
         s = lines[i].strip()
-        if s.startswith("|") and "|" in s[1:]:           # a table region
+
+        # ------------------------------------------------------
+        # Skip VLM image placeholders
+        # ------------------------------------------------------
+
+        if (s.startswith("[Image:") or s.startswith("![")):
             flush()
-            tbl = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                tbl.append(lines[i]); i += 1
-            td = _parse_md_table(tbl)
-            if td:
-                blocks.append(_block(document_id, page, filename, "table",
-                                     "\n".join(t.strip() for t in tbl), td))
+            i += 1
             continue
+
+        # ------------------------------------------------------
+        # Blank line
+        # ------------------------------------------------------
         if not s:
             flush()
-        else:
-            para.append(s)
-        i += 1
-    flush()
-    return blocks
+            i += 1
+            continue
 
+        # ------------------------------------------------------
+        # ATX Markdown heading
+        # Example:
+        # ## Installation
+        # ------------------------------------------------------
+        m = _ATX_HEADING_RE.match(s)
+
+        if m:
+            flush()
+
+            heading = m.group(2).strip()
+
+            if heading:
+                blocks.append(_block( document_id, page, filename, "heading", heading,))
+
+            i += 1
+            continue
+
+        # ------------------------------------------------------
+        # Setext heading
+        #
+        # Installation
+        # ------------
+        # ------------------------------------------------------
+        if (i + 1 < len(lines) and _SETEXT_RE.match(lines[i + 1].strip())):
+        
+            flush()
+
+            blocks.append(_block(document_id, page, filename, "heading",s,))
+
+            i += 2
+            continue
+
+        # ------------------------------------------------------
+        # Markdown table
+        # ------------------------------------------------------
+        if s.startswith("|") and "|" in s[1:]:
+
+            flush()
+            tbl = []
+
+            while (i < len(lines) and lines[i].strip().startswith("|")):
+                tbl.append(lines[i])
+                i += 1
+
+            td = _parse_md_table(tbl)
+            if td:
+                blocks.append( _block(document_id,page,filename,"table","\n".join(t.strip() for t in tbl),td,))
+
+            continue
+
+        # ------------------------------------------------------
+        # Normal paragraph
+        # ------------------------------------------------------
+        para.append(s)
+        i += 1
+
+    flush()
+
+    return blocks
 
 def transcribe_page(page, config: dict) -> str:
     cfg = config.get("vision_ocr") or {}

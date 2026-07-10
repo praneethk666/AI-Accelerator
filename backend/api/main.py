@@ -5,7 +5,9 @@ Endpoints (match frontend/src/api.jsx):
     GET    /files          list ingested documents
     GET    /files/{id}     one document's metadata
     DELETE /files/{id}     delete a document (chunks cascade)
-    POST   /chat           {question, file_id?} -> {answer, sources}
+    POST   /chat           {question, file_id?} -> {answer, sources}         (direct RAG, no agent)
+    POST   /agent/chat     {message, session_id?, approved_writes?} -> agent picks a tool
+                           (ingest_document / search_documents / sql_read); writes need approval
     GET    /chat-history   recent turns for the web session
     GET    /health         liveness
 
@@ -34,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from backend.agent.executor import run_agent  # noqa: E402
+from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
@@ -90,6 +94,11 @@ warm_up(_config)
 # warm Surya here. The child warms it on its own main thread. engine selection is
 # read from config by the worker; nothing OCR-related is initialized in-process.
 _registry = build_default_registry()
+_agent_registry = build_agent_registry()
+# In-memory per-session LangChain message history for the agent chat — good enough
+# for a demo; resets on restart. Only advanced past a turn that fully completed
+# (not one awaiting write approval), so a decline/retry replays cleanly.
+_agent_sessions: dict[str, list] = {}
 
 
 CONFIG_DIR = os.path.dirname(CONFIG_PATH) or "config"
@@ -111,6 +120,12 @@ def _reload_pipeline() -> None:
 class ChatRequest(BaseModel):
     question: str
     file_id: str | None = None
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    session_id: str = "web"
+    approved_writes: bool = False
 
 
 class ConfigSave(BaseModel):
@@ -414,6 +429,30 @@ async def chat(req: ChatRequest):
         "answer": final.get("answer", ""),
         "sources": sources,
         "metrics": final.get("metrics", []),   # per-step timings (observability)
+    }
+
+
+@app.post("/agent/chat")
+async def agent_chat(req: AgentChatRequest):
+    """Agentic chat: the model picks which tool to call (ingest/search/sql) instead
+    of always going straight to retrieval. Writes (ingest_document) stop and report
+    what they want to run — POST again with approved_writes=true to actually run it.
+    """
+    history = _agent_sessions.get(req.session_id, [])
+    result = run_agent(
+        req.message, config=_config, registry=_agent_registry,
+        conversation_history=history, approved_writes=req.approved_writes,
+    )
+    if result["status"] == "done":
+        _agent_sessions[req.session_id] = result["messages"]
+    return {
+        "status": result["status"],
+        "answer": result.get("answer"),
+        "pending": result.get("pending"),
+        "tool_calls": [
+            {"name": c["name"], "args": c["args"], "result": c.get("result")}
+            for c in result.get("tool_calls", [])
+        ],
     }
 
 

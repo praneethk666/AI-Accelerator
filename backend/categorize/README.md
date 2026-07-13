@@ -1,1 +1,1 @@
-# Categorization & routing (owner: Abhishek). First-page peek -> {type, industry, route, confidence}.
+# Categorization & routing. First-page peek -> {type, industry, route, confidence}.

@@ -1,6 +1,5 @@
 """Conversation store tests — DB-gated (auto-skip when Postgres is down).
 
-Adapted from Karthii's test to the role/content (per-message) schema on main.
 To exercise:  docker compose up -d postgres  (with .env POSTGRES_URL set).
 """
 

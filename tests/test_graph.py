@@ -13,7 +13,7 @@ from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState
 from backend.pipeline.graph import build_pipeline
-from backend.pipeline.stub_tools import STUB_NAMES
+from tests.stub_tools import STUB_NAMES
 
 ALL_STEPS = [
     "categorize",

@@ -86,13 +86,12 @@ _config = load_config(CONFIG_PATH)
 # Warm torch/nomic BEFORE anything can import paddle (paddleocr) — paddle-first
 # corrupts torch's allocator. paddleocr is lazy-imported, so this ordering holds.
 warm_up(_config)
-# Select the OCR engine (surya|paddle) from config for scanned pages.
-# OCR (Surya/Paddle/llama-server) now runs in an isolated subprocess per scanned
-# doc (see scanned_pdf/ocr_worker + tool). The backend process must NOT load the
-# OCR stack itself — that coexistence with the torch embedder + vision threads is
-# exactly what crashed it (fork-from-thread abort, OpenMP segfault). So we do NOT
-# warm Surya here. The child warms it on its own main thread. engine selection is
-# read from config by the worker; nothing OCR-related is initialized in-process.
+# The OCR engine (surya|paddle, config `vision_ocr`/scanned-path settings) is NOT
+# warmed here — only the warm_up() ordering above is what prevents the
+# paddle/torch allocator crash. (An earlier version of this comment described
+# running OCR in an isolated subprocess; that isolation does not exist in the
+# current code — verify the crash risk is still mitigated before changing
+# warm_up() ordering or the OCR call path.)
 _registry = build_default_registry()
 _agent_registry = build_agent_registry()
 # In-memory per-session LangChain message history for the agent chat — good enough

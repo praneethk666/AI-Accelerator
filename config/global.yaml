@@ -42,30 +42,30 @@ llm:
 vision:
   # ONE vision model for ALL vision tasks (categorize + figure captioning), matching
   # vision_ocr so cropping/grounding/transcription all use the same model.
-  # ACTIVE: self-hosted Qwen3-VL-4B-Instruct on NEI-GPU (vLLM, OpenAI-compatible).
-  # NO rate limits, data stays in AWS. Stop the box after each batch to control cost.
+  # TESTING: NVIDIA Build API — Qwen2-VL-7B (same Qwen VL family as a self-hosted
+  # GPU target, OpenAI-compatible). Add NVIDIA_API_KEY=<your ngc key> to .env.
+  # Swap back to the self-hosted block below for production.
   provider: openai
-  model: qwen3-vl
-  base_url: http://100.49.250.232:8000/v1
-  api_key: ${VLLM_API_KEY}
-  # FALLBACK — Gemini 2.5 Flash on Google AI Studio (free tier, 20 req/day for vision):
+  model: meta/llama-3.2-11b-vision-instruct
+  base_url: https://integrate.api.nvidia.com/v1
+  api_key: ${NVIDIA_API_KEY}
+  # PRODUCTION: self-hosted Qwen3-VL on your own GPU box (data never leaves your
+  # network — preferred when the corpus is sensitive/client data).
+  # provider: openai
+  # model: qwen3-vl
+  # base_url: http://<your-gpu-host>:8000/v1
+  # api_key: ${VLLM_API_KEY}
+  # FALLBACK — Gemini 2.5 Flash (free tier 15 req/min, 1500/day):
   # provider: google
   # model: gemini-2.5-flash
   # api_key: ${GOOGLE_API_KEY}
-  # Previous (Z.ai GLM — free, OpenAI-compatible; rate-limited under load):
-  # provider: openai
-  # model: glm-4.6v-flash
-  # base_url: https://api.z.ai/api/paas/v4
-  # api_key: ${ZAI_API_KEY}
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
-  # timeout_s must cover the retry budget: a 429 from Google's free tier asks us
-  # to wait ~12s, and we retry up to max_retries times, so keep this generous.
-  timeout_s: 150
-  max_retries: 5            # retry 429/500/503 with backoff (honors server retry_delay)
-  max_concurrency: 4        # NEI-GPU has no rate limits — run 4 concurrent vision calls.
-  min_interval_s: 0         # no pacing needed on self-hosted vLLM.
+  timeout_s: 120
+  max_retries: 3
+  max_concurrency: 2        # conservative on NVIDIA Build free-tier credits
+  min_interval_s: 1
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
@@ -85,34 +85,32 @@ vision:
       visible dimensions or tolerances. Be precise — this is used for search.
 
 # ── OCR (scanned pages) ───────────────────────────────────────────────────────
-# OCR runs in an ISOLATED subprocess (scanned_pdf/ocr_worker.py) so the native OCR
-# stack can't crash the backend. Pick the engine per DEPLOYMENT:
+# Engine picked per deployment (surya|paddle — see extraction/scanned_pdf/).
 # ── Vision-OCR (page transcription for COMPLEX pages) ─────────────────────────
 # Routed VLM transcription: when native text is garbled (broken fonts) or a page has
 # tables/figures, render the page and let a document VLM transcribe it (clean text +
 # correct markdown tables) — what pymupdf/OCR get wrong. Runs ONLY on flagged pages
 # (mode: complex), so it's cheap. provider: openai covers any OpenAI-compatible VLM
-# API (here Z.ai GLM-4.6V-Flash, free). Set mode: off to disable, always to force.
+# API (below: NVIDIA Build API for testing). Set mode: off to disable, always to force.
 vision_ocr:
   enabled: true
   mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on
                             # hard pages) | always (VLM-ONLY: skips Paddle/pymupdf entirely)
-  # ACTIVE: self-hosted Qwen3-VL on NEI-GPU — matches the `vision:` block above.
+  # TESTING: NVIDIA Build API — matches the vision: block above.
   provider: openai
-  model: qwen3-vl
-  base_url: http://100.49.250.232:8000/v1
-  api_key: ${VLLM_API_KEY}
+  model: meta/llama-3.2-11b-vision-instruct
+  base_url: https://integrate.api.nvidia.com/v1
+  api_key: ${NVIDIA_API_KEY}
+  # PRODUCTION: self-hosted Qwen3-VL — matches the `vision:` block above.
+  # provider: openai
+  # model: qwen3-vl
+  # base_url: http://<your-gpu-host>:8000/v1
+  # api_key: ${VLLM_API_KEY}
   # FALLBACK — Gemini 2.5 Flash (Google AI Studio, free tier):
   # provider: google
   # model: gemini-2.5-flash
   # api_key: ${GOOGLE_API_KEY}
-  # Previous (Z.ai GLM — free, OpenAI-compatible; rate-limited under load):
-  # provider: openai
-  # base_url: https://api.z.ai/api/paas/v4
-  # model: glm-4.6v-flash
-  # api_key: ${ZAI_API_KEY}
-  dpi: 100                  # page render resolution sent to the VLM (100 on T4 — 200 DPI creates
-                            # ~3800 visual tokens per page which overflows T4 FlashInfer kernels)
+  dpi: 150
   min_interval_s: 0         # no pacing on self-hosted vLLM
   max_retries: 3
   timeout_s: 120
@@ -294,7 +292,7 @@ query:
   hyde:
     enabled: false              # generate hypothetical answer before encoding
 
-  # ── Retrieval settings (Vinod's tools read these) ─────────────────────────
+  # ── Retrieval settings (read by RetrievalTool / AnswererTool) ────────────
   # These are accessed as config["query"]["retrieval"]["..."] in tool code.
   # Vector DB = Qdrant (see database.qdrant_url).
   # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
@@ -320,12 +318,12 @@ query:
     # approved_writes=True. Read-only tools (search_documents, sql_read) run free.
     write_tools: [ingest_document]
 
-# ── Notes for Vinod ───────────────────────────────────────────────────────────
-# config passed to your tool is the full dict from load_config("config/global.yaml").
-# Read your settings with:
+# ── Reading config from a tool ─────────────────────────────────────────────────
+# config passed to a Tool.run(state, config) is the full dict from
+# load_config("config/global.yaml"). Read settings with:
 #   config["query"]["retrieval"]["method"]
 #   config["query"]["retrieval"]["top_n"]
-#   config["embeddings"]["dense_model"]     ← shared with Manoj's embed_tool
+#   config["embeddings"]["dense_model"]     ← shared with embed_tool
 #   config["embeddings"]["sparse_model"]
 #   config["embeddings"]["reranker_model"]
 #   config["database"]["qdrant_url"]
@@ -356,7 +354,7 @@ industries:
 default_industry: general
 
 # ── Categorization ────────────────────────────────────────────────────────────
-# Used by CategorizeTool (owner: Abhishek).
+# Used by CategorizeTool.
 # config["categorization"]["industry_keywords"] — keyword lists per industry
 # config["categorization"]["confidence_thresholds"] — when to flag low confidence
 categorization:
@@ -375,7 +373,7 @@ categorization:
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.
 # cad_drawing and circuit_diagram are separate routes — same steps but different
-# vision prompts and retrieval strategy (owner: Vinod). Karthii wires both in the graph.
+# vision prompts and retrieval strategy, both wired in the graph (backend/pipeline/graph.py).
 type_to_route:
   cad_drawing:     cad_route      # mechanical drawings → CADExtractionTool with mechanical prompt
   circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
@@ -429,10 +427,10 @@ routes:
   diagram_heavy:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
   cad_route:
-    # Mechanical CAD drawings — Vinod's CADExtractionTool uses a mechanical diagram prompt
+    # Mechanical CAD drawings — CADExtractionTool uses a mechanical diagram prompt
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   circuit_route:
-    # Electrical circuit diagrams — Vinod's CADExtractionTool uses an electrical/schematic prompt
+    # Electrical circuit diagrams — CADExtractionTool uses an electrical/schematic prompt
     steps: [categorize, extract, chunk, enrich_chunks, embed, index]
   image_route:
     steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]

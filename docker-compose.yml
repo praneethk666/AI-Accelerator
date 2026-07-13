@@ -1,3 +1,11 @@
+# Core data plane — required to run the pipeline at all.
+#   docker compose up -d
+#
+# Optional add-ons live in their own files (bring up only what you need):
+#   docker-compose.devtools.yml       — Adminer (Postgres browser)
+#   docker-compose.observability.yml  — Langfuse (LLM tracing) + Grafana (metrics)
+# Combine with -f, e.g.:
+#   docker compose -f docker-compose.yml -f docker-compose.devtools.yml up -d
 services:
 
   # ── Vector database (Qdrant) ─────────────────────────────────────────────
@@ -28,48 +36,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── DB viewer (Adminer) — browse Postgres tables/rows at http://localhost:8080
-  #    System: PostgreSQL · Server: postgres · User/Pass: postgres · DB: accelerator
-  adminer:
-    image: adminer:latest
-    ports:
-      - "8080:8080"
-    environment:
-      ADMINER_DEFAULT_SERVER: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ── Observability: LLM call tracing (Langfuse) ───────────────────────────
-  langfuse:
-    image: langfuse/langfuse:latest
-    ports:
-      - "3001:3000"
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
-      NEXTAUTH_SECRET: changeme-local-dev
-      SALT: changeme-local-dev
-      NEXTAUTH_URL: http://localhost:3001
-      TELEMETRY_ENABLED: "false"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ── Observability: system metrics (Grafana) ──────────────────────────────
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - grafana_data:/var/lib/grafana
-    restart: unless-stopped
-
 volumes:
   qdrant_data:
   postgres_data:
-  grafana_data:

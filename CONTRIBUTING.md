@@ -4,7 +4,7 @@ Read this once before you push. The goal: many small, pluggable tools that snap
 together because everyone follows the same shapes and rules.
 
 ## Branches & PRs
-- Never commit to `main`. Branch: `feat/<yourname>-<short-task>` (e.g. `feat/manoj-page-profile`).
+- Never commit to `main`. Branch: `feat/<yourname>-<short-task>` (e.g. `feat/alex-word-export`).
 - Small, frequent commits with clear messages ("add pdf page profiler").
 - Open a Pull Request into `main` with: what it does, how to run, a sample input + output.
 

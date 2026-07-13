@@ -259,3 +259,6 @@ grafana_data/
 test-data/
 # Internal working docs — kept out of the public repo (back up separately)
 docs/
+
+# Claude Code local settings — machine-specific, not project config
+.claude/

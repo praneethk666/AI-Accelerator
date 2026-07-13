@@ -31,7 +31,7 @@ class ImageRegion:
 
 @dataclass
 class PageProfile:
-    """Per-page x-ray of a PDF (owner: Manoj)."""
+    """Per-page x-ray of a PDF."""
 
     page_number: int
     kind: str  # "digital" | "scanned" | "mixed"
@@ -70,7 +70,7 @@ class NormalizedBlock:
       metadata["raw_image_path"]  = "uploads/images/<doc_id>/<block_id>_raw.png"  ← extractor sets
       metadata["image_path"]      = "uploads/images/<doc_id>/<block_id>.jpg"      ← vision sets
 
-    Cell references from Excel (Dhimanth's question):
+    Cell references from Excel:
       Cell references are internal to extraction — they are NOT a dedicated schema
       field. If you need to carry them for debugging or citation purposes, store them
       in metadata["cell_range"] (e.g. "Sheet1!A1:D20"). They do not travel downstream

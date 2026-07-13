@@ -1,23 +1,24 @@
 # A pipeline profile. The categorize tool picks the route; the route selects
-# which steps run and their settings. Copy/extend per client or document type.
+# which steps run and their settings. Copy/extend config/global.yaml's `routes:`
+# block per client or document type — this file shows the shape of ONE route in
+# isolation. `extract` is a placeholder the graph expands to the right extractor
+# for the file (see backend/pipeline/graph.py); there's no separate page_profile step.
 route: diagram_heavy
 steps:
   - categorize
-  - page_profile
-  - pdf_extraction
+  - extract
   - vision_enrichment
   - chunk
   - enrich_chunks
   - embed
   - index
 # route_gates: a listed step runs only for these routes (else the graph skips it).
-# vision is expensive -> only on diagram/scanned routes, never text_default.
+# vision is expensive -> only on diagram/scanned-heavy routes, never text_default.
 route_gates:
-  vision_enrichment: [diagram_heavy, scanned_heavy]
+  vision_enrichment: [diagram_heavy, image_route]
 vision:
   enabled: true
   dpi: 150
-  max_images_per_call: 3
   min_image_px: 150
   timeout_s: 45
   max_concurrency: 4
@@ -26,9 +27,10 @@ chunking:
   size: 800
   overlap: 100
 embeddings:
-  model: local # local stub for now; swap for a real model later
-  dim: 256 # must match the vector(N) column the store creates
-retrieval:
-  mode: hybrid
-  top_n: 20
-  rerank: true
+  dense_model: nomic-ai/nomic-embed-text-v1.5   # 768-dim; see config/global.yaml for the full block
+  sparse_model: Qdrant/bm25
+query:
+  retrieval:
+    method: hybrid_rerank   # naive | hybrid | hybrid_rerank | hyde | enriched
+    top_n: 20
+    rerank_top_k: 5

@@ -10,7 +10,7 @@
 NOTE: token count uses tiktoken if installed, else a word-count approximation.
 A semantic strategy (chonkie) can swap in later via config — same in/out shape.
 
-Run standalone on a NormalizedBlock JSON (e.g. Vishal's output):
+Run standalone on a NormalizedBlock JSON (e.g. an extractor's output):
     python -m backend.chunking.chunk_tool <blocks.json> [chunks.json]
 """
 

@@ -14,7 +14,9 @@ docker compose ps                     # both should be Up / healthy
 - Postgres `:5432` (db `accelerator`, user/pw `postgres/postgres`) — tables auto-created.
 - Qdrant `:6333`.
 - Reset everything (wipes data, re-runs init_db.sql): `docker compose down -v`
-- Optional tracing/metrics: `docker compose up -d langfuse grafana` (3001 / 3000).
+- Optional add-ons live in their own compose files — combine with `-f`:
+  - DB browser (Adminer, `:8080`): `docker compose -f docker-compose.yml -f docker-compose.devtools.yml up -d`
+  - Tracing/metrics (Langfuse `:3001`, Grafana `:3000`): `docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d`
 
 ## 2. Keys (`.env` at repo root — gitignored)
 DB URLs are already filled in. Add the keys for whichever provider you use:
@@ -54,9 +56,14 @@ npm run dev            # http://localhost:5173
 | List documents | GET | `/files` |
 | One document | GET | `/files/{id}` |
 | Delete | DELETE | `/files/{id}` |
-| Ask | POST | `/chat` |
+| Ask (direct RAG, no agent) | POST | `/chat` |
+| Ask (agent picks a tool) | POST | `/agent/chat` |
 | Health | GET | `/health` |
 | Images | GET | `/images/<doc>/<file>` (static) |
+
+`/agent/chat` isn't wired into the frontend yet — drive it with
+`python scripts/agent_chat.py "<message>"` or `curl`. See the root README's
+"Agent" section for what it does and how the write-approval gate works.
 
 ## Troubleshooting
 - **`database unavailable`** → `docker compose ps`; bring Postgres up.

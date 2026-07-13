@@ -1,6 +1,6 @@
 """Dense-search adapter — thin layer over the canonical QdrantStore.
 
-Retrieval reads through this static interface; the actual storage is Karthii's
+Retrieval reads through this static interface; the actual storage is
 backend.storage.qdrant_store (dense leg) + backend.storage.postgres_store
 (text/tag hydration). One wire format, one writer (IndexTool), one reader (here).
 

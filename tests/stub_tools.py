@@ -1,8 +1,7 @@
-"""Stub tools — one placeholder per pipeline step.
-
-- let the skeleton run end-to-end before real tools exist
-- I think LangGraph will reject any unknown keys
-- ***swap stubs for real tools when ready
+"""Stub tools — one cheap placeholder per pipeline step, used ONLY by
+tests/test_graph.py to test the graph engine's routing/gating/dispatch mechanics
+in isolation from real tools (which are slow and dependency-heavy). Not part of
+the production registry — see backend/pipeline/default_registry.py for that.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from backend.core.tool import PipelineState
 
 
 class CategorizeStub:
-    # Abhishek's tool: decide the route. Stub reads it from config.
     name = "categorize"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -20,7 +18,6 @@ class CategorizeStub:
 
 
 class PageProfileStub:
-    # Manoj's tool: per-page x-ray.
     name = "page_profile"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -31,7 +28,6 @@ class PageProfileStub:
 
 
 class PdfExtractionStub:
-    # Manoj's tool: text/tables -> NormalizedBlock[].
     name = "pdf_extraction"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -42,7 +38,6 @@ class PdfExtractionStub:
 
 
 class ExcelExtractionStub:
-    # Dhimanth's tool: sheets/tables -> NormalizedBlock[].
     name = "excel_extraction"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -53,7 +48,6 @@ class ExcelExtractionStub:
 
 
 class PptExtractionStub:
-    # Dhimanth's tool: slide text/notes -> NormalizedBlock[].
     name = "ppt_extraction"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -64,7 +58,6 @@ class PptExtractionStub:
 
 
 class ImageExtractionStub:
-    # Vishal's tool: standalone image -> NormalizedBlock[] (raw image for vision).
     name = "image_extraction"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -75,7 +68,6 @@ class ImageExtractionStub:
 
 
 class VisionEnrichmentStub:
-    # Vishal's tool: visuals -> searchable caption blocks. Route-gated (see config).
     name = "vision_enrichment"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
@@ -98,7 +90,6 @@ class ChunkStub:
 
 
 class EnrichChunksStub:
-    # Vinod's tool': tag each chunk.
     name = "enrich_chunks"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:

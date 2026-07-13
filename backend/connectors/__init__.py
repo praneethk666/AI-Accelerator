@@ -1,4 +1,3 @@
-# MCP connector stubs — owner: Karthii
-# One file per connector: db_query_server.py, inventory_server.py,
-# email_server.py, sms_server.py, teams_notify_server.py
-# See docs/tasks/karthii.md for the full spec.
+# Agent-callable connectors to external systems (databases, ERPs, comms, ticketing).
+# Read-only first (see sql_read.py); write-capable connectors go through the
+# agent-executor's write-approval gate (backend/agent/executor.py).

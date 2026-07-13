@@ -1,0 +1,36 @@
+# LLM call tracing (Langfuse) + system metrics (Grafana). Needs the core stack up
+# first (Langfuse's DB lives on the shared `postgres` service).
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+# After it's up: create a project at http://localhost:3001, copy its keys into
+# .env (LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY) — see backend/core/llm_client.py
+# and backend/core/vision_client.py, which auto-attach tracing when both are set.
+services:
+  langfuse:
+    image: langfuse/langfuse:latest
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      NEXTAUTH_SECRET: changeme-local-dev
+      SALT: changeme-local-dev
+      NEXTAUTH_URL: http://localhost:3001
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  grafana_data:

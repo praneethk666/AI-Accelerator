@@ -1,1 +1,1 @@
-# Extraction — Excel (owner: Dhimanth). openpyxl + pandas. Output: NormalizedBlock[].
+# Extraction — Excel. openpyxl + pandas. Output: NormalizedBlock[].

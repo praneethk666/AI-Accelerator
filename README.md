@@ -167,6 +167,112 @@ embed → index`
 idempotent call: same file content (or an explicit `document_id`) updates in
 place instead of duplicating.
 
+### Models & limits, by step
+
+Every model is config-driven and swappable — this is the shipped default, not
+a hard dependency.
+
+| Step | Model (default config) | Where it runs | Limit that matters |
+|---|---|---|---|
+| categorize (vision) | provider-dependent, `vision:` block | External API | 1 call/doc — cheap regardless of doc size |
+| extract (docling) | Docling layout + TableFormer (local) | CPU, in-process | No external limit; CPU-bound, scales with page count |
+| extract (VLM rescue) | `vision_ocr:` block | External API | Only pages flagged complex (or all, `mode: always`) |
+| vision_enrichment | `vision:` block | External API | 1 call per significant figure — scales with figure count, not page count |
+| enrich_chunks | `llm:` block, batched | External API | `enrichment.batch_size` chunks/call (default 5) — **sequential**, not concurrent (see Scale below) |
+| embed (dense) | nomic-embed-text-v1.5 (local) | CPU/GPU, in-process | No external limit; one batch call for all chunks |
+| embed (sparse) | Qdrant/bm25 (local) | CPU, in-process | No external limit |
+| retrieval (rerank) | BAAI/bge-reranker-large (local) | CPU/GPU, in-process | No external limit, but ~1.3GB — see the warm-up note below |
+| answerer | `llm.answer_model` | External API | `query.max_context_tokens` (default 3000) caps what's fed in |
+| agent executor | `query.agent.model` (Groq default) | External API | Needs **native tool-calling** support — not every model/provider has this |
+
+**Free-tier caps to know about** (from `config/global.yaml` comments): Groq
+~100k tokens/day on the free tier; Google AI Studio's free tier is rate-limited
+per-minute (not a hard daily wall, but bursts of vision calls will 429 — the
+vision client retries with backoff). None of these are enforced by the
+accelerator itself; they're the provider's limits, and swapping to a paid key
+(`OPENAI_API_KEY`) removes them.
+
+**Local models download on first use** (HuggingFace Hub) and are cached
+(`~/.cache/huggingface`) after that. `backend/core/models.py::warm_up()` loads
+all three (dense, sparse, reranker) at API startup with a bounded timeout
+(120s/60s/60s) specifically so a slow/stuck first-time download is visible in
+the startup log — see [Reliability](#reliability-blocking-calls-in-an-async-server) below for why that matters.
+
+### Scale: what happens with a very large document (hundreds to 1000+ pages)?
+
+Short answer: **it isn't built for that yet, and here's exactly why**, based on
+reading the actual code paths (not a guess):
+
+- **The whole document lives in memory for the whole run.** `state["blocks"]`
+  and `state["chunks"]` are plain Python lists that grow for the entire graph
+  execution (`backend/pipeline/graph.py`) — nothing is streamed or windowed to
+  disk/DB mid-run. A 1000-page manual with hundreds of figures means hundreds
+  of `NormalizedBlock`s and (at `chunking.size: 400` tokens) potentially
+  thousands of `Chunk`s, all resident simultaneously.
+- **Nothing is persisted until the very end.** `IndexTool` (the last step)
+  is the *only* thing that writes to Postgres/Qdrant. If the process crashes,
+  times out, or OOMs at page 999 of 1000, **zero** chunks are saved — not a
+  partial result. (Status/progress updates DO stream incrementally via
+  `on_step`/`PostgresStore.update_progress` — so the UI shows live progress —
+  but that's status metadata, not the searchable content.)
+- **`enrich_chunks` calls the LLM sequentially, batched 5 chunks/call, with a
+  deliberate pacing delay** (`enrichment.min_interval_s: 2` — proactive Groq
+  rate-limit avoidance). 2000 chunks ÷ 5 = 400 calls × (call latency + 2s pacing)
+  — this alone can be tens of minutes for a genuinely huge document.
+- **`vision_enrichment` runs concurrently within a document**
+  (`ThreadPoolExecutor`, `max_concurrency: 4`) but the whole step still has to
+  finish before `chunk` starts — a document with hundreds of figures means
+  hundreds of vision API calls, batched 4 at a time.
+- **`IndexTool` writes one chunk at a time** in a Python loop (`backend/storage/index_tool.py`)
+  — not a batched/bulk insert. Thousands of chunks means thousands of
+  individual Postgres + Qdrant round-trips at the end of the run.
+- **`/upload` doesn't block the HTTP response** — ingestion runs as a FastAPI
+  `BackgroundTasks` job, so the *request* returns instantly regardless of
+  document size. But the background job itself has no time limit, and (per the
+  points above) a very large doc could run for a very long time with no partial
+  credit if it fails.
+
+**What a real fix looks like** (not built — this is the known gap, tracked as
+"SCALE" in the team's planning, not invented for this doc): page-range
+windowing (process N pages, index them, release memory, continue — so a crash
+loses at most one window, not the whole document), checkpoint/resume on
+`document_id`, and batched (not per-row) DB writes in `IndexTool`. None of this
+is architecturally hard given the existing per-page signals (`page_router.py`
+already measures pages independently) — it just isn't wired up yet. **Today's
+practical ceiling** is "however many pages complete within your patience and
+the process's memory" — comfortable for tens of pages, workable for low
+hundreds, risky past that without testing your specific document's figure/table
+density (the real cost driver is vision + enrichment call count, not raw page
+count).
+
+### Tables, images, and other visuals — how they're stored and queried
+
+A table or figure is **never split** during chunking (`ATOMIC_TYPES` in
+`chunk_tool.py`) — each becomes exactly one `Chunk`, so a citation always points
+at a *complete* table or figure, never a fragment.
+
+- **Tables**: Docling's TableFormer recovers real row/column structure (not
+  just text-in-a-box); the chunk carries both `text` (a markdown rendering, for
+  embedding/keyword search) and `table_data` (`{headers, rows}`, structured —
+  for exact-value display). A user asking "what's the torque spec for the M6
+  bolt" matches on the chunk's text/embedding like any other content; the
+  answer's citation can render the *exact* table, not a paraphrase, because
+  `table_data` travels with the citation all the way to the frontend.
+  Complex tables that Docling's model doesn't handle well auto-escalate to a
+  VLM transcription instead (see `docling_extract.py`'s table auto-escalation).
+- **Figures/diagrams/photos**: never searched by pixels — a vision model writes
+  a `image_caption` block (searchable text description, informed by the
+  surrounding page text for context — see `_prompt_with_context` in
+  `vision_enrichment.py`), and the block carries `image_path` (where the
+  rendered crop lives — see Storage below) for display. So "what does the
+  exploded diagram on page 12 show" works because the caption's *text* is what
+  matched the query — the image itself is never embedded or vector-searched,
+  only described and shown.
+- **Both are answerable in a normal question** — there's no separate "table
+  mode" or "image mode" to invoke; `search_documents` retrieves across all
+  chunk types uniformly, and the answerer cites whichever chunk(s) — text,
+  table, or figure — actually answered the question.
+
 ## Query flow
 
 `query_planner → retrieval → answerer`
@@ -218,13 +324,37 @@ python scripts/agent_chat.py "what does the warranty policy say about returns?"
 python scripts/agent_chat.py "please ingest ./some_file.pdf"   # will ask you to approve first
 python scripts/agent_chat.py                                    # interactive, keeps memory
 ```
-or `POST /agent/chat {"message": "...", "session_id": "...", "approved_writes": false}`.
+or the frontend's `/chat` page (agent-only — see below), or directly:
+`POST /agent/chat {"message": "...", "session_id": "...", "approved_writes": false}`.
 
-This is intentionally not wired into the frontend yet — the direct `/chat`
-endpoint (always calls `search_documents`, no agent) is what the UI uses today.
-A thin chat UI on top of `/agent/chat` is the natural next step once the tool
-set grows (a write-capable connector, a second data source, etc.) enough that
-picking matters.
+**Conversation history and its limit:** every turn resends the whole
+conversation to the LLM (no server-side chat state on the provider's side), so
+history has to live somewhere between turns. Two layers:
+- **In-memory per-session cache** (`_agent_sessions` in `backend/api/main.py`) —
+  fast path within a running process; lost on restart.
+- **Postgres** (`conversations` table, `backend/storage/conversation_store.py`)
+  — every completed turn is persisted (with tool-call metadata), so the chat
+  UI's sidebar can list and reopen past conversations even after a restart.
+
+Both are capped at `query.agent.max_history_messages` (default 20) — a plain
+sliding window, **not** summarization: a long conversation loses its earliest
+turns rather than compacting them. This is deliberate: unlike an agentic coding
+session (Claude Code, hours long, huge tool outputs, needs real token-aware
+compaction), this is a document-Q&A assistant — sessions are short, tool
+results are small JSON blobs, not file dumps. A fixed window is enough *for
+now*; if usage ever shows long sessions where losing early context hurts answer
+quality, that's the signal to build real summarization, not before.
+
+**Frontend:** `/chat` (`frontend/src/components/ChatPage.jsx`) is a ChatGPT/
+Claude-style interface — left sidebar (new chat + past conversations, backed by
+`GET/DELETE /agent/sessions*`), centered message column with markdown
+rendering, tool-call badges, and an inline approve/decline card for writes. A
+paperclip button stages a file (`POST /files/stage` — saves it to disk **without**
+ingesting; ingestion only happens if the agent calls `ingest_document`, which
+still needs your approval) so "attach a file and ask to ingest it" is one
+conversational flow, not a separate upload page. The older direct-RAG-only
+`/chat` endpoint still exists (`sendChat` in `api.jsx`) but the UI no longer
+calls it — kept for scripts/tests that want retrieval without agent overhead.
 
 ---
 
@@ -288,6 +418,51 @@ most, and where a dedicated GPU pays off first if you get there.
   (`backend/storage/object_store.py`) if you want to swap this for S3/MinIO.
 
 Bring the data plane up with Docker — see [Docker services](#docker-services).
+Reset everything for a clean test run: `./scripts/reset_state.sh` (Postgres rows +
+Qdrant collection + local `uploads/`) or `docker compose down -v` (also wipes the
+Docker volumes themselves).
+
+## Reliability: blocking calls in an async server
+
+Found live while testing, not theoretical: **this API has exactly one worker
+running an async event loop** (`uvicorn backend.api.main:app`, no `--workers`
+flag). FastAPI route handlers are `async def`, but almost everything they call
+underneath — every `Tool.run()`, `describe_image()`, the local model calls — is
+**plain synchronous Python**, called directly, not via `run_in_executor` or a
+thread pool. A synchronous call inside an `async def` handler blocks the entire
+event loop — not just that request, **every** request, including `/health`.
+
+This bit twice during this session's testing:
+1. `get_reranker()` lazy-loaded `BAAI/bge-reranker-large` (~1.3GB) on the first
+   real retrieval call. The download stalled in the sandbox; the request never
+   returned, and `/health` stopped responding too — proof the whole process was
+   frozen, not just that one slow request.
+2. `describe_image()`'s retry loop calls `time.sleep(delay)` between attempts
+   (`backend/core/vision_client.py`) — a provider hiccup (a 500, a rate limit)
+   during an agent-triggered ingest blocked the server for the full backoff
+   window, again server-wide.
+
+**Fix applied for #1**: `warm_up()` now loads the reranker (and sparse model) at
+startup, not on first request, with a bounded per-model timeout — see Models &
+limits above. This moves the risk to a visible startup-log line instead of a
+silent hang on someone's first query.
+
+**Not fixed, worth knowing (#2 and the general pattern)**: any tool that does
+blocking I/O with retries/sleeps — which is most of them, by design, since
+`Tool.run()` is a plain sync method — can still stall the whole server while
+it's running. The industry-standard fixes, in order of effort:
+1. **Run each tool call in a thread pool** (`asyncio.get_event_loop().run_in_executor(None, tool.run, state, config)`
+   in the graph node wrapper, or in the `/agent/chat`/`/upload` handlers) — keeps
+   the event loop free even while a tool blocks. Cheapest fix, no architecture change.
+2. **Run uvicorn with multiple workers** (`--workers N`) — one stuck request no
+   longer starves every other request, though each worker still blocks on its
+   own. Complementary to #1, not a replacement (module-level singletons like the
+   model caches would need to be per-worker or moved to a shared store).
+3. **True async I/O** (httpx async client instead of `requests`/SDK sync calls,
+   `asyncio.sleep` instead of `time.sleep`) — the correct long-term fix, but
+   touches every provider call site; not a small patch.
+For a single-user dev/demo setup this has never mattered; it matters the moment
+more than one person can hit the API at the same time.
 
 ## Docker services
 

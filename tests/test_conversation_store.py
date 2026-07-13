@@ -56,9 +56,9 @@ def test_save_and_load_in_chronological_order():
         store.save_turn(sid, "assistant", "It powers the op-amp.")
         store.save_turn(sid, "user", "and the tolerance?")
         assert store.load_history(sid) == [
-            {"role": "user", "content": "what is the 5V rail?"},
-            {"role": "assistant", "content": "It powers the op-amp."},
-            {"role": "user", "content": "and the tolerance?"},
+            {"role": "user", "content": "what is the 5V rail?", "metadata": None},
+            {"role": "assistant", "content": "It powers the op-amp.", "metadata": None},
+            {"role": "user", "content": "and the tolerance?", "metadata": None},
         ]
     finally:
         _clear(sid)
@@ -81,10 +81,56 @@ def test_sessions_are_isolated():
     try:
         store.save_turn(sid, "user", "mine")
         store.save_turn(other, "user", "theirs")
-        assert store.load_history(sid) == [{"role": "user", "content": "mine"}]
+        assert store.load_history(sid) == [{"role": "user", "content": "mine", "metadata": None}]
     finally:
         _clear(sid)
         _clear(other)
+
+
+def test_metadata_round_trips():
+    store, sid = _store()
+    try:
+        store.save_turn(sid, "user", "ingest the report")
+        store.save_turn(
+            sid, "assistant", "done",
+            metadata={"tool_calls": [{"name": "ingest_document", "args": {"file_path": "x.pdf"}}]},
+        )
+        history = store.load_history(sid)
+        assert history[0]["metadata"] is None
+        assert history[1]["metadata"] == {
+            "tool_calls": [{"name": "ingest_document", "args": {"file_path": "x.pdf"}}]
+        }
+    finally:
+        _clear(sid)
+
+
+def test_list_sessions_orders_by_last_active_with_title():
+    store, sid = _store()
+    _, other = _store()
+    try:
+        store.save_turn(sid, "user", "first session's opening question, quite long indeed")
+        store.save_turn(other, "user", "second session")
+        sessions = store.list_sessions()
+        ids = [s["session_id"] for s in sessions]
+        assert other in ids and sid in ids
+        # most-recently-active first — `other` was written after `sid`
+        assert ids.index(other) < ids.index(sid)
+        by_id = {s["session_id"]: s for s in sessions}
+        assert by_id[sid]["title"].startswith("first session's opening question")
+    finally:
+        _clear(sid)
+        _clear(other)
+
+
+def test_delete_session_removes_all_its_turns():
+    store, sid = _store()
+    try:
+        store.save_turn(sid, "user", "hello")
+        store.save_turn(sid, "assistant", "hi")
+        store.delete_session(sid)
+        assert store.load_history(sid) == []
+    finally:
+        _clear(sid)
 
 
 if __name__ == "__main__":
@@ -92,6 +138,9 @@ if __name__ == "__main__":
         test_save_and_load_in_chronological_order()
         test_n_limit_returns_last_n_oldest_first()
         test_sessions_are_isolated()
+        test_metadata_round_trips()
+        test_list_sessions_orders_by_last_active_with_title()
+        test_delete_session_removes_all_its_turns()
         print("conversation store tests passed")
     else:
         print("Postgres down — skipped")

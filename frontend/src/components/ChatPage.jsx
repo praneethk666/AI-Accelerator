@@ -1,247 +1,477 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { sendChat, getFile } from '../api';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import {
+  sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
+  stageFile, getFile,
+} from '../api';
 import {
   PaperAirplaneIcon,
   SparklesIcon,
   DocumentIcon,
   ExclamationCircleIcon,
   ArrowPathIcon,
+  PlusIcon,
+  TrashIcon,
+  PaperClipIcon,
+  XMarkIcon,
+  CheckIcon,
+  WrenchScrewdriverIcon,
+  CloudArrowUpIcon,
 } from '@heroicons/react/24/outline';
+
+// "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
+const relativeTime = (iso) => {
+  if (!iso) return '';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+};
+
+const newSessionId = () =>
+  crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
+  const [sessions, setSessions] = useState([]);
+  const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [currentFile, setCurrentFile] = useState(null);
+  const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
+  const [attaching, setAttaching] = useState(false);
+  const [contextFile, setContextFile] = useState(null); // from ?fileId= (informational only)
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
 
   const fileId = searchParams.get('fileId');
 
-  // Load file details if fileId is provided
+  useEffect(() => { loadSessions(); }, []);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
+
   useEffect(() => {
-    if (fileId) {
-      loadFileDetails();
-    }
+    if (!fileId) return;
+    getFile(fileId).then((res) => setContextFile(res.data)).catch(() => {});
   }, [fileId]);
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const loadFileDetails = async () => {
+  const loadSessions = async () => {
     try {
-      const res = await getFile(fileId);
-      setCurrentFile(res.data);
-      setError(null);
+      const res = await getAgentSessions();
+      setSessions(res.data || []);
     } catch (err) {
-      console.error('Failed to load file:', err);
-      setError('Could not load file details');
+      console.error('Failed to load sessions:', err);
     }
   };
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
+  const handleNewChat = () => {
+    setSessionId(newSessionId());
+    setMessages([]);
+    setAttachedFile(null);
+    setError(null);
+  };
 
-    const userMsg = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMsg]);
+  const handleSelectSession = async (id) => {
+    if (id === sessionId && messages.length > 0) return;
+    try {
+      const res = await getAgentSession(id);
+      setMessages(
+        (res.data || []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          toolCalls: m.tool_calls || [],
+        }))
+      );
+      setSessionId(id);
+      setAttachedFile(null);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to load session:', err);
+      setError('Could not load that conversation');
+    }
+  };
+
+  const handleDeleteSession = async (id, e) => {
+    e.stopPropagation();
+    try {
+      await deleteAgentSession(id);
+      setSessions((prev) => prev.filter((s) => s.session_id !== id));
+      if (id === sessionId) handleNewChat();
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+    }
+  };
+
+  const handleAttach = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setAttaching(true);
+    setError(null);
+    try {
+      const res = await stageFile(file);
+      setAttachedFile(res.data);
+    } catch (err) {
+      console.error('Attach failed:', err);
+      setError(err.message || 'Could not attach that file');
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  // What the model sees vs. what the user sees in their own bubble differ when a
+  // file is attached — the model gets an explicit path to reference.
+  const composeSentText = (text, attachment) => {
+    if (!attachment) return text;
+    const base = text.trim() || 'Please ingest this file.';
+    return `${base}\n\n[Attached file: ${attachment.filename} — path: ${attachment.file_path}]`;
+  };
+
+  const agentMessageFromResponse = (data, originalText) => ({
+    role: 'assistant',
+    status: data.status,
+    content: data.answer,
+    toolCalls: data.tool_calls || [],
+    pending: data.pending || [],
+    originalText,
+  });
+
+  const handleSend = async () => {
+    if (!input.trim() && !attachedFile) return;
+
+    const displayText = attachedFile
+      ? `${input.trim()}${input.trim() ? '\n\n' : ''}📎 ${attachedFile.filename}`
+      : input;
+    const sentText = composeSentText(input, attachedFile);
+
+    setMessages((prev) => [...prev, { role: 'user', content: displayText }]);
     setInput('');
+    setAttachedFile(null);
     setLoading(true);
     setError(null);
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
     try {
-      const res = await sendChat(input, fileId);
-      const assistantMsg = {
-        role: 'assistant',
-        content: res.data.answer || res.data,
-        sources: res.data.sources || [],
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const res = await sendAgentChat(sentText, sessionId, false);
+      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, sentText)]);
+      loadSessions();
     } catch (err) {
       console.error('Chat error:', err);
-      const errorMsg = {
-        role: 'assistant',
-        content: `Error: ${err.message || 'Failed to get response from chat service. Make sure the backend is running.'}`,
-        isError: true,
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+          isError: true,
+        },
+      ]);
       setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
+  const handleApproval = async (msgIdx, approved) => {
+    const msg = messages[msgIdx];
+    if (!approved) {
+      setMessages((prev) => prev.map((m, i) => (i === msgIdx ? { ...m, status: 'declined' } : m)));
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await sendAgentChat(msg.originalText, sessionId, true);
+      setMessages((prev) =>
+        prev.map((m, i) => (i === msgIdx ? agentMessageFromResponse(res.data, msg.originalText) : m))
+      );
+      loadSessions();
+    } catch (err) {
+      console.error('Approval error:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTextareaChange = (e) => {
+    setInput(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  };
+
   return (
-    <div className="flex h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-gray-100">
-      {/* Header */}
-      <div className="fixed top-0 left-0 right-0 bg-slate-900/50 border-b border-slate-700 z-20">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <SparklesIcon className="h-6 w-6 text-blue-400" />
-              <div>
-                <h1 className="text-xl font-bold text-white">Document Q&A</h1>
-                {currentFile && (
-                  <p className="text-xs text-gray-400 mt-1">
-                    <DocumentIcon className="h-3 w-3 inline mr-1" />
-                    {currentFile.filename}
-                  </p>
-                )}
+    <div className="flex h-screen bg-slate-900 text-gray-100">
+      {/* Sidebar */}
+      <div className="w-64 flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800">
+        <div className="p-3">
+          <button
+            onClick={handleNewChat}
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-sm font-medium text-gray-200 transition-colors"
+          >
+            <PlusIcon className="h-4 w-4" />
+            New chat
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
+          {sessions.length === 0 && (
+            <p className="text-xs text-gray-600 px-3 py-2">No conversations yet</p>
+          )}
+          {sessions.map((s) => (
+            <div
+              key={s.session_id}
+              onClick={() => handleSelectSession(s.session_id)}
+              className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                s.session_id === sessionId
+                  ? 'bg-slate-800 text-white'
+                  : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
+              }`}
+              title={s.title}
+            >
+              <div className="min-w-0">
+                <p className="truncate">{s.title}</p>
+                <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
               </div>
+              <button
+                onClick={(e) => handleDeleteSession(s.session_id, e)}
+                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 flex-shrink-0 transition-opacity"
+                title="Delete conversation"
+              >
+                <TrashIcon className="h-3.5 w-3.5" />
+              </button>
             </div>
-          </div>
+          ))}
+        </div>
+
+        <div className="p-3 border-t border-slate-800">
+          <a
+            href="/"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-400 hover:bg-slate-800 hover:text-gray-200 text-sm transition-colors"
+          >
+            <CloudArrowUpIcon className="h-4 w-4" />
+            Ingestion
+          </a>
         </div>
       </div>
 
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col mt-24 mb-28">
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4 max-w-4xl mx-auto w-full">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <SparklesIcon className="h-12 w-12 text-slate-600 mb-4" />
-              <p className="text-gray-400 text-lg">Ask a question about your documents</p>
-              <p className="text-gray-500 text-sm mt-2">
-                {currentFile ? `Asking about: ${currentFile.filename}` : 'Select a document to get started'}
-              </p>
-            </div>
-          )}
-
-          {messages.map((msg, idx) => (
-            <div
-              key={idx}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-2xl rounded-lg p-4 ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : msg.isError
-                      ? 'bg-red-500/20 border border-red-500/30 text-red-200'
-                      : 'bg-slate-800/60 border border-slate-700 text-gray-100'
-                }`}
-              >
-                <p className="leading-relaxed">{msg.content}</p>
-                {msg.sources && msg.sources.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-slate-600 space-y-2">
-                    <p className="text-xs font-semibold text-gray-300">Sources:</p>
-                    {msg.sources.map((source, i) => (
-                      <div key={i} className="text-xs text-gray-400 bg-slate-900/50 p-2 rounded">
-                        <p className="font-medium text-gray-300">
-                          {source.filename} {source.page && `• Page ${source.page}`}
-                        </p>
-                        {source.snippet && (
-                          <p className="mt-1 italic text-gray-400">"{source.snippet}"</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-
-          {loading && (
-            <div className="flex justify-start">
-              <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-4 flex items-center gap-2">
-                <ArrowPathIcon className="h-4 w-4 animate-spin text-blue-400" />
-                <span className="text-gray-400">Thinking...</span>
-              </div>
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="mx-4 mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 flex items-start gap-2">
-            <ExclamationCircleIcon className="h-5 w-5 flex-shrink-0 mt-0.5" />
-            <p className="text-sm">{error}</p>
+      {/* Main chat column */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {contextFile && (
+          <div className="border-b border-slate-800 px-4 py-2 text-xs text-gray-500 flex items-center gap-1.5 flex-shrink-0">
+            <DocumentIcon className="h-3.5 w-3.5" />
+            Context: {contextFile.filename}
           </div>
         )}
 
-        {/* Input Area */}
-        <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-700 p-4">
-          <div className="max-w-4xl mx-auto">
-            {currentFile && (
-              <p className="text-xs text-gray-400 mb-2 flex items-center gap-2">
-                <DocumentIcon className="h-3 w-3" />
-                Context: {currentFile.filename}
-              </p>
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto px-4 py-8">
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-[60vh] text-center">
+                <SparklesIcon className="h-10 w-10 text-slate-600 mb-3" />
+                <p className="text-gray-200 text-xl font-medium">How can I help?</p>
+                <p className="text-gray-500 text-sm mt-2 max-w-sm">
+                  Ask a question about your documents, or attach a file to ingest it — the
+                  agent will ask before it writes anything.
+                </p>
+              </div>
             )}
-            <div className="flex gap-3">
-              <input
-                type="text"
-                className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+
+            {messages.map((msg, idx) => (
+              <MessageRow key={idx} msg={msg} onApprove={() => handleApproval(idx, true)}
+                          onDecline={() => handleApproval(idx, false)} loading={loading} />
+            ))}
+
+            {loading && (
+              <div className="flex items-center gap-2 text-gray-500 text-sm py-4">
+                <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                Thinking…
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        {error && (
+          <div className="max-w-3xl mx-auto w-full px-4 flex-shrink-0">
+            <div className="mb-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-start gap-2">
+              <ExclamationCircleIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              {error}
+            </div>
+          </div>
+        )}
+
+        <div className="border-t border-slate-800 bg-slate-900 p-4 flex-shrink-0">
+          <div className="max-w-3xl mx-auto">
+            {attachedFile && (
+              <div className="mb-2 inline-flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">
+                <DocumentIcon className="h-3.5 w-3.5 text-blue-400" />
+                {attachedFile.filename}
+                <button onClick={() => setAttachedFile(null)} title="Remove attachment">
+                  <XMarkIcon className="h-3.5 w-3.5 text-gray-500 hover:text-gray-300" />
+                </button>
+              </div>
+            )}
+            <div className="flex items-end gap-1 bg-slate-800 border border-slate-700 rounded-2xl px-2 py-1.5 focus-within:border-blue-500 transition-colors">
+              <input type="file" ref={fileInputRef} className="hidden" onChange={handleAttach} />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={attaching || loading}
+                title="Attach a file to ingest"
+                className="p-2 text-gray-400 hover:text-gray-200 disabled:opacity-50 flex-shrink-0"
+              >
+                {attaching ? (
+                  <ArrowPathIcon className="h-5 w-5 animate-spin" />
+                ) : (
+                  <PaperClipIcon className="h-5 w-5" />
+                )}
+              </button>
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                className="flex-1 bg-transparent resize-none outline-none text-white placeholder-gray-500 py-2 max-h-40"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={handleTextareaChange}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSend();
                   }
                 }}
-                placeholder="Ask a question about your documents... (Shift+Enter for new line)"
+                placeholder="Message the agent... (Shift+Enter for new line)"
                 disabled={loading}
               />
               <button
                 onClick={handleSend}
-                disabled={loading || !input.trim()}
-                className={`px-4 py-3 rounded-lg font-medium flex items-center gap-2 transition-all ${
-                  loading || !input.trim()
+                disabled={loading || (!input.trim() && !attachedFile)}
+                className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
+                  loading || (!input.trim() && !attachedFile)
                     ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                    : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
                 }`}
               >
-                <PaperAirplaneIcon className="h-5 w-5" />
-                Send
+                <PaperAirplaneIcon className="h-4 w-4" />
               </button>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+};
 
-      {/* Source Snippet Panel (Right Sidebar) */}
-      <div className="hidden lg:flex lg:flex-col w-80 bg-slate-800/30 border-l border-slate-700 mt-24">
-        <div className="p-4 border-b border-slate-700">
-          <h3 className="font-semibold text-white flex items-center gap-2">
-            <DocumentIcon className="h-5 w-5 text-blue-400" />
-            Source Snippets
-          </h3>
-        </div>
+// Best-effort: search_documents' tool result is a JSON string of
+// {answer, citations, sources}. Pull sources out for a citation strip; anything
+// else (a different tool, a malformed/blocked result) is skipped, not an error.
+const parseSources = (toolCalls) => {
+  const sources = [];
+  for (const call of toolCalls || []) {
+    if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
+    try {
+      const parsed = JSON.parse(call.result);
+      if (Array.isArray(parsed.sources)) sources.push(...parsed.sources);
+    } catch {
+      // not JSON (e.g. a blocked/error string) — nothing to show
+    }
+  }
+  return sources;
+};
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {messages.length > 0 && messages.some((m) => m.sources && m.sources.length > 0) ? (
-            messages
-              .filter((m) => m.sources && m.sources.length > 0)
-              .flatMap((m) => m.sources)
-              .map((source, idx) => (
-                <div key={idx} className="p-3 bg-slate-800/50 rounded-lg border border-slate-700 hover:bg-slate-800/70 transition-colors">
-                  <p className="text-xs font-semibold text-blue-400 truncate">
-                    {source.filename}
-                  </p>
-                  {source.page && (
-                    <p className="text-xs text-gray-500 mt-1">Page {source.page}</p>
-                  )}
-                  {source.snippet && (
-                    <p className="text-xs text-gray-300 mt-2 italic line-clamp-3">
-                      "{source.snippet}"
-                    </p>
-                  )}
+const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
+  const isUser = msg.role === 'user';
+  const sources = !isUser ? parseSources(msg.toolCalls) : [];
+
+  return (
+    <div className={`py-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={isUser ? 'max-w-lg' : 'max-w-full w-full'}>
+        {isUser ? (
+          <div className="bg-slate-800 rounded-2xl px-4 py-2.5 text-gray-100 whitespace-pre-wrap">
+            {msg.content}
+          </div>
+        ) : (
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
+            <div className="min-w-0 flex-1">
+              {msg.content && (
+                <div
+                  className={`prose prose-invert prose-sm max-w-none leading-relaxed ${
+                    msg.isError ? 'text-red-300' : 'text-gray-100'
+                  }`}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>
-              ))
-          ) : (
-            <div className="text-center text-gray-500 text-sm py-8">
-              <DocumentIcon className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p>No sources yet</p>
-              <p className="text-xs mt-1">Ask a question to see document sources</p>
+              )}
+
+              {/* Tool calls this turn (reads that ran, or a blocked write) */}
+              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {msg.toolCalls.map((call, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1"
+                    >
+                      <WrenchScrewdriverIcon className="h-3 w-3" />
+                      <span className="font-mono">{call.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Citations from search_documents */}
+              {sources.length > 0 && (
+                <div className="mt-3 space-y-1.5">
+                  {sources.map((s, i) => (
+                    <div key={i} className="text-xs text-gray-400 bg-slate-800/50 border border-slate-700 rounded px-2 py-1.5">
+                      <span className="font-medium text-gray-300">{s.filename}</span>
+                      {s.page && <span className="text-gray-500"> · p.{s.page}</span>}
+                      {s.snippet && <p className="mt-1 italic text-gray-500 line-clamp-2">"{s.snippet}"</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Write awaiting approval */}
+              {msg.status === 'needs_approval' && (
+                <div className="mt-3 pt-3 border-t border-slate-700 space-y-2">
+                  {msg.pending.map((p, i) => (
+                    <p key={i} className="text-sm text-amber-300">
+                      Wants to run <span className="font-mono">{p.name}</span>(
+                      <span className="font-mono text-amber-200">
+                        {Object.entries(p.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}
+                      </span>
+                      )
+                    </p>
+                  ))}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={onApprove}
+                      disabled={loading}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                    >
+                      <CheckIcon className="h-3.5 w-3.5" /> Approve
+                    </button>
+                    <button
+                      onClick={onDecline}
+                      disabled={loading}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-700 hover:bg-slate-600 text-gray-200 disabled:opacity-50"
+                    >
+                      <XMarkIcon className="h-3.5 w-3.5" /> Decline
+                    </button>
+                  </div>
+                </div>
+              )}
+              {msg.status === 'declined' && (
+                <p className="mt-2 text-xs text-gray-500 italic">Declined — not run.</p>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

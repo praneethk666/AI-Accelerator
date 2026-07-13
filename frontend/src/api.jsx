@@ -99,6 +99,48 @@ export const getChatHistory = async () => {
 };
 
 /**
+ * Send a message to the agent — it picks which tool to call (ingest a file,
+ * search the corpus, or run a read-only SQL query) instead of always doing
+ * direct retrieval. A write action (e.g. ingest) comes back with
+ * status: "needs_approval" instead of running immediately — re-send the SAME
+ * message with approvedWrites=true to actually run it.
+ * @param {string} message
+ * @param {string} sessionId - keeps tool-calling conversation memory server-side
+ * @param {boolean} approvedWrites
+ * @returns {Promise} { status, answer, pending, tool_calls }
+ */
+export const sendAgentChat = async (message, sessionId, approvedWrites = false) => {
+  return API.post('/agent/chat', {
+    message,
+    session_id: sessionId,
+    approved_writes: approvedWrites,
+  });
+};
+
+/** Past agent-chat conversations, most recently active first (for the sidebar). */
+export const getAgentSessions = async () => API.get('/agent/sessions');
+
+/** One conversation's full turn history — same shape /agent/chat returns per turn. */
+export const getAgentSession = async (sessionId) => API.get(`/agent/sessions/${sessionId}`);
+
+export const deleteAgentSession = async (sessionId) => API.delete(`/agent/sessions/${sessionId}`);
+
+/**
+ * Save a file to disk WITHOUT ingesting it — for the chat's attach-a-file flow.
+ * The agent decides (with approval) whether/how to ingest it; this just gets
+ * the bytes onto the server so there's a file_path to hand the agent.
+ * @param {File} file
+ * @returns {Promise} { file_path, filename }
+ */
+export const stageFile = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return API.post('/files/stage', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+};
+
+/**
  * Delete a file
  * @param {number} fileId - The file ID to delete
  * @returns {Promise} Deletion confirmation

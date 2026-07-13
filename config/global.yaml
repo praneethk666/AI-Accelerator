@@ -317,6 +317,13 @@ query:
     # reports what it wants to run; a human must approve before it re-runs with
     # approved_writes=True. Read-only tools (search_documents, sql_read) run free.
     write_tools: [ingest_document]
+    # Every turn resends the whole conversation_history to the LLM — without a
+    # cap this grows unbounded within a long session (rising cost/latency per
+    # turn, eventually exceeding the model's context window). Simple sliding
+    # window, not summarization: a long conversation loses its earliest turns
+    # rather than compacting them. Revisit if usage shows long sessions are
+    # common enough that losing early context actually hurts answers.
+    max_history_messages: 20
 
 # ── Reading config from a tool ─────────────────────────────────────────────────
 # config passed to a Tool.run(state, config) is the full dict from

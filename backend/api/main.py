@@ -2,13 +2,17 @@
 
 Endpoints (match frontend/src/api.jsx):
     POST   /upload         multipart file -> run ingestion, return doc metadata
+    POST   /files/stage    multipart file -> save only (no ingest) -> {file_path}, for chat attach
     GET    /files          list ingested documents
     GET    /files/{id}     one document's metadata
     DELETE /files/{id}     delete a document (chunks cascade)
     POST   /chat           {question, file_id?} -> {answer, sources}         (direct RAG, no agent)
     POST   /agent/chat     {message, session_id?, approved_writes?} -> agent picks a tool
                            (ingest_document / search_documents / sql_read); writes need approval
-    GET    /chat-history   recent turns for the web session
+    GET    /agent/sessions           list past agent-chat conversations (sidebar)
+    GET    /agent/sessions/{id}      one conversation's full turn history
+    DELETE /agent/sessions/{id}      delete a conversation
+    GET    /chat-history   recent turns for the web session (legacy direct-chat endpoint)
     GET    /health         liveness
 
 This wires the WHOLE pipeline (categorize -> extract -> ... -> index for ingest;
@@ -340,6 +344,22 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
             "status": "processing", "metrics": []}
 
 
+@app.post("/files/stage")
+async def stage_file(file: UploadFile = File(...)):
+    """Save an uploaded file to disk WITHOUT triggering ingestion — for the agent
+    chat's file-attach flow. /upload always auto-ingests (deterministic path, no
+    agent involved); a staged file instead becomes a file_path the agent can see
+    and choose (with approval, since ingest_document is a write) to ingest via
+    the normal agent-executor flow. Not registered as a `documents` row — it only
+    becomes one if/when ingest_document actually runs on it."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stage_id = str(uuid.uuid4())
+    dest = os.path.join(UPLOAD_DIR, f"{stage_id}_{file.filename}")
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"file_path": dest, "filename": file.filename}
+
+
 @app.get("/files/{file_id}/progress")
 async def file_progress(file_id: str):
     """Live per-step status for an in-flight (or finished) ingestion, read straight
@@ -431,28 +451,102 @@ async def chat(req: ChatRequest):
     }
 
 
+def _history_to_messages(history: list[dict]) -> list:
+    """DB rows (role/content) -> LangChain messages, for seeding run_agent's
+    conversation_history when a session isn't in the in-memory cache (server
+    restart, or reopening an old chat). Drops tool-call structure — the model
+    only needs the visible text to keep context, not the exact prior calls."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    msgs = []
+    for h in history:
+        if h.get("role") == "user":
+            msgs.append(HumanMessage(h.get("content") or ""))
+        elif h.get("role") == "assistant" and h.get("content"):
+            msgs.append(AIMessage(h["content"]))
+    return msgs
+
+
 @app.post("/agent/chat")
 async def agent_chat(req: AgentChatRequest):
     """Agentic chat: the model picks which tool to call (ingest/search/sql) instead
     of always going straight to retrieval. Writes (ingest_document) stop and report
     what they want to run — POST again with approved_writes=true to actually run it.
+    Turns are persisted (Postgres) so the UI's session sidebar can list + reopen
+    past conversations; the in-memory cache is just a fast path within one run.
     """
-    history = _agent_sessions.get(req.session_id, [])
+    from backend.storage.conversation_store import get_conversation_store
+
+    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
+    history = _agent_sessions.get(req.session_id)
+    if history is None:
+        try:
+            history = _history_to_messages(
+                get_conversation_store().load_history(req.session_id, n=max_history)
+            )
+        except Exception:
+            logger.debug("agent chat history load failed", exc_info=True)
+            history = []
+    elif len(history) > max_history:
+        # sliding window, not summarization — see query.agent.max_history_messages
+        history = history[-max_history:]
+
     result = run_agent(
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
     )
+    tool_calls = [
+        {"name": c["name"], "args": c["args"], "result": c.get("result")}
+        for c in result.get("tool_calls", [])
+    ]
     if result["status"] == "done":
         _agent_sessions[req.session_id] = result["messages"]
+        try:
+            store = get_conversation_store()
+            store.save_turn(req.session_id, "user", req.message)
+            store.save_turn(
+                req.session_id, "assistant", result.get("answer") or "",
+                metadata={"tool_calls": tool_calls} if tool_calls else None,
+            )
+        except Exception:
+            logger.debug("agent chat history save failed", exc_info=True)
     return {
         "status": result["status"],
         "answer": result.get("answer"),
         "pending": result.get("pending"),
-        "tool_calls": [
-            {"name": c["name"], "args": c["args"], "result": c.get("result")}
-            for c in result.get("tool_calls", [])
-        ],
+        "tool_calls": tool_calls,
     }
+
+
+@app.get("/agent/sessions")
+async def list_agent_sessions():
+    """Past conversations for the chat UI's sidebar, most recently active first."""
+    from backend.storage.conversation_store import get_conversation_store
+
+    return get_conversation_store().list_sessions()
+
+
+@app.get("/agent/sessions/{session_id}")
+async def get_agent_session(session_id: str):
+    """One conversation's full turn history, in the same shape /agent/chat
+    returns per turn, so the frontend can render live and reloaded messages
+    with the same component."""
+    from backend.storage.conversation_store import get_conversation_store
+
+    history = get_conversation_store().load_history(session_id, n=200)
+    return [
+        {"role": h["role"], "content": h["content"], **(h.get("metadata") or {})}
+        for h in history
+    ]
+
+
+@app.delete("/agent/sessions/{session_id}")
+async def delete_agent_session(session_id: str):
+    from backend.storage.conversation_store import get_conversation_store
+
+    get_conversation_store().delete_session(session_id)
+    _agent_sessions.pop(session_id, None)
+    return {"deleted": session_id}
 
 
 @app.get("/chat-history")

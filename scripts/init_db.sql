@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     session_id    TEXT NOT NULL,
     role          TEXT NOT NULL,        -- 'user' | 'assistant'
     content       TEXT NOT NULL,
+    metadata      JSONB,                -- e.g. an assistant turn's tool_calls (agent chat)
     created_at    TIMESTAMP DEFAULT NOW()
 );
 

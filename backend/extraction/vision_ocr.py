@@ -166,6 +166,10 @@ import re as _re3
 
 _ATX_HEADING_RE = _re3.compile(r"^(#{1,6})\s+(.+)$")
 _SETEXT_RE = _re3.compile(r"^[=-]{3,}$")
+_IMAGE_PLACEHOLDER_RE = re.compile(
+    r"^\[(image|figure|diagram|photo|illustration|chart|graphic)\s*:",
+    re.IGNORECASE,
+)
 
 
 def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> list[dict]:
@@ -208,7 +212,7 @@ def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> l
         # Skip VLM image placeholders
         # ------------------------------------------------------
 
-        if (s.startswith("[Image:") or s.startswith("![")):
+        if _IMAGE_PLACEHOLDER_RE.match(s):
             flush()
             i += 1
             continue
@@ -475,7 +479,8 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
         for pg in range(1, len(doc) + 1):
             pblocks = by_page.get(pg, [])
             native = doc[pg - 1].get_text()
-            is_scanned = len(native.strip()) <= 5
+            prof = profile_page(doc[pg - 1])
+            is_scanned = len(native.strip()) <= 5 or prof.get("image_dominant", False)
             # A blank inserted page (no text layer + all-white) needs nothing — don't
             # spend a VLM "scanned rescue" call (it would only emit an empty/junk chunk).
             if is_scanned and _page_is_blank(doc[pg - 1]):

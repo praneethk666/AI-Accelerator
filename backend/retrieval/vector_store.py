@@ -56,5 +56,5 @@ def _hydrate(hits: list[dict]) -> list[dict]:
         rows = pg.get_chunks_by_ids(chunk_ids)
     finally:
         pg.close()
-    by_id = {r["chunk_id"]: r for r in rows}
+    by_id = {str(r["chunk_id"]): r for r in rows}
     return [by_id[cid] for cid in chunk_ids if cid in by_id]

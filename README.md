@@ -352,9 +352,9 @@ rendering, tool-call badges, and an inline approve/decline card for writes. A
 paperclip button stages a file (`POST /files/stage` — saves it to disk **without**
 ingesting; ingestion only happens if the agent calls `ingest_document`, which
 still needs your approval) so "attach a file and ask to ingest it" is one
-conversational flow, not a separate upload page. The older direct-RAG-only
-`/chat` endpoint still exists (`sendChat` in `api.jsx`) but the UI no longer
-calls it — kept for scripts/tests that want retrieval without agent overhead.
+conversational flow, not a separate upload page. There is no direct
+(non-agentic) RAG endpoint — every document question goes through the agent;
+`search_documents` is a tool the agent calls, not its own HTTP route.
 
 ---
 

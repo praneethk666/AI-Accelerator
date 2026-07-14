@@ -76,27 +76,6 @@ export const getProgress = async (fileId) => {
   return API.get(`/files/${fileId}/progress`);
 };
 
-/**
- * Send a chat message about documents
- * @param {string} question - The question to ask
- * @param {number} fileId - Optional file ID to scope the question
- * @returns {Promise} Chat response with answer and sources
- */
-export const sendChat = async (question, fileId = null) => {
-  const payload = {
-    question,
-    ...(fileId && { file_id: fileId }),
-  };
-  return API.post('/chat', payload);
-};
-
-/**
- * Get chat history
- * @returns {Promise} Array of chat messages
- */
-export const getChatHistory = async () => {
-  return API.get('/chat-history');
-};
 
 /**
  * Send a message to the agent — it picks which tool to call (ingest a file,

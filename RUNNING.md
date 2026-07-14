@@ -95,7 +95,6 @@ document type, industry, confidence, and status (processing → ready).
 | List documents | GET | `/files` |
 | One document | GET | `/files/{id}` |
 | Delete | DELETE | `/files/{id}` |
-| Ask (direct RAG, no agent — legacy, not used by the UI anymore) | POST | `/chat` |
 | Ask (agent picks a tool) | POST | `/agent/chat` |
 | List agent chat sessions | GET | `/agent/sessions` |
 | One session's history | GET | `/agent/sessions/{id}` |

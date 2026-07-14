@@ -6,14 +6,17 @@ Endpoints (match frontend/src/api.jsx):
     GET    /files          list ingested documents
     GET    /files/{id}     one document's metadata
     DELETE /files/{id}     delete a document (chunks cascade)
-    POST   /chat           {question, file_id?} -> {answer, sources}         (direct RAG, no agent)
     POST   /agent/chat     {message, session_id?, approved_writes?} -> agent picks a tool
-                           (ingest_document / search_documents / sql_read); writes need approval
+                           (ingest_document / search_documents / list_documents / sql_read);
+                           writes need approval
     GET    /agent/sessions           list past agent-chat conversations (sidebar)
     GET    /agent/sessions/{id}      one conversation's full turn history
     DELETE /agent/sessions/{id}      delete a conversation
-    GET    /chat-history   recent turns for the web session (legacy direct-chat endpoint)
     GET    /health         liveness
+
+Everything document-facing goes through the agent now — there is no direct
+(non-agentic) RAG endpoint. search_documents is just another tool the agent
+calls; it is not exposed as its own HTTP route.
 
 This wires the WHOLE pipeline (categorize -> extract -> ... -> index for ingest;
 plan -> retrieve -> answer for chat), not just categorization. Running it needs
@@ -46,14 +49,12 @@ from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
 from backend.pipeline.ingest import ingest_document  # noqa: E402
-from backend.pipeline.query import run_query  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config/global.yaml")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-WEB_SESSION = "web"  # the single-session the browser UI uses for chat history
 
 EXT_TO_FILE_TYPE = {
     ".pdf": "pdf",
@@ -118,11 +119,6 @@ def _reload_pipeline() -> None:
     # OCR engine/timeout are read from config by the isolated OCR subprocess at
     # ingest time, so there's nothing to set in-process here.
     _registry = build_default_registry()
-
-
-class ChatRequest(BaseModel):
-    question: str
-    file_id: str | None = None
 
 
 class AgentChatRequest(BaseModel):
@@ -430,27 +426,6 @@ async def delete_file(file_id: str):
     return {"deleted": file_id}
 
 
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    scope = [req.file_id] if req.file_id else []
-    final = run_query(
-        req.question, _registry, _config,
-        session_id=WEB_SESSION, document_scope=scope,
-    )
-    # frontend expects {answer, sources:[{filename, page, snippet}]}
-    sources = [
-        {"filename": c.get("filename"), "page": c.get("page"),
-         "snippet": c.get("snippet"), "summary": c.get("summary"),
-         "image_path": c.get("image_path")}
-        for c in (final.get("citations") or [])
-    ]
-    return {
-        "answer": final.get("answer", ""),
-        "sources": sources,
-        "metrics": final.get("metrics", []),   # per-step timings (observability)
-    }
-
-
 def _history_to_messages(history: list[dict]) -> list:
     """DB rows (role/content) -> LangChain messages, for seeding run_agent's
     conversation_history when a session isn't in the in-memory cache (server
@@ -547,17 +522,6 @@ async def delete_agent_session(session_id: str):
     get_conversation_store().delete_session(session_id)
     _agent_sessions.pop(session_id, None)
     return {"deleted": session_id}
-
-
-@app.get("/chat-history")
-async def chat_history():
-    try:
-        from backend.storage.conversation_store import get_conversation_store
-
-        return get_conversation_store().load_history(WEB_SESSION, n=50)
-    except Exception as exc:
-        logger.debug("chat history unavailable: %s", exc)
-        return []
 
 
 @app.get("/health")

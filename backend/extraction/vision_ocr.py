@@ -29,6 +29,7 @@ from collections import defaultdict
 import fitz
 
 from backend.core import prompts
+from backend.core.paths import display_filename
 from backend.core.vision_client import describe_image
 
 logger = logging.getLogger(__name__)
@@ -459,7 +460,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
     cfg = (config.get("extraction") or {}).get("docling") or {}
     lf_enabled = ((config.get("extraction") or {}).get("large_format") or {}).get("enabled", True)
     cap = int(cfg.get("max_vlm_pages", 0) or 0)
-    filename = os.path.basename(pdf_path)
+    filename = display_filename(pdf_path)
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:

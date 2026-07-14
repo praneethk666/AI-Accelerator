@@ -25,6 +25,8 @@ import re
 import uuid
 from collections import defaultdict
 
+from backend.core.paths import display_filename
+
 logger = logging.getLogger(__name__)
 
 # One converter per process — building it loads the layout + TableFormer models.
@@ -439,7 +441,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     min_pic = float(dcfg.get("min_picture_pts", 24))   # drop tiny marks/logos
     min_area_frac = float(dcfg.get("min_picture_area_frac", 0.004))  # drop <0.4%-of-page icons
     table_source = (table_source or "docling").lower()
-    filename = os.path.basename(pdf_path)
+    filename = display_filename(pdf_path)
     blocks: list[dict] = []
 
     conv = _converter(dcfg)

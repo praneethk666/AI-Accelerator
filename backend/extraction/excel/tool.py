@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import pandas as pd
 from typing import List, Dict, Any, Optional
+from backend.core.paths import display_filename
 from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
@@ -169,7 +170,7 @@ class ExcelExtractorTool:
         blocks: List[NormalizedBlock] = []
         cfg      = config or {}
         doc_id   = str(document_id) if document_id else str(uuid.uuid4())
-        filename = os.path.basename(file_path)
+        filename = display_filename(file_path)
 
         try:
             wb = _load_workbook_frames(file_path)

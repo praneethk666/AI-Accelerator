@@ -6,6 +6,7 @@ from io import BytesIO
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from backend.core.paths import display_filename
 from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 
 
@@ -109,7 +110,7 @@ class PPTExtractorTool:
                         type="text",
                         text=text[:5000],
                         source_ref=SourceRef(
-                            filename=os.path.basename(file_path),
+                            filename=display_filename(file_path),
                             slide=slide_index,
                         ),
                         confidence=0.2,
@@ -169,7 +170,7 @@ class PPTExtractorTool:
         blocks: List[NormalizedBlock] = []
         cfg      = config or {}
         doc_id   = str(document_id) if document_id else str(uuid.uuid4())
-        filename = os.path.basename(file_path)
+        filename = display_filename(file_path)
 
         try:
             prs = Presentation(file_path)

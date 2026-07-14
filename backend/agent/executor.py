@@ -33,12 +33,26 @@ from backend.core.llm_client import get_llm
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are the assistant for a document intelligence system. You can call tools "
-    "to: ingest a document file so it becomes searchable (ingest_document), answer "
-    "a question from already-ingested documents with citations (search_documents), "
-    "or run a read-only SQL query against the configured database (sql_read). Only "
-    "call ingest_document when the user actually gives you a file path and wants it "
-    "ingested. If the user asks a question, prefer search_documents over guessing. "
+    "You are the assistant for a document intelligence system. Documents are ALREADY "
+    "ingested and searchable before this conversation starts — search_documents queries "
+    "an existing index, it does not need a file path. NEVER tell the user you need a "
+    "file path, or that no file has been provided, in order to answer a question — "
+    "that only applies to ingest_document, and only when they explicitly want to add a "
+    "NEW file. For ANY question — including vague ones like 'this invoice' or 'the "
+    "document' with no filename given — call search_documents first; do not assume "
+    "nothing is ingested just because the message doesn't name a file.\n\n"
+    "Tools available: ingest_document (ingest a NEW file the user gives a path for), "
+    "search_documents (answer a question from already-ingested documents with "
+    "citations; accepts an optional document_scope to restrict to specific document "
+    "ids), list_documents (list what's already ingested: id, filename, document_type, "
+    "industry, status), sql_read (read-only SQL against the configured database).\n\n"
+    "Disambiguation: if a question references a document ambiguously (e.g. 'this "
+    "invoice') and you're not sure which one is meant, call list_documents first. If "
+    "there's exactly one ingested document, or exactly one obvious match, just use it "
+    "(pass its id as document_scope to search_documents) without asking. If several "
+    "documents could plausibly match, don't guess and don't silently search across all "
+    "of them — reply in plain text listing the candidates (filename + document_type) "
+    "and ask the user which one they mean before calling search_documents.\n\n"
     "Don't call a tool you don't need. Once you have enough information, answer "
     "directly in plain text — do not call a tool just to restate its result."
 )
@@ -62,10 +76,29 @@ def _to_openai_tool(tool: AgentTool) -> dict:
     }
 
 
+def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
+    """Groq/Llama-3.3 tool-calling occasionally emits its raw text function-call
+    syntax instead of a structured tool call, and the API rejects the whole turn
+    with a 'tool_use_failed' 400 — a provider-side flake (reproduced independent of
+    prompt/tool content), not a logic error here. One retry clears it in practice;
+    anything else is a real error and must not be swallowed."""
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return llm_with_tools.invoke(messages)
+        except Exception as exc:
+            msg = str(exc)
+            if "tool_use_failed" not in msg and "Failed to call a function" not in msg:
+                raise
+            last_exc = exc
+            logger.warning("agent LLM malformed tool call (attempt %d/%d): %s", attempt + 1, attempts, msg[:200])
+    raise last_exc
+
+
 def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: set[str],
                   max_iterations: int):
     def agent_node(state: AgentState) -> dict:
-        response = llm_with_tools.invoke(state["messages"])
+        response = _invoke_with_retry(llm_with_tools, state["messages"])
         return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
 
     def tools_node(state: AgentState) -> dict:

@@ -32,6 +32,7 @@ import uuid
 import fitz
 
 from backend.core import prompts
+from backend.core.paths import display_filename
 from backend.core.tool import PipelineState
 from backend.core.vision_client import describe_image
 from backend.extraction.cad.drawing_prompt import PROMPTS
@@ -140,7 +141,7 @@ class CADExtractionTool:
         file_path = state["file_path"]
         document_type = state.get("document_type") or "cad_drawing"
         document_id = state["document_id"]
-        filename = os.path.basename(file_path)
+        filename = display_filename(file_path)
 
         prompt = PROMPTS.get(document_type)
         if prompt is None:

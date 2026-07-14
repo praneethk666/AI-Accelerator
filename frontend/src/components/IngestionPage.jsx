@@ -217,6 +217,13 @@ const IngestionPage = () => {
                 {serverConnected ? 'Backend Connected' : 'Backend Offline'}
               </div>
               <button
+                onClick={() => navigate('/chat')}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+              >
+                <ChatBubbleLeftIcon className="h-4 w-4" />
+                Agent Chat
+              </button>
+              <button
                 onClick={() => navigate('/settings')}
                 title="Configuration"
                 className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-slate-700/50 transition-colors"

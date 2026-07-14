@@ -19,6 +19,7 @@ from typing import List, Optional, Tuple
 # of the process for digital PDFs entirely, and the model warm-up
 # (backend.core.models.warm_up) loads torch first so scanned+embed also coexist.
 
+from backend.core.paths import display_filename
 from backend.core.schemas import NormalizedBlock, SourceRef
 from backend.extraction.scanned_pdf import surya_structure
 
@@ -442,7 +443,7 @@ def extract_scanned(
 
     doc = fitz.open(pdf_path)
     blocks: List[NormalizedBlock] = []
-    filename = os.path.basename(pdf_path)
+    filename = display_filename(pdf_path)
 
     try:
         for page_num in range(len(doc)):

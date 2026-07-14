@@ -28,11 +28,13 @@ def build_agent_registry() -> dict[str, AgentTool]:
     these to the LLM and dispatches calls by name."""
     from backend.connectors.sql_read import SQLReadTool
     from backend.pipeline.ingest import IngestDocumentTool
+    from backend.retrieval.list_documents import ListDocumentsTool
     from backend.retrieval.search_documents import SearchDocumentsTool
 
     tools: list[AgentTool] = [
         IngestDocumentTool(),
         SearchDocumentsTool(),
+        ListDocumentsTool(),
         SQLReadTool(),
     ]
     return {t.name: t for t in tools}

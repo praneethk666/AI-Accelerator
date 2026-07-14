@@ -3,6 +3,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 
 from docx import Document
+from backend.core.paths import display_filename
 from backend.core.schemas import NormalizedBlock, SourceRef, as_dicts
 from backend.extraction.ppt.tool import _detect_image_ext, _save_image_blob
 
@@ -56,7 +57,7 @@ class WordExtractorTool:
         blocks = []
         cfg = config or {}
         doc_id = str(document_id) if document_id else str(uuid.uuid4())
-        filename = os.path.basename(file_path)
+        filename = display_filename(file_path)
 
         try:
             doc = Document(file_path)

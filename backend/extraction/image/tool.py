@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 
 from backend.core.paths import display_filename
@@ -16,13 +17,29 @@ class ImageExtractorTool:
         doc_id = str(document_id) if document_id else str(uuid.uuid4())
         filename = display_filename(file_path)
 
-        try:
-            with open(file_path, "rb") as f:
-                image_bytes = f.read()
-        except Exception as e:
-            state.setdefault("errors", []).append(f"image_extraction: could not read file ({e})")
-            state["blocks"] = []
-            return state
+        # Cross-platform file-lock retry: handles Windows file locks, NFS delays,
+        # or other transient OSErrors. Retries with exponential backoff.
+        image_bytes = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with open(file_path, "rb") as f:
+                    image_bytes = f.read()
+                break
+            except (PermissionError, OSError, IOError) as e:
+                if attempt < max_retries - 1:
+                    delay = (attempt + 1) * 0.5
+                    time.sleep(delay)
+                else:
+                    state.setdefault("errors", []).append(
+                        f"image_extraction: could not read file (failed after {max_retries} retries: {e})"
+                    )
+                    state["blocks"] = []
+                    return state
+            except Exception as e:
+                state.setdefault("errors", []).append(f"image_extraction: could not read file ({e})")
+                state["blocks"] = []
+                return state
 
         try:
             from PIL import Image

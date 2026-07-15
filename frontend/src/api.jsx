@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// Configure API base URL - change localhost:8000 to your backend server
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Configure API base URL - uses VITE_API_URL env var, falls back to localhost:8000
+const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
 
 const API = axios.create({
   baseURL: API_BASE_URL,
@@ -103,6 +103,9 @@ export const getAgentSessions = async () => API.get('/agent/sessions');
 export const getAgentSession = async (sessionId) => API.get(`/agent/sessions/${sessionId}`);
 
 export const deleteAgentSession = async (sessionId) => API.delete(`/agent/sessions/${sessionId}`);
+
+/** Update session metadata: { title?, pinned? }. */
+export const patchAgentSession = async (sessionId, data) => API.patch(`/agent/sessions/${sessionId}`, data);
 
 /**
  * Save a file to disk WITHOUT ingesting it — for the chat's attach-a-file flow.

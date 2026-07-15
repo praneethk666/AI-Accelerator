@@ -65,10 +65,20 @@ EXT_TO_FILE_TYPE = {
 }
 
 app = FastAPI(title="Document Intelligence + RAG Accelerator", version="1.0.0")
+
+# CORS configuration: restrict to frontend origins for security
+# For production, set CORS_ORIGINS env var (comma-separated) or update here
+CORS_ORIGINS = [
+    "http://localhost:5173", "http://localhost:3000",
+    "http://127.0.0.1:5173", "http://127.0.0.1:3000"
+]
+# Allow override for production deployment
+if os.getenv("CORS_ORIGINS"):
+    CORS_ORIGINS = os.getenv("CORS_ORIGINS").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000",
-                   "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -353,6 +363,7 @@ async def stage_file(file: UploadFile = File(...)):
     dest = os.path.join(UPLOAD_DIR, f"{stage_id}_{file.filename}")
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    file.file.close()  # release the temp-file handle (Windows)
     return {"file_path": dest, "filename": file.filename}
 
 
@@ -513,6 +524,19 @@ async def get_agent_session(session_id: str):
         {"role": h["role"], "content": h["content"], **(h.get("metadata") or {})}
         for h in history
     ]
+
+
+@app.patch("/agent/sessions/{session_id}")
+async def patch_agent_session(session_id: str, body: dict):
+    """Update session metadata: { "title": "...", "pinned": true/false }."""
+    from backend.storage.conversation_store import get_conversation_store
+
+    get_conversation_store().update_session(
+        session_id,
+        title=body.get("title"),
+        pinned=body.get("pinned"),
+    )
+    return {"updated": session_id}
 
 
 @app.delete("/agent/sessions/{session_id}")

@@ -76,7 +76,7 @@ def _to_openai_tool(tool: AgentTool) -> dict:
     }
 
 
-def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
+def _invoke_with_retry(llm_with_tools, messages, attempts: int = 3):
     """Groq/Llama-3.3 tool-calling occasionally emits its raw text function-call
     syntax instead of a structured tool call, and the API rejects the whole turn
     with a 'tool_use_failed' 400 — a provider-side flake (reproduced independent of
@@ -195,9 +195,13 @@ def run_agent(
             llm_cfg["provider"] = agent_cfg["provider"]
         if agent_cfg.get("model"):
             llm_cfg["model"] = agent_cfg["model"]
-        # an agent-specific provider needs its own key (e.g. GROQ_API_KEY), not the
-        # main llm.api_key placeholder, which may point at a different provider.
-        if agent_cfg.get("provider") and agent_cfg["provider"] != config.get("llm", {}).get("provider"):
+        if agent_cfg.get("base_url"):
+            llm_cfg["base_url"] = agent_cfg["base_url"]
+        # agent-specific api_key (e.g. ${DEEPSEEK_API_KEY}) takes priority;
+        # otherwise null out the main LLM's key if providers differ.
+        if agent_cfg.get("api_key"):
+            llm_cfg["api_key"] = agent_cfg["api_key"]
+        elif agent_cfg.get("provider") and agent_cfg["provider"] != config.get("llm", {}).get("provider"):
             llm_cfg["api_key"] = None
         llm = get_llm({**config, "llm": llm_cfg})
 

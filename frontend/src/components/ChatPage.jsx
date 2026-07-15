@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
-  stageFile, getFile,
+  patchAgentSession, stageFile, getFile,
 } from '../api';
 import {
   PaperAirplaneIcon,
@@ -19,6 +19,7 @@ import {
   CheckIcon,
   WrenchScrewdriverIcon,
   CloudArrowUpIcon,
+  EllipsisVerticalIcon,
 } from '@heroicons/react/24/outline';
 
 // "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
@@ -47,9 +48,24 @@ const ChatPage = () => {
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
   const [contextFile, setContextFile] = useState(null); // from ?fileId= (informational only)
+  const [menuOpen, setMenuOpen] = useState(null); // session_id of open dropdown
+  const [renamingId, setRenamingId] = useState(null); // session_id being renamed
+  const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+
+  // Close dropdown on click outside (uses document listener, no shared ref)
+  useEffect(() => {
+    const handler = (e) => {
+      if (!e.target.closest('[data-menu]')) {
+        setMenuOpen(null);
+        setRenamingId(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const fileId = searchParams.get('fileId');
 
@@ -99,12 +115,54 @@ const ChatPage = () => {
 
   const handleDeleteSession = async (id, e) => {
     e.stopPropagation();
+    setMenuOpen(null);
     try {
       await deleteAgentSession(id);
       setSessions((prev) => prev.filter((s) => s.session_id !== id));
       if (id === sessionId) handleNewChat();
     } catch (err) {
       console.error('Failed to delete session:', err);
+    }
+  };
+
+  const handleRenameStart = (id, currentTitle, e) => {
+    e.stopPropagation();
+    setRenamingId(id);
+    setRenameValue(currentTitle);
+    setMenuOpen(null);
+  };
+
+  const handleRenameSave = async (id) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingId(null); return; }
+    try {
+      await patchAgentSession(id, { title: trimmed });
+      setSessions((prev) =>
+        prev.map((s) => (s.session_id === id ? { ...s, title: trimmed } : s))
+      );
+    } catch (err) {
+      console.error('Failed to rename session:', err);
+    }
+    setRenamingId(null);
+  };
+
+  const handleRenameKeyDown = (e, id) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleRenameSave(id); }
+    if (e.key === 'Escape') { setRenamingId(null); }
+  };
+
+  const handleTogglePin = async (id, currentlyPinned, e) => {
+    e.stopPropagation();
+    setMenuOpen(null);
+    try {
+      await patchAgentSession(id, { pinned: !currentlyPinned });
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.session_id === id ? { ...s, pinned: !currentlyPinned } : s
+        )
+      );
+    } catch (err) {
+      console.error('Failed to toggle pin:', err);
     }
   };
 
@@ -223,10 +281,16 @@ const ChatPage = () => {
           {sessions.length === 0 && (
             <p className="text-xs text-gray-600 px-3 py-2">No conversations yet</p>
           )}
-          {sessions.map((s) => (
+          {[...sessions]
+            .sort((a, b) => {
+              if (a.pinned && !b.pinned) return -1;
+              if (!a.pinned && b.pinned) return 1;
+              return new Date(b.last_active) - new Date(a.last_active);
+            })
+            .map((s) => (
             <div
               key={s.session_id}
-              onClick={() => handleSelectSession(s.session_id)}
+              onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
               className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
                 s.session_id === sessionId
                   ? 'bg-slate-800 text-white'
@@ -234,17 +298,66 @@ const ChatPage = () => {
               }`}
               title={s.title}
             >
-              <div className="min-w-0">
-                <p className="truncate">{s.title}</p>
-                <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
+              <div className="min-w-0 flex-1">
+                {renamingId === s.session_id ? (
+                  <input
+                    type="text"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={() => handleRenameSave(s.session_id)}
+                    onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
+                    className="w-full bg-slate-700 text-white text-sm px-2 py-0.5 rounded border border-blue-500 outline-none"
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <p className="truncate flex items-center gap-1">
+                      {s.pinned && <span className="text-[10px]">📌</span>}
+                      {s.title}
+                    </p>
+                    <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
+                  </>
+                )}
               </div>
-              <button
-                onClick={(e) => handleDeleteSession(s.session_id, e)}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 flex-shrink-0 transition-opacity"
-                title="Delete conversation"
-              >
-                <TrashIcon className="h-3.5 w-3.5" />
-              </button>
+              <div className="relative flex-shrink-0" data-menu>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
+                  }}
+                  className="text-slate-500 hover:text-blue-400 hover:bg-slate-700/50 rounded p-0.5 transition-colors"
+                  title="More"
+                >
+                  <EllipsisVerticalIcon className="h-4 w-4" />
+                </button>
+                {menuOpen === s.session_id && (
+                  <div className="absolute right-0 top-6 z-50 w-40 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-sm" data-menu>
+                    <button
+                      onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left"
+                    >
+                      <span className="text-sm">✏️</span>
+                      Rename
+                    </button>
+                    <button
+                      onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left"
+                    >
+                      <span className="text-sm">{s.pinned ? '📌' : '📌'}</span>
+                      {s.pinned ? 'Unpin' : 'Pin'}
+                    </button>
+                    <div className="border-t border-slate-600 my-1" />
+                    <button
+                      onClick={(e) => handleDeleteSession(s.session_id, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-slate-700 hover:text-red-300 text-left"
+                    >
+                      <TrashIcon className="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>

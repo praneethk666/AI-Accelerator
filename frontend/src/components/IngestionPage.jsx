@@ -18,7 +18,7 @@ import {
 // ran for this file type / pdf kind.
 const PIPELINE_STAGES = [
   { label: 'Categorize', icon: '📂', match: ['categorize'] },
-  { label: 'Extract', icon: '📊', match: ['pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'cad_extract'] },
+  { label: 'Extract', icon: '📊', match: ['docling_pdf', 'pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'word_extraction', 'image_extraction', 'cad_extract'] },
   { label: 'Vision', icon: '👁️', match: ['vision_enrichment'] },
   { label: 'Chunk', icon: '✂️', match: ['chunk'] },
   { label: 'Enrich', icon: '🏷️', match: ['enrich_chunks'] },
@@ -161,11 +161,19 @@ const IngestionPage = () => {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      'application/pdf': ['.pdf'],
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.bmp'],
-    },
+    "application/pdf": [".pdf"],
+
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+    "application/msword": [".doc"],
+
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+    "application/vnd.ms-excel": [".xls"],
+
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
+    "application/vnd.ms-powerpoint": [".ppt"],
+
+    "image/*": [".png", ".jpg", ".jpeg", ".gif", ".bmp"]
+  },
     disabled: uploading || !serverConnected,
   });
 
@@ -265,7 +273,7 @@ const IngestionPage = () => {
             {uploading ? 'Uploading...' : isDragActive ? 'Drop files here' : 'Drop files or click to browse'}
           </p>
           <p className="text-sm text-gray-400 mb-4">
-            Supported: PDF, Excel, PowerPoint, Images (PNG, JPG, GIF, BMP)
+            Supported: PDF, Docx, Excel, PowerPoint, Images (PNG, JPG, GIF, BMP)
           </p>
           <button
             disabled={uploading || !serverConnected}

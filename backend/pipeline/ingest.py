@@ -23,6 +23,7 @@ import uuid
 from backend.core.config import PipelineConfig, load_config
 from backend.pipeline.default_registry import build_default_registry
 from backend.pipeline.graph import run_pipeline
+from backend.core.paths import display_filename
 from backend.storage.postgres_store import PostgresStore
 from backend.storage.qdrant_store import QdrantStore
 
@@ -122,7 +123,7 @@ def ingest_document(
     reg = registry if registry is not None else build_default_registry()
     document_id = document_id or _content_id(file_path)
     file_type = file_type_of(file_path)
-    filename = os.path.basename(file_path)
+    filename = display_filename(file_path)
 
     # register the doc row (no-op if it exists) + clear prior chunks so re-ingest
     # replaces rather than duplicates.
@@ -209,7 +210,7 @@ class IngestDocumentTool:
                 "description": "Path to the document to ingest.",
             },
             "document_id": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Optional id to update in place; omit to derive a "
                 "stable id from the file's content.",
             },

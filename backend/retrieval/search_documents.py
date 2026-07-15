@@ -62,15 +62,23 @@ class SearchDocumentsTool:
                 "description": "The question to answer from the documents.",
             },
             "document_scope": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional list of document ids to restrict the search to.",
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "string"},
+                    {"type": "null"},
+                ],
+                "description": "Optional list of document ids to restrict the search to."
+                                "Pass an array of ids, e.g. [\"4cf1a34e-...\"] — even for a "
+                                "single document, still wrap it in an array. Pass null (or "
+                                "omit) to search all documents."
             },
         },
         "required": ["query"],
     }
 
     def run(self, query: str, document_scope: list[str] | None = None) -> dict[str, Any]:
+        if isinstance(document_scope, str):
+            document_scope = [document_scope]
         return search_documents(query, document_scope)
 
     __call__ = run

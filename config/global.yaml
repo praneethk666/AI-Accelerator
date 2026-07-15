@@ -341,6 +341,7 @@ query:
 document_types:
   - invoice
   - report
+  - research_paper
   - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
   - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
   - datasheet
@@ -356,6 +357,9 @@ industries:
   - finance
   - legal
   - healthcare
+  - retail_ecommerce
+  - travel_transport
+  - entertainment_media
   - general
 
 default_industry: general
@@ -372,9 +376,12 @@ categorization:
     automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
     electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
     manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
+    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
     legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
     healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
+    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
+    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
+    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
     general:      []
 
 # ── Routing ───────────────────────────────────────────────────────────────────
@@ -386,6 +393,7 @@ type_to_route:
   circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
   datasheet:       diagram_heavy
   report:          text_default
+  research_paper:  text_default
   invoice:         text_default
   presentation:    text_default
   spreadsheet:     text_default

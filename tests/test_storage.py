@@ -98,6 +98,10 @@ def test_chunk_round_trips_through_both_stores():
         assert len(rows) == 1
         assert rows[0]["text"] == "5V power rail"
         assert rows[0]["tags"]["topic"] == "power"
+        # ids come back as STRINGS equal to what Qdrant payloads carry — retrieval
+        # hydration joins on this; uuid.UUID objects here broke it silently once.
+        assert rows[0]["chunk_id"] == chunk_id
+        assert rows[0]["document_id"] == doc_id
 
         # Qdrant: vector search finds the chunk, and its tags rode along in the payload
         hits = vectors.search(

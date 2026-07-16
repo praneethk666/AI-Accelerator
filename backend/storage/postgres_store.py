@@ -101,10 +101,12 @@ class PostgresStore:
         if not chunk_ids:
             return []
         rows = self.conn.execute(
-            # ::text cast keeps this agnostic to the chunk_id column type (uuid)
+            # ::text casts throughout: the columns are uuid-typed, but callers
+            # join these ids against Qdrant payload STRINGS (retrieval hydration)
+            # — returning uuid.UUID objects breaks that dict lookup silently.
             """
-            SELECT chunk_id, document_id, text, token_count, tags, source_ref,
-                   table_data, image_path
+            SELECT chunk_id::text, document_id::text, text, token_count, tags,
+                   source_ref, table_data, image_path
             FROM chunks WHERE chunk_id::text = ANY(%s)
             """,
             (chunk_ids,),

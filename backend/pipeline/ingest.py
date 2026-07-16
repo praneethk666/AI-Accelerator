@@ -194,6 +194,7 @@ class IngestDocumentTool:
     """
 
     name = "ingest_document"
+    writes = True  # mutates both stores -> the agent executor requires approval
     description = (
         "Ingest a document file (PDF, XLSX, PPTX, or image) through the full "
         "pipeline (categorize -> extract -> chunk -> embed -> index) so it becomes "

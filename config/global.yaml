@@ -36,6 +36,19 @@ llm:
   # answer_model: claude-haiku-4-5
   # api_key: ${ANTHROPIC_API_KEY}
 
+# ── Agent executor (backend/agent/executor.py) ────────────────────────────────
+# The agent's model is configured SEPARATELY from the pipeline's llm block above,
+# so the tool-calling agent can run on free Groq while the pipeline stays on its
+# own provider. Omit this block entirely and the executor falls back to `llm:`.
+# Prod switch: point this at gpt-4o-mini (provider: openai) — config only, no code.
+# Iteration cap lives at query.agent.max_iterations.
+agent:
+  llm:
+    provider: groq
+    model: llama-3.3-70b-versatile   # free tier: 30 RPM / 1K req/day — fine for dev
+    api_key: ${GROQ_API_KEY}
+    temperature: 0.2
+
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).

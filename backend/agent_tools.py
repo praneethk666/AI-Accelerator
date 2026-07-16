@@ -8,6 +8,10 @@ run(**kwargs) -> dict (the standard tool-use shape).
 
 Add a tool: append it in build_agent_registry() (or register it there). Connectors
 (db/inventory/email/…) will land here too as they come online.
+
+Read vs write: a tool that MUTATES anything (stores, files, outbound messages)
+must set `writes = True` on the class. The executor runs read tools directly but
+requires approval for write tools (backend/agent/executor.py). Omitted => read.
 """
 from __future__ import annotations
 
@@ -19,6 +23,8 @@ class AgentTool(Protocol):
     name: str
     description: str
     input_schema: dict  # JSON Schema for the tool's arguments
+    # writes: bool = True on mutating tools -> executor gates them behind approval
+    # (checked via getattr(tool, "writes", False); absent means read-only).
 
     def run(self, **kwargs) -> dict: ...
 

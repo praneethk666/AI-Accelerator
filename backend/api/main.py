@@ -50,6 +50,7 @@ from backend.core.models import warm_up  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
 from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,25 @@ _agent_registry = build_agent_registry()
 # for a demo; resets on restart. Only advanced past a turn that fully completed
 # (not one awaiting write approval), so a decline/retry replays cleanly.
 _agent_sessions: dict[str, list] = {}
+
+# search_documents/ingest_document results can be large (full citation snippets,
+# table_data, image paths...), and every intermediate tool-call round-trip adds
+# more messages on top. tools_node needs the FULL detail for the current turn
+# (it's what the frontend's citation strip parses from tool_calls[].result), but
+# once the turn is done we only cache the plain Q&A — not the tool calls/results
+# or the system prompt — for replay as conversation_history on the NEXT question.
+# The model only needs to remember what was asked and answered, not how it got
+# there; re-sending full tool payloads on every later turn is exactly what was
+# blowing through Groq free-tier TPM/TPD limits after just one or two follow-ups.
+# Same simplification _history_to_messages already applies to history reloaded
+# from Postgres — this just applies it to the in-memory cache too.
+def _qa_only(messages: list) -> list:
+    return [
+        m for m in messages
+        if isinstance(m, HumanMessage)
+        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and (m.content or "").strip())
+    ]
+
 
 
 CONFIG_DIR = os.path.dirname(CONFIG_PATH) or "config"
@@ -431,8 +451,6 @@ def _history_to_messages(history: list[dict]) -> list:
     conversation_history when a session isn't in the in-memory cache (server
     restart, or reopening an old chat). Drops tool-call structure — the model
     only needs the visible text to keep context, not the exact prior calls."""
-    from langchain_core.messages import AIMessage, HumanMessage
-
     msgs = []
     for h in history:
         if h.get("role") == "user":
@@ -469,19 +487,24 @@ async def agent_chat(req: AgentChatRequest):
     result = run_agent(
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
+        session_id=req.session_id,
     )
     tool_calls = [
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
         for c in result.get("tool_calls", [])
     ]
     if result["status"] == "done":
-        _agent_sessions[req.session_id] = result["messages"]
+        _agent_sessions[req.session_id] = _qa_only(result["messages"])
         try:
             store = get_conversation_store()
             store.save_turn(req.session_id, "user", req.message)
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
-                metadata={"tool_calls": tool_calls} if tool_calls else None,
+                metadata={
+                    "tool_calls": tool_calls,
+                    "token_usage": result.get("token_usage"),
+                    "trace_id": result.get("trace_id"),
+                } if (tool_calls or result.get("token_usage")) else None,
             )
         except Exception:
             logger.debug("agent chat history save failed", exc_info=True)
@@ -490,6 +513,8 @@ async def agent_chat(req: AgentChatRequest):
         "answer": result.get("answer"),
         "pending": result.get("pending"),
         "tool_calls": tool_calls,
+        "token_usage": result.get("token_usage"),
+        "trace_id": result.get("trace_id"),
     }
 
 

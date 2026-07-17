@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 
+from backend.core import usage
 from backend.core.llm_client import get_llm
 from backend.core.tool import PipelineState
 
@@ -78,8 +79,9 @@ def _plan(query: str, history: list, config: dict, max_subs: int) -> dict:
     prompt = _PROMPT.format(
         history=_format_history(history), query=query, max_subs=max_subs
     )
-    raw = llm.invoke(prompt).content
-    return json.loads(_extract_json(raw))
+    response = llm.invoke(prompt)
+    usage.record_from_message("query_planner", response)
+    return json.loads(_extract_json(response.content))
 
 
 def _format_history(history: list) -> str:

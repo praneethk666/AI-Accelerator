@@ -21,6 +21,7 @@ import os
 import uuid
 
 from backend.core.config import PipelineConfig, load_config
+from backend.core.tracing import traced_request
 from backend.pipeline.default_registry import build_default_registry
 from backend.pipeline.graph import run_pipeline
 from backend.core.paths import display_filename
@@ -137,15 +138,21 @@ def ingest_document(
     # run the pipeline (graph owns routing/extraction; we just seed file_type)
     state = {"document_id": document_id, "file_path": file_path,
              "file_type": file_type, "errors": []}
-    try:
-        result = run_pipeline(reg, state, _ingestion_cfg(cfg), on_step=on_step)
-        # "failed" only if a STEP errored — a non-fatal warning in errors must not
-        # mark an otherwise-successful ingest as failed.
-        step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
-        status = "failed" if step_failed else "ready"
-    except Exception as exc:
-        logger.exception("ingestion failed for %s", filename)
-        result, status = {"errors": [str(exc)]}, "failed"
+    
+    with traced_request(
+        "ingest_document", input={"filename": filename, "file_type": file_type},
+        metadata={"document_id": document_id, "file_path": file_path},
+    ) as trace_info:
+        try:
+            result = run_pipeline(reg, state, _ingestion_cfg(cfg), on_step=on_step)
+            # "failed" only if a STEP errored — a non-fatal warning in errors must not
+            # mark an otherwise-successful ingest as failed.
+            step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
+            status = "failed" if step_failed else "ready"
+        except Exception as exc:
+            logger.exception("ingestion failed for %s", filename)
+            result, status = {"errors": [str(exc)]}, "failed"
+    trace_id = trace_info["trace_id"]
 
     metrics = result.get("metrics", []) or []
     errors = result.get("errors", []) or []
@@ -182,7 +189,7 @@ def ingest_document(
             logger.exception("on_complete hook failed for %s", document_id)
 
     return {"document_id": document_id, "status": status,
-            "metrics": metrics, "errors": errors}
+            "metrics": metrics, "errors": errors, "trace_id": trace_id}
 
 
 class IngestDocumentTool:

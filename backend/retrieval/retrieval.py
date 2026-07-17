@@ -21,6 +21,7 @@ from typing import Optional
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core.models import DENSE_QUERY_PREFIX, get_dense_model, get_reranker
+from backend.core import usage
 from backend.core.llm_client import get_llm
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
@@ -168,10 +169,12 @@ def _hybrid_rerank(query, cfg, full_config, filters):
 def _hyde(query, cfg, full_config, filters):
     top_k    = cfg["top_n"]
     llm      = get_llm(full_config)
-    hyp      = llm.invoke(
+    response = llm.invoke(
         "Write a short factual paragraph directly answering this question. "
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
-    ).content
+    )
+    usage.record_from_message("hyde", response)
+    hyp      = response.content
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp)
     return VectorStore.search(hyp_emb, full_config, top_k=top_k, filters=filters)

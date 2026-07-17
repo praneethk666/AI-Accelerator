@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState, Tool
+from backend.core.tracing import traced_tool
 
 logger = logging.getLogger(__name__)
 
@@ -30,25 +31,43 @@ EXTRACT_PLACEHOLDER = "extract"
 def _make_node(tool: Tool, raw_config: dict):
     # wrap a Tool as a graph node: graceful failure + per-step metrics. config
     # bound in via closure.
+    #
+    # Each step also gets its own Langfuse child span (traced_tool), nested under
+    # the single root span ingest_document() opens for the whole run (see
+    # backend/pipeline/ingest.py). That's what lets one Langfuse trace show every
+    # ingestion step — categorize, extract, chunk, enrich, embed, index, ... — as
+    # its own child, with any LLM/vision calls a step makes internally (they use
+    # get_llm()/vision_client, which attach via the currently-active OTEL context)
+    # nesting one level deeper still. Same mechanism the agent executor's
+    # tools_node uses for query-side tools — see tracing.py's module docstring.
     def node(state: PipelineState) -> PipelineState:
         state.setdefault("errors", [])
         start = time.perf_counter()
         status, error = "ok", None
-        try:
-            result = tool.run(state, raw_config)
-        except Exception as exc:  # one tool must not kill the run
-            status, error = "error", str(exc)
-            state["errors"].append(f"{tool.name}: {exc}")
-            result = state
+        trace_input = {
+            "document_id": state.get("document_id"),
+            "file_type": state.get("file_type"),
+            "route": state.get("route"),
+        }
+        with traced_tool(f"step:{tool.name}", input=trace_input) as span:
+            try:
+                result = tool.run(state, raw_config)
+            except Exception as exc:  # one tool must not kill the run
+                status, error = "error", str(exc)
+                state["errors"].append(f"{tool.name}: {exc}")
+                result = state
 
-        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-        entry = {"step": tool.name, "ms": elapsed_ms, "status": status}
-        if error:
-            entry["error"] = error
-        # a tool may attach a per-step decision report (e.g. docling_pdf's extraction
-        # routing) — surface it on the step metric so it's persisted + visible.
-        if isinstance(result, dict) and result.get("extraction_report") is not None:
-            entry["report"] = result["extraction_report"]
+            elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+            entry = {"step": tool.name, "ms": elapsed_ms, "status": status}
+            if error:
+                entry["error"] = error
+            # a tool may attach a per-step decision report (e.g. docling_pdf's
+            # extraction routing) — surface it on the step metric so it's
+            # persisted + visible, and record it on the span too.
+            if isinstance(result, dict) and result.get("extraction_report") is not None:
+                entry["report"] = result["extraction_report"]
+            span["output"] = entry
+
         logger.info("step %s %s %.1fms", tool.name, status, elapsed_ms)
 
         # Return the tool's updates, but own the `metrics` channel: strip any

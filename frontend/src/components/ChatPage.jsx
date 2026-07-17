@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -19,6 +19,7 @@ import {
   CheckIcon,
   WrenchScrewdriverIcon,
   CloudArrowUpIcon,
+  CircleStackIcon,
 } from '@heroicons/react/24/outline';
 
 // "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
@@ -86,6 +87,8 @@ const ChatPage = () => {
           role: m.role,
           content: m.content,
           toolCalls: m.tool_calls || [],
+          tokenUsage: m.token_usage || null,
+          traceId: m.trace_id || null,
         }))
       );
       setSessionId(id);
@@ -139,6 +142,8 @@ const ChatPage = () => {
     content: data.answer,
     toolCalls: data.tool_calls || [],
     pending: data.pending || [],
+    tokenUsage: data.token_usage || null,
+    traceId: data.trace_id || null,
     originalText,
   });
 
@@ -250,13 +255,13 @@ const ChatPage = () => {
         </div>
 
         <div className="p-3 border-t border-slate-800">
-          <a
-            href="/"
+          <Link
+            to="/ingest"
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-400 hover:bg-slate-800 hover:text-gray-200 text-sm transition-colors"
           >
             <CloudArrowUpIcon className="h-4 w-4" />
             Ingestion
-          </a>
+          </Link>
         </div>
       </div>
 
@@ -426,6 +431,7 @@ const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
               {/* Citations from search_documents */}
               {sources.length > 0 && (
                 <div className="mt-3 space-y-1.5">
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Sources</p>
                   {sources.map((s, i) => (
                     <div key={i} className="text-xs text-gray-400 bg-slate-800/50 border border-slate-700 rounded px-2 py-1.5">
                       <span className="font-medium text-gray-300">{s.filename}</span>
@@ -433,6 +439,39 @@ const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
                       {s.snippet && <p className="mt-1 italic text-gray-500 line-clamp-2">"{s.snippet}"</p>}
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* Token usage for this turn.
+                  "Context" = the largest single LLM call's input size this turn —
+                  i.e. how much conversation/tool-result context was actually sent
+                  to the model at its fullest point. Providers don't return a
+                  model's max context window per-call, so this isn't a fraction of
+                  one — it's the real number of tokens that went in. */}
+              {msg.tokenUsage && (
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+                  {msg.tokenUsage && (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-gray-300" title="Input + output tokens across every model call this turn">
+                        <CircleStackIcon className="h-3.5 w-3.5" />
+                        Tokens used: {msg.tokenUsage.total_tokens}
+                      </span>
+                      <span title="Tokens sent to the model (prompt, history, tool results)">
+                        Input: {msg.tokenUsage.input_tokens}
+                      </span>
+                      <span title="Tokens the model generated">
+                        Output: {msg.tokenUsage.output_tokens}
+                      </span>
+                      {msg.tokenUsage.reasoning_tokens > 0 && (
+                        <span title="Reasoning/thinking tokens (subset of output tokens)">
+                          Thinking: {msg.tokenUsage.reasoning_tokens}
+                        </span>
+                      )}
+                      <span title="Largest single call's input size this turn — how much context (history + tool results) was actually sent to the model">
+                        Context: {msg.tokenUsage.context_tokens}
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
 

@@ -36,6 +36,7 @@ def search_documents(
         "answer": final.get("answer", ""),
         "citations": citations,
         "sources": _build_sources(citations),
+        "trace_id": final.get("trace_id"),
     }
 
 

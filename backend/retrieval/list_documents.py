@@ -36,9 +36,15 @@ class ListDocumentsTool:
                 "description": "Optional: only list documents of this document_type (e.g. 'invoice').",
             },
         },
+            "industry": {
+                "type": "string",
+                "description": "Optional: only list documents tagged with this industry "
+                                "(e.g. 'healthcare', 'finance'). Matches the industry value "
+                                "shown in each document's row, case-insensitively.",
+            },
     }
 
-    def run(self, document_type: str | None = None) -> dict[str, Any]:
+    def run(self, document_type: str | None = None, industry: str | None = None) -> dict[str, Any]:
         from backend.storage.postgres_store import PostgresStore
 
         store = PostgresStore()
@@ -48,6 +54,9 @@ class ListDocumentsTool:
             store.close()
         if document_type:
             docs = [d for d in docs if d.get("document_type") == document_type]
+        if industry:
+            docs = [d for d in docs
+                    if (d.get("industry") or "").strip().lower() == industry.strip().lower()]
         return {
             "count": len(docs),
             "documents": [

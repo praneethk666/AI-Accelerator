@@ -18,6 +18,7 @@ import logging
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState
+from backend.core.tracing import traced_request
 from backend.pipeline.graph import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,22 @@ def run_query(
         "errors": [],
     }
 
-    # AnswererTool saves the turn (it holds question + answer).
-    return graph.invoke(state)
+    # Root span for this turn's read path. When search_documents is called from
+    # the agent, tools_node has already opened "tool:search_documents" nested
+    # under run_agent()'s "agent_chat" root — this just attaches as a further
+    # child there (see tracing.py: an already-active OTEL context wins). Called
+    # any other way (a script, a future non-agentic endpoint) it opens its own
+    # root trace instead, so query_planner/retrieval/answerer's per-step spans
+    # (from graph.py's _make_node, shared with the ingest pipeline) are never
+    # left unparented. No-op unless LANGFUSE_* env vars are set.
+    with traced_request(
+        "run_query", input=query,
+        metadata={"session_id": session_id, "document_scope": document_scope},
+    ) as trace_info:
+        # AnswererTool saves the turn (it holds question + answer).
+        final = graph.invoke(state)
+    final["trace_id"] = trace_info["trace_id"]
+    return final
 
 
 def _load_history(session_id: str, config: dict) -> list:

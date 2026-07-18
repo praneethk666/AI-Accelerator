@@ -35,13 +35,13 @@ class ListDocumentsTool:
                 "type": "string",
                 "description": "Optional: only list documents of this document_type (e.g. 'invoice').",
             },
-        },
             "industry": {
                 "type": "string",
                 "description": "Optional: only list documents tagged with this industry "
                                 "(e.g. 'healthcare', 'finance'). Matches the industry value "
                                 "shown in each document's row, case-insensitively.",
             },
+        },
     }
 
     def run(self, document_type: str | None = None, industry: str | None = None) -> dict[str, Any]:

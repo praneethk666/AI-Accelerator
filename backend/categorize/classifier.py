@@ -127,7 +127,7 @@ def _coerce_doctype(doc_type: str, supported_types: list[str]) -> str:
 
 
 def _heuristic_doctype(
-    file_path: str, supported_types: list[str]
+    file_path: str, supported_types: list[str], file_type: str = ""
 ) -> Tuple[str, float, str]:
     """Content-only document_type guess, used as a last resort when the
     text-LLM classification call itself fails (bad key, network error, etc.) —
@@ -150,6 +150,11 @@ def _heuristic_doctype(
     for dtype, kws in keymap:
         if dtype in supported_types and any(k in hay for k in kws):
             return dtype, 0.6, f"text-LLM unavailable; matched '{dtype}' by keyword heuristic on extracted text"
+    # A raw image file with no matching document keywords is far more likely to
+    # be a plain photo/screenshot than a "report" — default it to 'image' (routes
+    # via image_route) instead of the generic text-document fallback.
+    if file_type == "image" and "image" in supported_types:
+        return "image", 0.6, "text-LLM/vision unavailable; defaulted to 'image' (raw image file, no document keywords found)"
     return "report", 0.5, "text-LLM unavailable; defaulted to 'report' (text route)"
 
 
@@ -373,6 +378,10 @@ DOCUMENT TYPES:
 - research_paper: an academic / research / scientific / technical publication paper.
 - report: a general report - choose this only if the content actually reads as a report.
 - presentation: slides / a deck.
+- image: a plain photograph, screenshot, product image, or generic graphic with NO
+  structured document layout — not a scan/photo of a report/invoice/manual page, and
+  not primarily a diagram/schematic/CAD drawing. Choose this whenever the content is
+  just a picture rather than a document.
 - unknown: the document is not any of the above, or the content is too ambiguous to classify.
 
 Return ONLY a JSON object with these exact keys:
@@ -460,7 +469,7 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             # fall back to a text-content guess so routing still works offline.
             if conf <= 0.0:
                 doc_type, conf, heuristic_reason = _heuristic_doctype(
-                    file_path, supported_types
+                    file_path, supported_types, file_type
                 )
                 reasoning = f"{heuristic_reason} (vision: {reasoning})"
 

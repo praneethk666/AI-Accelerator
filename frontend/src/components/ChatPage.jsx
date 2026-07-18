@@ -85,7 +85,7 @@ const ChatPage = () => {
       setMessages(
         (res.data || []).map((m) => ({
           role: m.role,
-          content: m.content,
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
           toolCalls: m.tool_calls || [],
           tokenUsage: m.token_usage || null,
           traceId: m.trace_id || null,
@@ -139,7 +139,7 @@ const ChatPage = () => {
   const agentMessageFromResponse = (data, originalText) => ({
     role: 'assistant',
     status: data.status,
-    content: data.answer,
+    content: typeof data.answer === 'string' ? data.answer : JSON.stringify(data.answer),
     toolCalls: data.tool_calls || [],
     pending: data.pending || [],
     tokenUsage: data.token_usage || null,

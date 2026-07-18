@@ -47,6 +47,7 @@ from backend.agent.executor import run_agent  # noqa: E402
 from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
+from backend.core.llm_client import clean_message_content  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
 from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
@@ -120,7 +121,7 @@ def _qa_only(messages: list) -> list:
     return [
         m for m in messages
         if isinstance(m, HumanMessage)
-        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and (m.content or "").strip())
+        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and clean_message_content(m.content).strip())
     ]
 
 

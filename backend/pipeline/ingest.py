@@ -217,7 +217,7 @@ class IngestDocumentTool:
                 "description": "Path to the document to ingest.",
             },
             "document_id": {
-                "type": ["string", "null"],
+                "type": "string",
                 "description": "Optional id to update in place; omit to derive a "
                 "stable id from the file's content.",
             },

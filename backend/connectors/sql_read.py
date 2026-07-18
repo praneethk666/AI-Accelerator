@@ -96,8 +96,12 @@ def read_sql(query: str, *, limit: int = 200) -> dict[str, Any]:
 class SQLReadTool:
     name = "sql_read"
     description = (
-        "Run a read-only SQL query against the configured database and return "
-        "the result rows with column names. Rejects write or destructive queries."
+        "Run a read-only SQL query against the configured database. "
+        "Available tables:\n"
+        "- documents (document_id UUID, filename TEXT, file_type TEXT, file_path TEXT, document_type TEXT, industry TEXT, route TEXT, confidence REAL, status TEXT, errors JSONB, progress REAL)\n"
+        "- chunks (chunk_id UUID, document_id UUID REFERENCES documents, text TEXT, token_count INTEGER, tags JSONB, source_ref JSONB, table_data JSONB, image_path TEXT)\n"
+        "- document_pages (document_id UUID REFERENCES documents, page INTEGER, image_path TEXT, width INTEGER, height INTEGER)\n"
+        "- conversations (id BIGSERIAL, session_id TEXT, role TEXT, content TEXT, metadata JSONB)"
     )
     input_schema = {
         "type": "object",

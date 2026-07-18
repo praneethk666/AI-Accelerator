@@ -33,7 +33,7 @@ import logging
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core import usage
-from backend.core.llm_client import get_llm
+from backend.core.llm_client import get_llm, clean_message_content
 from backend.retrieval.pg_store import PGStore
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class AnswererTool:
                 {"role": "user",   "content": user_msg},
             ])
             usage.record_from_message("answer", response)
-            answer_text = (response.content or "").strip()
+            answer_text = clean_message_content(response.content).strip()
 
             # Build citations — image_path and table_data are top-level chunk fields.
             # source_ref varies by file type (page for PDF, sheet for Excel, slide

@@ -22,7 +22,7 @@ from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core.models import DENSE_QUERY_PREFIX, get_dense_model, get_reranker
 from backend.core import usage
-from backend.core.llm_client import get_llm
+from backend.core.llm_client import get_llm, clean_message_content
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
 
@@ -174,7 +174,7 @@ def _hyde(query, cfg, full_config, filters):
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     )
     usage.record_from_message("hyde", response)
-    hyp      = response.content
+    hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp)
     return VectorStore.search(hyp_emb, full_config, top_k=top_k, filters=filters)

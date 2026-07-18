@@ -158,3 +158,19 @@ def _langfuse_callbacks() -> list:
             return [CallbackHandler()]
         except Exception:
             return []
+
+
+def clean_message_content(content) -> str:
+    """Standardize the LLM message content representation.
+    In some integrations (like langchain_google_genai), content can be returned
+    as a list of dictionaries/parts rather than a raw string.
+    """
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict):
+                parts.append(c.get("text") or "")
+            elif isinstance(c, str):
+                parts.append(c)
+        return "".join(parts)
+    return str(content or "")

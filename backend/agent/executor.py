@@ -73,7 +73,8 @@ SYSTEM_PROMPT = (
     "- Be direct and concise. Do not narrate your reasoning or tool usage.\n"
     "- Never say 'I don't have access to files' or 'please provide a file path' "
     "— documents are already ingested and searchable.\n"
-    "- Never call the same tool twice with different guesses. One call, one answer."
+    "- Never call the same tool twice with different guesses. One call, one answer.\n"
+    "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature."
 )
 
 class AgentState(TypedDict):
@@ -100,6 +101,8 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
     with a 'tool_use_failed' 400 — a provider-side flake (reproduced independent of
     prompt/tool content), not a logic error here. One retry clears it in practice;
     anything else is a real error and must not be swallowed."""
+    import re
+    import uuid
     last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
@@ -108,6 +111,55 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
             msg = str(exc)
             if "tool_use_failed" not in msg and "Failed to call a function" not in msg:
                 raise
+
+            # Intercept and recover raw tool call format if parsed successfully
+            match = re.search(r'<function=(\w+)\(?(.*?)\)?\s*</function>', msg)
+            if match:
+                name = match.group(1)
+                args_str = match.group(2).strip()
+                if args_str.endswith('>'):
+                    args_str = args_str[:-1].strip()
+                if args_str.startswith('(') and args_str.endswith(')'):
+                    args_str = args_str[1:-1].strip()
+
+                args = None
+                # 1. Try standard JSON parsing
+                try:
+                    clean_str = args_str.strip().strip("'").strip('"')
+                    args = json.loads(clean_str)
+                except Exception:
+                    try:
+                        args = json.loads(clean_str.replace("'", '"').replace("None", "null").replace("null", "null"))
+                    except Exception:
+                        pass
+
+                # 2. Try parsing keyword arguments (like query="something", document_scope=None)
+                if args is None:
+                    kwargs = {}
+                    for k, v in re.findall(r'(\w+)\s*=\s*("[^"]*"|\'[^\']*\'|[^,\s\)]+)', args_str):
+                        val = v.strip().strip("'").strip('"')
+                        if val.lower() == 'none' or val.lower() == 'null':
+                            val = None
+                        elif val.lower() == 'true':
+                            val = True
+                        elif val.lower() == 'false':
+                            val = False
+                        kwargs[k] = val
+                    if kwargs:
+                        args = kwargs
+
+                if args is not None:
+                    logger.info("agent LLM tool call successfully parsed from raw generation string for tool: %s", name)
+                    return AIMessage(
+                        content="",
+                        tool_calls=[{
+                            "name": name,
+                            "args": args,
+                            "id": f"call_{uuid.uuid4().hex}",
+                            "type": "tool_call"
+                        }]
+                    )
+
             last_exc = exc
             logger.warning("agent LLM malformed tool call (attempt %d/%d): %s", attempt + 1, attempts, msg[:200])
     raise last_exc

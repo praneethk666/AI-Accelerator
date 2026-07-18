@@ -217,7 +217,10 @@ class IngestDocumentTool:
                 "description": "Path to the document to ingest.",
             },
             "document_id": {
-                "type": "string",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                ],
                 "description": "Optional id to update in place; omit to derive a "
                 "stable id from the file's content.",
             },
@@ -226,6 +229,8 @@ class IngestDocumentTool:
     }
 
     def run(self, file_path: str, document_id: str | None = None) -> dict:
+        if document_id in ("null", "None"):
+            document_id = None
         return ingest_document(file_path, document_id)
 
     __call__ = run

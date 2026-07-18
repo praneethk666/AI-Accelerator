@@ -32,11 +32,17 @@ class ListDocumentsTool:
         "type": "object",
         "properties": {
             "document_type": {
-                "type": "string",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                ],
                 "description": "Optional: only list documents of this document_type (e.g. 'invoice').",
             },
             "industry": {
-                "type": "string",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"}
+                ],
                 "description": "Optional: only list documents tagged with this industry "
                                 "(e.g. 'healthcare', 'finance'). Matches the industry value "
                                 "shown in each document's row, case-insensitively.",
@@ -45,6 +51,11 @@ class ListDocumentsTool:
     }
 
     def run(self, document_type: str | None = None, industry: str | None = None) -> dict[str, Any]:
+        if document_type in ("null", "None"):
+            document_type = None
+        if industry in ("null", "None"):
+            industry = None
+
         from backend.storage.postgres_store import PostgresStore
 
         store = PostgresStore()

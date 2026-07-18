@@ -579,6 +579,42 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for rec in report.get("per_page", {}).values():
             rec["figures"]["dropped"] = rec["figures"]["proposed"] - rec["figures"]["kept"]
 
+    # ── Page Rescue Fallback for Docling Layout-Engine Crash ─────────────────
+    # If Docling's layout pipeline throws std::bad_alloc/OOM on a page, it skips it
+    # completely. Since the PDF is digital and PyMuPDF can extract the text for free,
+    # we harvest any missing pages directly via PyMuPDF so no content is lost.
+    extracted_pages = {
+        int(b["source_ref"]["page"]) for b in blocks 
+        if b and b.get("type") in ("text", "heading", "table")
+        and isinstance(b.get("source_ref"), dict)
+        and b["source_ref"].get("page") is not None
+    }
+    
+    import fitz
+    fdoc = fitz.open(pdf_path)
+    try:
+        rescued_any = False
+        for p in range(1, len(doc.pages) + 1):
+            if p not in extracted_pages:
+                logger.warning("docling: layout failed on page %d; rescuing text via fitz fallback", p)
+                fpage = fdoc[p - 1]
+                text = fpage.get_text().strip()
+                if text:
+                    rect = fpage.rect
+                    bbox = [0.0, 0.0, rect.width, rect.height]
+                    blocks.append(_block(document_id, p, filename, "text", text, bbox=bbox))
+                    page_text.setdefault(p, []).append(text)
+                    rescued_any = True
+                    if report is not None:
+                        report["pages"]["rescued"].append(p)
+                        # We also count them as digital_kept since we got their digital text
+                        report["pages"]["digital_kept"] += 1
+        if rescued_any:
+            # Stable sort by page number, keeping relative order of blocks within each page
+            blocks = sorted(blocks, key=lambda b: (int(b["source_ref"]["page"]) if (b and isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") is not None) else 9999))
+    finally:
+        fdoc.close()
+
     logger.info("docling: %d blocks from %d pages (%d tables, %d pictures)",
                 len(blocks), len(doc.pages), len(doc.tables), len(doc.pictures))
     return blocks
@@ -589,6 +625,9 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
     return the image_caption block — or None if the gate says it's page furniture
     (logo/banner/header/text/blank), so we never crop+index a non-figure. Keeps any
     real content incl. wide schematics/CAD that geometry filters would have dropped."""
+    vcfg = config.get("vision") or {}
+    if not vcfg.get("enabled", True):
+        return None
     from backend.vision.pdf_cropper import PDFCropper
     b = _block(document_id, page_no, filename, "image_caption", "[figure]", bbox=bbox)
     try:

@@ -95,6 +95,7 @@ def ingest_document(
     registry=None,
     on_step=None,
     on_complete=None,
+    read_images: bool = True,
 ) -> dict:
     """Run the full ingestion pipeline on one file and return its outcome.
 
@@ -110,6 +111,8 @@ def ingest_document(
             pipeline result (includes chunks + "status") — lets a caller do its own
             tail work (e.g. the API renders page images) without bloating the
             agent-facing return.
+        read_images: when false, figure captioning is skipped to save tokens.
+            Scanned and garbled page rescue is unaffected.
 
     Returns:
         {"document_id", "status", "metrics", "errors"} — status is "ready" unless
@@ -119,6 +122,16 @@ def ingest_document(
         raise FileNotFoundError(file_path)
 
     cfg = config if config is not None else load_config(CONFIG_PATH)
+    
+    # Apply read_images override by copying the configuration if needed.
+    # Scanned and garbled page rescue (vision_ocr) is always run.
+    import copy
+    doc_config = copy.deepcopy(cfg) if not read_images else cfg
+    if not read_images:
+        doc_config.setdefault("vision", {})["enabled"] = False
+        logger.info("read_images=off for %s: figure captioning disabled (page rescue unchanged)",
+                    document_id or os.path.basename(file_path))
+
     reg = registry if registry is not None else build_default_registry()
     document_id = document_id or _content_id(file_path)
     file_type = file_type_of(file_path)
@@ -131,13 +144,13 @@ def ingest_document(
         pg.insert_document(document_id, filename, file_type, file_path)
     finally:
         pg.close()
-    _preclean(document_id, cfg)
+    _preclean(document_id, doc_config)
 
     # run the pipeline (graph owns routing/extraction; we just seed file_type)
     state = {"document_id": document_id, "file_path": file_path,
              "file_type": file_type, "errors": []}
     try:
-        result = run_pipeline(reg, state, _ingestion_cfg(cfg), on_step=on_step)
+        result = run_pipeline(reg, state, _ingestion_cfg(doc_config), on_step=on_step)
         # "failed" only if a STEP errored — a non-fatal warning in errors must not
         # mark an otherwise-successful ingest as failed.
         step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
@@ -213,11 +226,15 @@ class IngestDocumentTool:
                 "description": "Optional id to update in place; omit to derive a "
                 "stable id from the file's content.",
             },
+            "read_images": {
+                "type": "boolean",
+                "description": "Whether to send embedded images/figures to the Vision API for captioning (default: true). Set to false to skip figure captioning and save tokens when only text content is needed. Scanned page rescue is unaffected.",
+            },
         },
         "required": ["file_path"],
     }
 
-    def run(self, file_path: str, document_id: str | None = None) -> dict:
-        return ingest_document(file_path, document_id)
+    def run(self, file_path: str, document_id: str | None = None, read_images: bool = True) -> dict:
+        return ingest_document(file_path, document_id, read_images=read_images)
 
     __call__ = run

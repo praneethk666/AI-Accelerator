@@ -16,20 +16,18 @@
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  # ACTIVE (PRODUCTION): OpenAI gpt-4o-mini — tighter field-rule following + generous PAID rate
-  # limit (no TPM wall), ~$0.15/1M in. Needs OPENAI_API_KEY in .env.
-  provider: openai
-  model: gpt-4o-mini
-  answer_model: gpt-4o-mini
-  api_key: ${OPENAI_API_KEY}
+  provider: groq
+  model: llama-3.1-8b-instant       # bulk/cheap tasks (chunk enrichment)
+  answer_model: llama-3.3-70b-versatile   # answering, query planning
+  api_key: ${GROQ_API_KEY}
   temperature: 0.2
   # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
-  # TESTING (free): Groq — llama-3.3-70b for field extraction is consistent; free
-  # tier caps at ~6000-12000 TPM so it throttles big VOLUME but is fine for samples/validation.
-  # provider: groq
-  # model: llama-3.1-8b-instant       # bulk/cheap tasks (chunk enrichment)
-  # answer_model: llama-3.3-70b-versatile   # answering, query planning
-  # api_key: ${GROQ_API_KEY}
+  # Mistral API:
+  # provider: openai
+  # model: mistral-large-latest
+  # answer_model: mistral-large-latest
+  # base_url: https://api.mistral.ai/v1
+  # api_key: ${MISTRAL_API_KEY}
   # Anthropic Claude: excellent structured-JSON field discipline, cheap. Needs ANTHROPIC_API_KEY.
   # provider: anthropic
   # model: claude-haiku-4-5
@@ -297,7 +295,7 @@ query:
   # Vector DB = Qdrant (see database.qdrant_url).
   # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
   retrieval:
-    method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
+    method: hybrid     # naive | hybrid | hybrid_rerank | hyde | enriched
     top_n: 20                   # candidates fetched from Qdrant before reranking
     candidate_k: 80             # wider pool for reranking (typically top_n * 4)
     rerank_top_k: 5             # chunks kept after reranking
@@ -306,24 +304,11 @@ query:
 
   agent:
     max_iterations: 5
-    # Needs a provider with NATIVE tool-calling. Groq is free-tier and fast;
-    # swap to gpt-4o-mini for production by pointing provider/model there (the
-    # llm.api_key mechanism is unaffected — this block only overrides
-    # provider/model, and reads its own key via the provider's default env var,
-    # e.g. GROQ_API_KEY).
-    provider: groq
-    model: llama-3.3-70b-versatile
-    # Tools in this list are NOT executed on first ask — the executor stops and
-    # reports what it wants to run; a human must approve before it re-runs with
-    # approved_writes=True. Read-only tools (search_documents, sql_read) run free.
-    write_tools: [ingest_document]
-    # Every turn resends the whole conversation_history to the LLM — without a
-    # cap this grows unbounded within a long session (rising cost/latency per
-    # turn, eventually exceeding the model's context window). Simple sliding
-    # window, not summarization: a long conversation loses its earliest turns
-    # rather than compacting them. Revisit if usage shows long sessions are
-    # common enough that losing early context actually hurts answers.
-    max_history_messages: 20
+    provider: openai
+    model: mistral-large-latest
+    base_url: https://api.mistral.ai/v1
+    api_key: ${MISTRAL_API_KEY}
+
 
 # ── Reading config from a tool ─────────────────────────────────────────────────
 # config passed to a Tool.run(state, config) is the full dict from
@@ -341,6 +326,7 @@ query:
 document_types:
   - invoice
   - report
+  - research_paper
   - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
   - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
   - datasheet
@@ -356,6 +342,9 @@ industries:
   - finance
   - legal
   - healthcare
+  - retail_ecommerce
+  - travel_transport
+  - entertainment_media
   - general
 
 default_industry: general
@@ -372,9 +361,12 @@ categorization:
     automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
     electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
     manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [invoice, balance sheet, revenue, profit, ledger, audit, fiscal, equity]
+    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
     legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
     healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
+    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
+    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
+    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
     general:      []
 
 # ── Routing ───────────────────────────────────────────────────────────────────
@@ -386,6 +378,7 @@ type_to_route:
   circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
   datasheet:       diagram_heavy
   report:          text_default
+  research_paper:  text_default
   invoice:         text_default
   presentation:    text_default
   spreadsheet:     text_default

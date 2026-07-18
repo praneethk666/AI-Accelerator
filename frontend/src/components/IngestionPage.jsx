@@ -18,7 +18,7 @@ import {
 // ran for this file type / pdf kind.
 const PIPELINE_STAGES = [
   { label: 'Categorize', icon: '📂', match: ['categorize'] },
-  { label: 'Extract', icon: '📊', match: ['pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'cad_extract'] },
+  { label: 'Extract', icon: '📊', match: ['pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'cad_extract', 'docling_pdf'] },
   { label: 'Vision', icon: '👁️', match: ['vision_enrichment'] },
   { label: 'Chunk', icon: '✂️', match: ['chunk'] },
   { label: 'Enrich', icon: '🏷️', match: ['enrich_chunks'] },
@@ -52,6 +52,9 @@ const IngestionPage = () => {
   const [uploadProgress, setUploadProgress] = useState({});
   // metrics from the most recent upload: { name, status, metrics: [{step, ms, status}] }
   const [lastRun, setLastRun] = useState(null);
+  // Whether to send embedded images/figures to the Vision API for captioning.
+  // Scanned page rescue is unaffected — always on (no text without VLM).
+  const [readImages, setReadImages] = useState(true);
 
   // Check server health on component mount
   useEffect(() => {
@@ -98,7 +101,7 @@ const IngestionPage = () => {
         setUploadProgress((prev) => ({ ...prev, [file.name]: 0 }));
         // /upload now returns immediately with status "processing"; the pipeline
         // runs in the background and we poll per-step progress below.
-        const res = await uploadFile(file);
+        const res = await uploadFile(file, readImages);
         const doc = res.data;
         setFiles((prev) => [doc, ...prev]);
         setLastRun({ name: file.name, status: doc.status, metrics: [] });
@@ -247,6 +250,41 @@ const IngestionPage = () => {
             </div>
           </div>
         )}
+
+        {/* Read Images Toggle */}
+        <div className="mb-4 flex items-center justify-between px-1">
+          <div className="flex items-center gap-3">
+            <span className="text-lg">{readImages ? '🖼️' : '📝'}</span>
+            <div>
+              <p className="text-sm font-medium text-gray-200">
+                {readImages ? 'Read Images & Figures' : 'Text Only'}
+              </p>
+              <p className="text-xs text-gray-500">
+                {readImages
+                  ? 'Figures and diagrams will be described by the Vision AI'
+                  : 'Images in the file are skipped — only text is indexed'}
+              </p>
+            </div>
+          </div>
+          {/* Toggle switch */}
+          <button
+            id="read-images-toggle"
+            onClick={() => setReadImages(v => !v)}
+            disabled={uploading || !serverConnected}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+              uploading || !serverConnected ? 'opacity-40 cursor-not-allowed' : ''
+            } ${
+              readImages ? 'bg-blue-600' : 'bg-slate-600'
+            }`}
+            title={readImages ? 'Click to disable image reading' : 'Click to enable image reading'}
+          >
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                readImages ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </div>
 
         {/* Upload Area */}
         <div
@@ -466,6 +504,45 @@ const IngestionPage = () => {
                             </div>
                           </div>
                         </div>
+
+                        {/* Timing + token usage summary for this file */}
+                        {file.status === 'Ready' && (file.token_usage || file.indexed_tokens != null || (file.metrics || []).length > 0) && (() => {
+                          const tu = file.token_usage || {};
+                          const totalMs = (file.metrics || []).reduce((a, m) => a + (m.ms || 0), 0);
+                          const Stat = ({ label, value, sub }) => (
+                            <div className="flex flex-col px-2.5 py-1.5 rounded bg-slate-900/40 border border-slate-700/50 min-w-[100px]">
+                              <span className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">{label}</span>
+                              <span className="text-xs font-semibold text-gray-200">{value}</span>
+                              {sub != null && <span className="text-[9px] text-gray-500 mt-0.5">{sub}</span>}
+                            </div>
+                          );
+                          return (
+                            <div className="mt-3 flex flex-wrap gap-1.5 border-t border-slate-700/40 pt-3">
+                              {totalMs > 0 && (
+                                <Stat label="Total time" value={fmtDuration(totalMs)}
+                                      sub={`${(file.metrics || []).length} steps`} />
+                              )}
+                              {file.token_usage && (
+                                <>
+                                  <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
+                                        sub={`${tu.calls || 0} calls`} />
+                                  <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                                  <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                                </>
+                              )}
+                              {file.indexed_tokens != null && (
+                                <Stat label="Indexed" value={(file.indexed_tokens || 0).toLocaleString()}
+                                      sub={`tokens · ${file.chunk_count ?? 0} chunks`} />
+                              )}
+                              {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
+                                Object.entries(tu.by_kind).map(([k, v]) => (
+                                  <Stat key={k} label={`${k} tokens`}
+                                        value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()} />
+                                ))}
+                            </div>
+                          );
+                        })()}
+
                         {file.errors && file.errors.length > 0 && (
                           <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs space-y-1">
                             <p className="font-semibold">⚠️ Issues found:</p>

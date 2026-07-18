@@ -38,23 +38,28 @@ SYSTEM_PROMPT = (
     "an existing index, it does not need a file path. NEVER tell the user you need a "
     "file path, or that no file has been provided, in order to answer a question — "
     "that only applies to ingest_document, and only when they explicitly want to add a "
-    "NEW file. For ANY question — including vague ones like 'this invoice' or 'the "
-    "document' with no filename given — call search_documents first; do not assume "
-    "nothing is ingested just because the message doesn't name a file.\n\n"
+    "NEW file.\n\n"
+    "CRITICAL: Do NOT answer questions about documents, facts, definitions, synonyms, or vocabulary "
+    "using your pre-trained training knowledge. You MUST search the ingested documents first by calling "
+    "the search_documents tool. Do not assume nothing is ingested; always search first. You should only "
+    "answer directly in plain text without tools if the user is saying hello, thank you, or having a "
+    "purely conversational greeting/meta-discussion.\n\n"
     "Tools available: ingest_document (ingest a NEW file the user gives a path for), "
     "search_documents (answer a question from already-ingested documents with "
     "citations; accepts an optional document_scope to restrict to specific document "
     "ids), list_documents (list what's already ingested: id, filename, document_type, "
     "industry, status), sql_read (read-only SQL against the configured database).\n\n"
+    "When ingesting a file via the ingest_document tool, check the attached file hint "
+    "for the 'read_images' setting (e.g., 'read_images: false'). If it is set to false, "
+    "you MUST pass read_images=False to the ingest_document tool to skip figure/image "
+    "captioning as requested by the user.\n\n"
     "Disambiguation: if a question references a document ambiguously (e.g. 'this "
     "invoice') and you're not sure which one is meant, call list_documents first. If "
     "there's exactly one ingested document, or exactly one obvious match, just use it "
     "(pass its id as document_scope to search_documents) without asking. If several "
     "documents could plausibly match, don't guess and don't silently search across all "
     "of them — reply in plain text listing the candidates (filename + document_type) "
-    "and ask the user which one they mean before calling search_documents.\n\n"
-    "Don't call a tool you don't need. Once you have enough information, answer "
-    "directly in plain text — do not call a tool just to restate its result."
+    "and ask the user which one they mean before calling search_documents."
 )
 
 
@@ -82,7 +87,6 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 3):
     with a 'tool_use_failed' 400 — a provider-side flake (reproduced independent of
     prompt/tool content), not a logic error here. One retry clears it in practice;
     anything else is a real error and must not be swallowed."""
-    last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
             return llm_with_tools.invoke(messages)
@@ -90,9 +94,9 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 3):
             msg = str(exc)
             if "tool_use_failed" not in msg and "Failed to call a function" not in msg:
                 raise
-            last_exc = exc
+            if attempt == attempts - 1:
+                raise
             logger.warning("agent LLM malformed tool call (attempt %d/%d): %s", attempt + 1, attempts, msg[:200])
-    raise last_exc
 
 
 def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: set[str],

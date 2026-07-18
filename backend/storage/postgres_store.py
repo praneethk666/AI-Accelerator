@@ -201,11 +201,29 @@ class PostgresStore:
         rows = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at
+                   route, confidence, status, created_at,
+                   current_step, metrics, token_usage, indexed_tokens,
+                   chunk_count, progress, total_steps, updated_at, errors
             FROM documents ORDER BY created_at DESC
             """
         ).fetchall()
-        return [_document_row(r) for r in rows]
+        out = []
+        for row in rows:
+            doc = _document_row(row)
+            doc.update({
+                "current_step": row[9],
+                "metrics": row[10] or [],
+                "token_usage": row[11],
+                "indexed_tokens": row[12],
+                "chunk_count": row[13],
+                "chunks": row[13],            # alias the UI/older callers expect
+                "progress": row[14],
+                "total_steps": row[15],
+                "updated_at": row[16].isoformat() if row[16] else None,
+                "errors": row[17] or [],
+            })
+            out.append(doc)
+        return out
 
     def get_document(self, document_id: str) -> dict | None:
         """Full document + live progress (the API's progress source of truth)."""

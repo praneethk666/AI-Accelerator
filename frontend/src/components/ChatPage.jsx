@@ -46,6 +46,7 @@ const ChatPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
+  const [readImages, setReadImages] = useState(true);
   const [attaching, setAttaching] = useState(false);
   const [contextFile, setContextFile] = useState(null); // from ?fileId= (informational only)
   const [menuOpen, setMenuOpen] = useState(null); // session_id of open dropdown
@@ -90,6 +91,7 @@ const ChatPage = () => {
     setSessionId(newSessionId());
     setMessages([]);
     setAttachedFile(null);
+    setReadImages(true);
     setError(null);
   };
 
@@ -106,6 +108,7 @@ const ChatPage = () => {
       );
       setSessionId(id);
       setAttachedFile(null);
+      setReadImages(true);
       setError(null);
     } catch (err) {
       console.error('Failed to load session:', err);
@@ -185,10 +188,10 @@ const ChatPage = () => {
 
   // What the model sees vs. what the user sees in their own bubble differ when a
   // file is attached — the model gets an explicit path to reference.
-  const composeSentText = (text, attachment) => {
+  const composeSentText = (text, attachment, readImagesMode) => {
     if (!attachment) return text;
     const base = text.trim() || 'Please ingest this file.';
-    return `${base}\n\n[Attached file: ${attachment.filename} — path: ${attachment.file_path}]`;
+    return `${base}\n\n[Attached file: ${attachment.filename} — path: ${attachment.file_path} — read_images: ${readImagesMode ? 'true' : 'false'}]`;
   };
 
   const agentMessageFromResponse = (data, originalText) => ({
@@ -206,11 +209,12 @@ const ChatPage = () => {
     const displayText = attachedFile
       ? `${input.trim()}${input.trim() ? '\n\n' : ''}📎 ${attachedFile.filename}`
       : input;
-    const sentText = composeSentText(input, attachedFile);
+    const sentText = composeSentText(input, attachedFile, readImages);
 
     setMessages((prev) => [...prev, { role: 'user', content: displayText }]);
     setInput('');
     setAttachedFile(null);
+    setReadImages(true);
     setLoading(true);
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -423,12 +427,34 @@ const ChatPage = () => {
         <div className="border-t border-slate-800 bg-slate-900 p-4 flex-shrink-0">
           <div className="max-w-3xl mx-auto">
             {attachedFile && (
-              <div className="mb-2 inline-flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">
-                <DocumentIcon className="h-3.5 w-3.5 text-blue-400" />
-                {attachedFile.filename}
-                <button onClick={() => setAttachedFile(null)} title="Remove attachment">
-                  <XMarkIcon className="h-3.5 w-3.5 text-gray-500 hover:text-gray-300" />
-                </button>
+              <div className="mb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-800 border border-slate-700 rounded-xl px-4 py-2">
+                <div className="flex items-center gap-2">
+                  <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                  <span className="text-xs text-gray-300 font-medium truncate max-w-[200px] sm:max-w-md">
+                    {attachedFile.filename}
+                  </span>
+                  <button onClick={() => setAttachedFile(null)} title="Remove attachment" className="p-0.5 hover:bg-slate-700 rounded transition-colors">
+                    <XMarkIcon className="h-3.5 w-3.5 text-gray-500 hover:text-gray-300" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 border-t sm:border-t-0 sm:border-l border-slate-700 pt-2 sm:pt-0 sm:pl-3">
+                  <span className="text-[11px] text-gray-400 select-none">
+                    {readImages ? '🖼️ Read Images' : '📝 Text Only'}
+                  </span>
+                  <button
+                    onClick={() => setReadImages(v => !v)}
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      readImages ? 'bg-blue-600' : 'bg-slate-600'
+                    }`}
+                    title={readImages ? 'Click to skip image reading' : 'Click to enable image reading'}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        readImages ? 'translate-x-4' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
             )}
             <div className="flex items-end gap-1 bg-slate-800 border border-slate-700 rounded-2xl px-2 py-1.5 focus-within:border-blue-500 transition-colors">

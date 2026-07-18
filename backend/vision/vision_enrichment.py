@@ -93,6 +93,8 @@ class VisionEnrichmentTool(Tool):
         # so every per-image task uses the right focus (e.g. CAD/circuit) instead
         # of the generic prompt. Copy so we don't mutate the shared config dict.
         vision_cfg = dict(config.get("vision", {}))
+        if not vision_cfg.get("enabled", True):
+            return state
         vision_cfg["_resolved_prompt"] = build_vision_prompt(state, config)
 
         timeout_s = vision_cfg.get("timeout_s", 60)

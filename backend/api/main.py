@@ -38,7 +38,7 @@ from dotenv import load_dotenv
 # Load .env BEFORE load_config so ${GROQ_API_KEY}/${POSTGRES_URL}/... resolve.
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -264,11 +264,25 @@ def _save_page_images(document_id: str, pdf_path: str, pages: set, dpi: int = 15
     return out
 
 
-def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
+def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str,
+                   read_images: bool = True) -> None:
     """Run the full pipeline for one upload. Delegates run + status + finalize to the
     shared ingest_document entry point; the API-only tail (live DB progress + PDF
-    page images) is injected via the on_step / on_complete hooks."""
+    page images) is injected via the on_step / on_complete hooks.
+
+    read_images=False disables figure/image captioning (vision.enabled=False) while
+    leaving vision_ocr untouched so scanned/garbled page rescue still runs normally."""
     total = len(_INGEST_STEPS) or None
+
+    # Build a per-document config copy if image reading is disabled.
+    # Only vision.enabled is toggled — vision_ocr stays on so that scanned and
+    # garbled pages are still rescued (those pages have NO text without the VLM).
+    import copy
+    doc_config = copy.deepcopy(_config) if not read_images else _config
+    if not read_images:
+        doc_config.setdefault("vision", {})["enabled"] = False
+        logger.info("read_images=off for %s: figure captioning disabled (page rescue unchanged)",
+                    document_id)
 
     # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
@@ -319,7 +333,7 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
             logger.exception("page-image save failed for %s", document_id)
 
     try:
-        ingest_document(dest, document_id, config=_config, registry=_registry,
+        ingest_document(dest, document_id, config=doc_config, registry=_registry,
                         on_step=on_step, on_complete=on_complete)
     finally:
         if pg is not None:
@@ -327,7 +341,17 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
 
 
 @app.post("/upload")
-async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
+async def upload(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    read_images: str = Form("true"),
+):
+    """Upload a file and start ingestion.
+
+    read_images (form field, default 'true'): set to 'false' to skip figure/image
+    captioning via the Vision API. Scanned and garbled page rescue is unaffected
+    — those pages have no text without VLM, so they are always rescued regardless.
+    """
     document_id = str(uuid.uuid4())
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     dest = os.path.join(UPLOAD_DIR, f"{document_id}_{file.filename}")
@@ -341,9 +365,13 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
     finally:
         pg.close()
 
+    # Parse the form flag — any truthy string other than 'false'/'0' means ON.
+    _read_images = read_images.strip().lower() not in ("false", "0", "no", "off")
+
     # Kick off ingestion in the background; progress is persisted to Postgres and the
     # UI polls /files/{id}/progress (DB-backed) below.
-    background.add_task(_run_ingestion, document_id, dest, file_type, file.filename)
+    background.add_task(_run_ingestion, document_id, dest, file_type, file.filename,
+                        _read_images)
 
     return {"id": document_id, "document_id": document_id,
             "filename": file.filename, "file_type": file_type,

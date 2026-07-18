@@ -29,13 +29,17 @@ API.interceptors.response.use(
 );
 
 /**
- * Upload a file for categorization
+ * Upload a file for ingestion.
  * @param {File} file - The file to upload
+ * @param {boolean} readImages - When true (default), embedded figures/images are
+ *   described by the Vision API. When false, figure captioning is skipped to save
+ *   tokens. Scanned/garbled page rescue is always on regardless of this flag.
  * @returns {Promise} File metadata with categorization results
  */
-export const uploadFile = async (file) => {
+export const uploadFile = async (file, readImages = true) => {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('read_images', readImages ? 'true' : 'false');
   
   const config = {
     headers: {

@@ -51,6 +51,7 @@ from backend.core.llm_client import clean_message_content  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
 from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
+from backend.storage.qdrant_store import QdrantStore  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,15 @@ async def file_page(file_id: str, page: int):
 
 @app.delete("/files/{file_id}")
 async def delete_file(file_id: str):
+    dim = _config.get("embeddings", {}).get("dense_dim", 768)
+    collection = _config.get("database", {}).get("qdrant_collection", "chunks")
+
+    vectors = QdrantStore(dim, collection)
+    try:
+        vectors.delete_by_document(file_id)
+    finally:
+        vectors.close()
+
     pg = _pg()
     try:
         pg.delete_document(file_id)

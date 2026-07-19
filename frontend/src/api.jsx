@@ -104,6 +104,9 @@ export const getAgentSession = async (sessionId) => API.get(`/agent/sessions/${s
 
 export const deleteAgentSession = async (sessionId) => API.delete(`/agent/sessions/${sessionId}`);
 
+/** Update session metadata: { title?, pinned? }. */
+export const patchAgentSession = async (sessionId, data) => API.patch(`/agent/sessions/${sessionId}`, data);
+
 /**
  * Save a file to disk WITHOUT ingesting it — for the chat's attach-a-file flow.
  * The agent decides (with approval) whether/how to ingest it; this just gets

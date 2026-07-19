@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
 import { uploadFile, getFiles, deleteFile, healthCheck, getProgress } from '../api';
@@ -52,6 +52,7 @@ const IngestionPage = () => {
   const [uploadProgress, setUploadProgress] = useState({});
   // metrics from the most recent upload: { name, status, metrics: [{step, ms, status}] }
   const [lastRun, setLastRun] = useState(null);
+  const activePolls = useRef({});
 
   // Check server health on component mount
   useEffect(() => {
@@ -74,8 +75,16 @@ const IngestionPage = () => {
     setLoading(true);
     try {
       const res = await getFiles();
-      setFiles(res.data || []);
+      const filesList = res.data || [];
+      setFiles(filesList);
       setError(null);
+
+      // Auto-poll any file that is currently processing in the background
+      filesList.forEach((file) => {
+        if (file.status === 'processing') {
+          pollProgress(file.document_id || file.id, file.filename);
+        }
+      });
     } catch (err) {
       console.error('Failed to load files:', err);
       setError(err.message || 'Failed to load files');
@@ -125,6 +134,9 @@ const IngestionPage = () => {
   // Poll a document's ingestion progress and update the pipeline cards + file row
   // live, until it finishes (ready/failed).
   const pollProgress = (docId, name) => {
+    if (activePolls.current[docId]) return;
+    activePolls.current[docId] = true;
+
     let attempts = 0;
     const tick = async () => {
       attempts += 1;
@@ -149,10 +161,15 @@ const IngestionPage = () => {
         if (data.status === 'processing' && attempts < 800) {
           setTimeout(tick, 900);
         } else {
+          delete activePolls.current[docId];
           loadFiles(); // final refresh from the DB
         }
       } catch (e) {
-        if (attempts < 800) setTimeout(tick, 1500); // transient — keep trying
+        if (attempts < 800) {
+          setTimeout(tick, 1500); // transient — keep trying
+        } else {
+          delete activePolls.current[docId];
+        }
       }
     };
     setTimeout(tick, 600);
@@ -446,45 +463,68 @@ const IngestionPage = () => {
                       <div className="flex-1 min-w-0">
                         <h3 className="font-semibold text-white truncate text-lg">{file.filename}</h3>
                         <p className="text-xs text-gray-500 mt-1">{file.file_type || 'Document'}</p>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 text-xs">
-                          <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
-                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Route</span>
-                            <p className="text-blue-400 font-mono font-medium mt-1">{file.route || 'N/A'}</p>
-                          </div>
-                          <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
-                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Type</span>
-                            <p className="text-gray-300 mt-1">{file.document_type || 'Unknown'}</p>
-                          </div>
-                          <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
-                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Industry</span>
-                            <p className="text-gray-300 capitalize mt-1">{file.industry || 'N/A'}</p>
-                          </div>
-                          <div className="bg-slate-900/50 p-3 rounded border border-slate-600">
-                            <span className="text-gray-500 text-xs uppercase tracking-wider font-semibold">Confidence</span>
-                            <div className="mt-1 flex items-center gap-2">
-                              <div className="flex-1 bg-slate-700 rounded-full h-1.5">
-                                <div
-                                  className={`h-1.5 rounded-full transition-all ${file.confidence > 0.8 ? 'bg-green-500' : file.confidence > 0.6 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                                  style={{ width: `${file.confidence * 100}%` }}
-                                />
-                              </div>
-                              <span className={`font-medium ${file.confidence > 0.8 ? 'text-green-400' : file.confidence > 0.6 ? 'text-yellow-400' : 'text-red-400'}`}>
-                                {(file.confidence * 100).toFixed(0)}%
-                              </span>
+
+                        {/* Timing & Token stats breakdown */}
+                        {(file.token_usage || file.indexed_tokens != null || (file.metrics && file.metrics.length > 0)) && (() => {
+                          const tu = file.token_usage || {};
+                          const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
+                          
+                          const StatBlock = ({ label, value, sub }) => (
+                            <div className="flex flex-col px-2.5 py-1.5 rounded bg-slate-900/40 border border-slate-700/50 min-w-[100px]">
+                              <span className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">{label}</span>
+                              <span className="text-xs font-semibold text-gray-200">{value}</span>
+                              {sub && <span className="text-[9px] text-gray-500 mt-0.5">{sub}</span>}
                             </div>
-                          </div>
-                        </div>
-                        {file.errors && file.errors.length > 0 && (
-                          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs space-y-1">
-                            <p className="font-semibold">⚠️ Issues found:</p>
-                            {file.errors.map((err, idx) => (
-                              <p key={idx} className="flex items-start gap-2">
-                                <span className="mt-1 text-red-500">•</span>
-                                <span>{err}</span>
-                              </p>
-                            ))}
-                          </div>
-                        )}
+                          );
+
+                          return (
+                            <div className="mt-4 pt-3 border-t border-slate-700/30 flex flex-wrap gap-2">
+                              {totalMs > 0 && (
+                                <StatBlock
+                                  label="Total Time"
+                                  value={fmtDuration(totalMs)}
+                                  sub={`${(file.metrics || []).length} steps`}
+                                />
+                              )}
+                              {file.token_usage && (
+                                <>
+                                  <StatBlock
+                                    label="Total Tokens"
+                                    value={(tu.total_tokens || 0).toLocaleString()}
+                                    sub={`${tu.calls || 0} LLM calls`}
+                                  />
+                                  <StatBlock
+                                    label="Input Tokens"
+                                    value={(tu.input_tokens || 0).toLocaleString()}
+                                  />
+                                  <StatBlock
+                                    label="Output Tokens"
+                                    value={(tu.output_tokens || 0).toLocaleString()}
+                                  />
+                                </>
+                              )}
+                              {file.indexed_tokens != null && (
+                                <StatBlock
+                                  label="Indexed"
+                                  value={(file.indexed_tokens || 0).toLocaleString()}
+                                  sub={`tokens · ${file.chunk_count || 0} chunks`}
+                                />
+                              )}
+                              {tu.by_kind && Object.entries(tu.by_kind).map(([kind, data]) => {
+                                const kindTotal = (data.input_tokens || 0) + (data.output_tokens || 0);
+                                if (kindTotal === 0) return null;
+                                return (
+                                  <StatBlock
+                                    key={kind}
+                                    label={`${kind}`}
+                                    value={kindTotal.toLocaleString()}
+                                    sub="tokens"
+                                  />
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
 

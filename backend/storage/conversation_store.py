@@ -28,11 +28,17 @@ class ConversationStore(Protocol):
         ...
 
     def list_sessions(self, limit: int = 50) -> list[dict]:
-        """Most-recently-active sessions: [{"session_id", "title", "last_active"}]."""
+        """Most-recently-active sessions: [{"session_id", "title", "pinned", "last_active"}]."""
         ...
 
     def delete_session(self, session_id: str) -> None:
         """Delete every turn for one session."""
+        ...
+
+    def update_session(self, session_id: str, *,
+                       title: str | None = None,
+                       pinned: bool | None = None) -> None:
+        """Update session metadata (custom title, pinned status)."""
         ...
 
 
@@ -46,7 +52,7 @@ class PostgresConversationStore:
     """
 
     def _ensure_schema(self) -> None:
-        """Create the table if it's missing — keeps the store usable even if
+        """Create tables if missing — keeps the store usable even if
         scripts/init_db.sql wasn't run. MUST stay in sync with init_db.sql."""
         pg = PostgresStore()
         try:
@@ -58,7 +64,7 @@ class PostgresConversationStore:
                     role        TEXT NOT NULL,
                     content     TEXT NOT NULL,
                     metadata    JSONB,
-                    created_at  TIMESTAMP DEFAULT NOW()
+                    created_at  TIMESTAMPTZ DEFAULT NOW()
                 )
                 """
             )
@@ -67,9 +73,33 @@ class PostgresConversationStore:
                 "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS metadata JSONB"
             )
             pg.conn.execute(
+                "ALTER TABLE conversations ALTER COLUMN created_at TYPE TIMESTAMPTZ"
+            )
+            pg.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conversations "
                 "ON conversations (session_id, created_at)"
             )
+            pg.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id  TEXT PRIMARY KEY,
+                    title       TEXT,
+                    pinned      BOOLEAN DEFAULT FALSE,
+                    created_at  TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            # existing DBs from before TIMESTAMPTZ was adopted — safe to run if table exists
+            try:
+                pg.conn.execute(
+                    "ALTER TABLE sessions ALTER COLUMN created_at TYPE TIMESTAMPTZ"
+                )
+                pg.conn.execute(
+                    "ALTER TABLE sessions ALTER COLUMN updated_at TYPE TIMESTAMPTZ"
+                )
+            except Exception:
+                pass
         finally:
             pg.close()
 
@@ -77,12 +107,52 @@ class PostgresConversationStore:
                   metadata: dict | None = None) -> None:
         pg = PostgresStore()
         try:
+            # ensure a sessions row exists (upsert so it's idempotent)
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, updated_at)
+                VALUES (%s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET updated_at = NOW()
+                """,
+                (session_id,),
+            )
             pg.conn.execute(
                 """
                 INSERT INTO conversations (session_id, role, content, metadata)
                 VALUES (%s, %s, %s, %s)
                 """,
                 (session_id, role, content, _Json(metadata) if metadata else None),
+            )
+        finally:
+            pg.close()
+
+    def update_session(self, session_id: str, *,
+                       title: str | None = None,
+                       pinned: bool | None = None) -> None:
+        """Update session metadata (custom title, pinned status)."""
+        pg = PostgresStore()
+        try:
+            # ensure a row exists first
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id) VALUES (%s)
+                ON CONFLICT (session_id) DO NOTHING
+                """,
+                (session_id,),
+            )
+            sets = ["updated_at = NOW()"]
+            params = []
+            if title is not None:
+                sets.append("title = %s")
+                params.append(title)
+            if pinned is not None:
+                sets.append("pinned = %s")
+                params.append(pinned)
+            params.append(session_id)
+            pg.conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = %s",
+                params,
             )
         finally:
             pg.close()
@@ -109,27 +179,35 @@ class PostgresConversationStore:
         try:
             rows = pg.conn.execute(
                 """
-                SELECT session_id, MIN(created_at) AS started_at,
-                       MAX(created_at) AS last_active
-                FROM conversations GROUP BY session_id
-                ORDER BY last_active DESC LIMIT %s
+                SELECT c.session_id, MIN(c.created_at) AS started_at,
+                       MAX(c.created_at) AS last_active,
+                       s.pinned, s.title AS custom_title
+                FROM conversations c
+                LEFT JOIN sessions s ON s.session_id = c.session_id
+                GROUP BY c.session_id, s.pinned, s.title
+                ORDER BY COALESCE(s.pinned, FALSE) DESC, MAX(c.created_at) DESC
+                LIMIT %s
                 """,
                 (limit,),
             ).fetchall()
             sessions = []
-            for session_id, started_at, last_active in rows:
-                title_row = pg.conn.execute(
-                    """
-                    SELECT content FROM conversations
-                    WHERE session_id = %s AND role = 'user'
-                    ORDER BY created_at ASC, id ASC LIMIT 1
-                    """,
-                    (session_id,),
-                ).fetchone()
-                title = (title_row[0][:60] if title_row and title_row[0] else "New chat")
+            for session_id, started_at, last_active, pinned, custom_title in rows:
+                if custom_title:
+                    title = custom_title[:60]
+                else:
+                    title_row = pg.conn.execute(
+                        """
+                        SELECT content FROM conversations
+                        WHERE session_id = %s AND role = 'user'
+                        ORDER BY created_at ASC, id ASC LIMIT 1
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    title = (title_row[0][:60] if title_row and title_row[0] else "New chat")
                 sessions.append({
                     "session_id": session_id,
                     "title": title,
+                    "pinned": bool(pinned) if pinned else False,
                     "started_at": started_at.isoformat() if started_at else None,
                     "last_active": last_active.isoformat() if last_active else None,
                 })
@@ -141,6 +219,7 @@ class PostgresConversationStore:
         pg = PostgresStore()
         try:
             pg.conn.execute("DELETE FROM conversations WHERE session_id = %s", (session_id,))
+            pg.conn.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))
         finally:
             pg.close()
 

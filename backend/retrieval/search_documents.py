@@ -53,7 +53,7 @@ class SearchDocumentsTool:
     description = (
         "Search the ingested documents and answer a question, returning the answer "
         "with citations and a deduplicated list of source references. Optionally "
-        "restrict the search to specific document ids."
+        "restrict the search to specific document ids or filenames."
     )
     input_schema = {
         "type": "object",
@@ -75,8 +75,8 @@ class SearchDocumentsTool:
                         "type": "null"
                     }
                 ],
-                "description": "Optional list of document ids to restrict the search to. "
-                               "Can be an array of strings, a single string id, or null."
+                "description": "Optional list of document ids or filenames to restrict the search to. "
+                               "Can be an array of strings, a single string, or null."
             },
         },
         "required": ["query"],
@@ -87,7 +87,60 @@ class SearchDocumentsTool:
             document_scope = None
         elif isinstance(document_scope, str):
             document_scope = [document_scope]
-        return search_documents(query, document_scope)
+
+        from backend.storage.postgres_store import PostgresStore
+        store = PostgresStore()
+        try:
+            docs = store.list_documents()
+        finally:
+            store.close()
+
+        # Build maps: id -> id, and filename -> id
+        id_set = {str(d["document_id"]) for d in docs}
+        filename_map = {}
+        for d in docs:
+            fname = d.get("filename")
+            if fname:
+                filename_map[fname.lower()] = str(d["document_id"])
+
+        resolved_scope = []
+
+        if document_scope:
+            for item in document_scope:
+                item_str = str(item).strip()
+                item_lower = item_str.lower()
+                if item_str in id_set:
+                    resolved_scope.append(item_str)
+                elif item_lower in filename_map:
+                    resolved_scope.append(filename_map[item_lower])
+                else:
+                    # check for filename without extension
+                    matched = False
+                    for fname, fid in filename_map.items():
+                        name_part, _ = os.path.splitext(fname)
+                        if len(name_part) >= 3 and name_part == item_lower:
+                            resolved_scope.append(fid)
+                            matched = True
+                            break
+                    if not matched:
+                        resolved_scope.append(item_str)
+
+        # If no scope resolved from document_scope, check the query text itself
+        if not resolved_scope:
+            query_lower = query.lower()
+            for fname, fid in filename_map.items():
+                if fname in query_lower:
+                    resolved_scope.append(fid)
+                else:
+                    name_part, _ = os.path.splitext(fname)
+                    if len(name_part) >= 3 and name_part in query_lower:
+                        import re
+                        pattern = r'\b' + re.escape(name_part) + r'\b'
+                        if re.search(pattern, query_lower):
+                            resolved_scope.append(fid)
+
+        final_scope = list(set(resolved_scope)) if resolved_scope else None
+        return search_documents(query, final_scope)
 
     __call__ = run
 

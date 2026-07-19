@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
-  stageFile, getFile,
+  patchAgentSession, stageFile, getFile,
 } from '../api';
 import {
   PaperAirplaneIcon,
@@ -14,18 +14,26 @@ import {
   ArrowPathIcon,
   PlusIcon,
   TrashIcon,
+  PencilIcon,
   PaperClipIcon,
   XMarkIcon,
   CheckIcon,
   WrenchScrewdriverIcon,
   CloudArrowUpIcon,
   CircleStackIcon,
+  EllipsisVerticalIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
 } from '@heroicons/react/24/outline';
 
 // "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
 const relativeTime = (iso) => {
   if (!iso) return '';
-  const diffMs = Date.now() - new Date(iso).getTime();
+  // If the string doesn't contain 'Z' or a timezone offset (+/-), assume UTC.
+  const date = (iso.endsWith('Z') || iso.includes('+') || iso.includes('-'))
+    ? new Date(iso)
+    : new Date(iso + 'Z');   // treat as UTC
+  const diffMs = Date.now() - date.getTime();
   const min = Math.floor(diffMs / 60000);
   if (min < 1) return 'just now';
   if (min < 60) return `${min}m ago`;
@@ -36,6 +44,22 @@ const relativeTime = (iso) => {
 
 const newSessionId = () =>
   crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const PinIcon = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={`${className} transform rotate-45`}
+  >
+    <line x1="12" y1="17" x2="12" y2="22" />
+    <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a3 3 0 0 0-6 0v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+  </svg>
+);
 
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
@@ -48,9 +72,24 @@ const ChatPage = () => {
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
   const [contextFile, setContextFile] = useState(null); // from ?fileId= (informational only)
+  const [menuOpen, setMenuOpen] = useState(null); // session_id of open dropdown
+  const [renamingId, setRenamingId] = useState(null); // session_id being renamed
+  const [renameValue, setRenameValue] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+
+  // Close dropdown on click outside (uses document listener, no shared ref)
+  useEffect(() => {
+    const handler = (e) => {
+      if (!e.target.closest('[data-menu]')) {
+        setMenuOpen(null);
+        setRenamingId(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const fileId = searchParams.get('fileId');
 
@@ -85,7 +124,7 @@ const ChatPage = () => {
       setMessages(
         (res.data || []).map((m) => ({
           role: m.role,
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          content: typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content) : ''),
           toolCalls: m.tool_calls || [],
           tokenUsage: m.token_usage || null,
           traceId: m.trace_id || null,
@@ -102,12 +141,54 @@ const ChatPage = () => {
 
   const handleDeleteSession = async (id, e) => {
     e.stopPropagation();
+    setMenuOpen(null);
     try {
       await deleteAgentSession(id);
       setSessions((prev) => prev.filter((s) => s.session_id !== id));
       if (id === sessionId) handleNewChat();
     } catch (err) {
       console.error('Failed to delete session:', err);
+    }
+  };
+
+  const handleRenameStart = (id, currentTitle, e) => {
+    e.stopPropagation();
+    setRenamingId(id);
+    setRenameValue(currentTitle);
+    setMenuOpen(null);
+  };
+
+  const handleRenameSave = async (id) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingId(null); return; }
+    try {
+      await patchAgentSession(id, { title: trimmed });
+      setSessions((prev) =>
+        prev.map((s) => (s.session_id === id ? { ...s, title: trimmed } : s))
+      );
+    } catch (err) {
+      console.error('Failed to rename session:', err);
+    }
+    setRenamingId(null);
+  };
+
+  const handleRenameKeyDown = (e, id) => {
+    if (e.key === 'Enter') { e.preventDefault(); handleRenameSave(id); }
+    if (e.key === 'Escape') { setRenamingId(null); }
+  };
+
+  const handleTogglePin = async (id, currentlyPinned, e) => {
+    e.stopPropagation();
+    setMenuOpen(null);
+    try {
+      await patchAgentSession(id, { pinned: !currentlyPinned });
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.session_id === id ? { ...s, pinned: !currentlyPinned } : s
+        )
+      );
+    } catch (err) {
+      console.error('Failed to toggle pin:', err);
     }
   };
 
@@ -139,7 +220,7 @@ const ChatPage = () => {
   const agentMessageFromResponse = (data, originalText) => ({
     role: 'assistant',
     status: data.status,
-    content: typeof data.answer === 'string' ? data.answer : JSON.stringify(data.answer),
+    content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
     toolCalls: data.tool_calls || [],
     pending: data.pending || [],
     tokenUsage: data.token_usage || null,
@@ -228,10 +309,16 @@ const ChatPage = () => {
           {sessions.length === 0 && (
             <p className="text-xs text-gray-600 px-3 py-2">No conversations yet</p>
           )}
-          {sessions.map((s) => (
+          {[...sessions]
+            .sort((a, b) => {
+              if (a.pinned && !b.pinned) return -1;
+              if (!a.pinned && b.pinned) return 1;
+              return new Date(b.last_active) - new Date(a.last_active);
+            })
+            .map((s) => (
             <div
               key={s.session_id}
-              onClick={() => handleSelectSession(s.session_id)}
+              onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
               className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
                 s.session_id === sessionId
                   ? 'bg-slate-800 text-white'
@@ -239,17 +326,66 @@ const ChatPage = () => {
               }`}
               title={s.title}
             >
-              <div className="min-w-0">
-                <p className="truncate">{s.title}</p>
-                <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
+              <div className="min-w-0 flex-1">
+                {renamingId === s.session_id ? (
+                  <input
+                    type="text"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={() => handleRenameSave(s.session_id)}
+                    onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
+                    className="w-full bg-slate-700 text-white text-sm px-2 py-0.5 rounded border border-blue-500 outline-none"
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <p className="truncate flex items-center gap-1.5">
+                      {s.pinned && <PinIcon className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />}
+                      {s.title}
+                    </p>
+                    <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
+                  </>
+                )}
               </div>
-              <button
-                onClick={(e) => handleDeleteSession(s.session_id, e)}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 flex-shrink-0 transition-opacity"
-                title="Delete conversation"
-              >
-                <TrashIcon className="h-3.5 w-3.5" />
-              </button>
+              <div className="relative flex-shrink-0" data-menu>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
+                  }}
+                  className="text-slate-500 hover:text-blue-400 hover:bg-slate-700/50 rounded p-0.5 transition-colors"
+                  title="More"
+                >
+                  <EllipsisVerticalIcon className="h-4 w-4" />
+                </button>
+                {menuOpen === s.session_id && (
+                  <div className="absolute right-0 top-6 z-50 w-40 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-sm" data-menu>
+                    <button
+                      onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
+                    >
+                      <PencilIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
+                      Rename
+                    </button>
+                    <button
+                      onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
+                    >
+                      <PinIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
+                      {s.pinned ? 'Unpin' : 'Pin'}
+                    </button>
+                    <div className="border-t border-slate-600 my-1" />
+                    <button
+                      onClick={(e) => handleDeleteSession(s.session_id, e)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-slate-700 hover:text-red-300 text-left group"
+                    >
+                      <TrashIcon className="h-4 w-4 text-red-400/80 group-hover:text-red-300" />
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -292,12 +428,23 @@ const ChatPage = () => {
                           onDecline={() => handleApproval(idx, false)} loading={loading} />
             ))}
 
-            {loading && (
-              <div className="flex items-center gap-2 text-gray-500 text-sm py-4">
-                <ArrowPathIcon className="h-4 w-4 animate-spin" />
-                Thinking…
-              </div>
-            )}
+            {loading && (() => {
+              let text = 'Thinking...';
+              if (messages.length > 0) {
+                const lastMsg = messages[messages.length - 1];
+                if (lastMsg.role === 'assistant' && lastMsg.pending?.some(p => p.name === 'ingest_document')) {
+                  text = 'Ingesting...';
+                } else if (lastMsg.role === 'user' && (lastMsg.content?.includes('📎') || lastMsg.content?.includes('[Attached file:'))) {
+                  text = 'Ingesting...';
+                }
+              }
+              return (
+                <div className="flex items-center gap-2 text-gray-500 text-sm py-4">
+                  <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                  {text}
+                </div>
+              );
+            })()}
 
             <div ref={messagesEndRef} />
           </div>
@@ -391,6 +538,8 @@ const parseSources = (toolCalls) => {
 const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls) : [];
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [isListExpanded, setIsListExpanded] = useState(false);
 
   return (
     <div className={`py-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -416,27 +565,99 @@ const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
               {/* Tool calls this turn (reads that ran, or a blocked write) */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {msg.toolCalls.map((call, i) => (
-                    <span
-                      key={i}
-                      className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1"
-                    >
-                      <WrenchScrewdriverIcon className="h-3 w-3" />
-                      <span className="font-mono">{call.name}</span>
-                    </span>
-                  ))}
+                  {msg.toolCalls.map((call, i) => {
+                    const isSearch = call.name === 'search_documents';
+                    const isList = call.name === 'list_documents';
+                    
+                    if (isSearch && sources.length > 0) {
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => {
+                            setIsSearchExpanded(!isSearchExpanded);
+                            setIsListExpanded(false); // collapse other
+                          }}
+                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                        >
+                          <WrenchScrewdriverIcon className="h-3 w-3" />
+                          <span className="font-mono">{call.name}</span>
+                          {isSearchExpanded ? (
+                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                          ) : (
+                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                          )}
+                        </button>
+                      );
+                    }
+                    
+                    if (isList) {
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => {
+                            setIsListExpanded(!isListExpanded);
+                            setIsSearchExpanded(false); // collapse other
+                          }}
+                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                        >
+                          <WrenchScrewdriverIcon className="h-3 w-3" />
+                          <span className="font-mono">{call.name}</span>
+                          {isListExpanded ? (
+                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                          ) : (
+                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                          )}
+                        </button>
+                      );
+                    }
+
+                    return (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
+                      >
+                        <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
+                        <span className="font-mono">{call.name}</span>
+                      </span>
+                    );
+                  })}
                 </div>
               )}
 
-              {/* Citations from search_documents */}
-              {sources.length > 0 && (
-                <div className="mt-3 space-y-1.5">
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Sources</p>
+              {/* Inline citation list (expanded from list_documents) */}
+              {isListExpanded && (
+                <div className="mt-3 space-y-1.5 max-w-md bg-slate-900/40 border border-slate-800 rounded-xl p-3">
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Cited Documents</p>
+                  {(() => {
+                    const uniqueFiles = Array.from(new Set(sources.map(s => s.filename)));
+                    if (uniqueFiles.length === 0) {
+                      return <p className="text-xs text-gray-500 italic p-1">No documents were cited in this search query.</p>;
+                    }
+                    return uniqueFiles.map((filename, idx) => (
+                      <div key={idx} className="flex items-center gap-2.5 text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded px-3 py-2">
+                        <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                        <span className="font-medium truncate">{filename}</span>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+
+              {/* Inline chunks listing (expanded from search_documents) */}
+              {isSearchExpanded && sources.length > 0 && (
+                <div className="mt-3 space-y-2 max-w-2xl bg-slate-900/40 border border-slate-800 rounded-xl p-3 animate-fade-in">
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Search Sources</p>
                   {sources.map((s, i) => (
-                    <div key={i} className="text-xs text-gray-400 bg-slate-800/50 border border-slate-700 rounded px-2 py-1.5">
-                      <span className="font-medium text-gray-300">{s.filename}</span>
-                      {s.page && <span className="text-gray-500"> · p.{s.page}</span>}
-                      {s.snippet && <p className="mt-1 italic text-gray-500 line-clamp-2">"{s.snippet}"</p>}
+                    <div key={i} className="text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded-xl p-3.5 space-y-2">
+                      <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
+                        <span className="font-semibold text-blue-400">{s.filename}</span>
+                        {s.page && <span className="text-gray-500 text-[10px]">Page {s.page}</span>}
+                      </div>
+                      {s.snippet && (
+                        <p className="italic text-gray-300 leading-relaxed whitespace-pre-wrap font-mono text-[11px] bg-slate-950/30 p-2.5 rounded border border-slate-800/50">
+                          "{s.snippet}"
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

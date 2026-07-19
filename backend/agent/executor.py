@@ -46,24 +46,30 @@ SYSTEM_PROMPT = (
 
     "## TOOLS\n"
     "- search_documents(query, document_scope?): Search ingested docs. Pass the "
-    "user's question as `query`. Only pass `document_scope` (array of doc ids) "
-    "when the user clearly refers to a specific document — otherwise omit it.\n"
+    "user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
+    "when the user clearly refers to specific documents (e.g. 'major-08.pptx') — otherwise omit it.\n"
     "- list_documents(): List all ingested documents (id, filename, type, status). "
     "Call this when the user asks what documents exist, or when they mention a "
     "filename you need to look up.\n"
     "- ingest_document(file_path): Ingest a new file the user provides a path for. "
-    "Only call this when the user explicitly attaches or names a file to ingest.\n"
+    "Only call this when the user explicitly attaches a file or provides a local path to import a new file.\n"
     "- sql_read(query): Read-only SQL against the database. Use only when asked.\n\n"
 
     "## WHEN NOT TO SEARCH\n"
     "Skip search_documents ONLY for:\n"
     "1. Pure greetings/sign-off (hello, thanks, bye) — reply naturally in plain text.\n"
     "2. Requests to list documents — call list_documents instead.\n"
-    "3. Requests to ingest a file — call ingest_document instead.\n\n"
+    "3. Requests to ingest a new file (with a path or attachment) — call ingest_document instead.\n\n"
+
+    "## FILENAME RESTRICTIONS\n"
+    "If the user query or conversation history mentions a specific file name "
+    "(e.g., 'major-08.pptx'), you MUST restrict your search strictly to that document "
+    "by passing its filename or UUID in the `document_scope` parameter of `search_documents`. "
+    "Never search the entire corpus when a specific file is targeted.\n\n"
 
     "## AFTER AN INGEST\n"
     "When the user attaches a file: ingest it first. Then if they ask a question "
-    "about it, search restricted to that document's id.\n\n"
+    "about it, search restricted ONLY to that document's id or filename.\n\n"
 
     "## DISAMBIGUATION\n"
     "If multiple documents match and the user hasn't specified which one, list the "
@@ -74,7 +80,8 @@ SYSTEM_PROMPT = (
     "- Never say 'I don't have access to files' or 'please provide a file path' "
     "— documents are already ingested and searchable.\n"
     "- Never call the same tool twice with different guesses. One call, one answer.\n"
-    "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature."
+    "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature.\n"
+    "- Never call ingest_document just because a filename is mentioned; only call it if the user explicitly attaches a new file or provides a local file path."
 )
 
 class AgentState(TypedDict):

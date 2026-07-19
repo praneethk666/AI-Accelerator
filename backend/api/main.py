@@ -339,7 +339,7 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
 
 
 @app.post("/upload")
-async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
+def upload(background: BackgroundTasks, file: UploadFile = File(...)):
     document_id = str(uuid.uuid4())
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     dest = os.path.join(UPLOAD_DIR, f"{document_id}_{file.filename}")
@@ -363,7 +363,7 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
 
 
 @app.post("/files/stage")
-async def stage_file(file: UploadFile = File(...)):
+def stage_file(file: UploadFile = File(...)):
     """Save an uploaded file to disk WITHOUT triggering ingestion — for the agent
     chat's file-attach flow. /upload always auto-ingests (deterministic path, no
     agent involved); a staged file instead becomes a file_path the agent can see
@@ -379,7 +379,7 @@ async def stage_file(file: UploadFile = File(...)):
 
 
 @app.get("/files/{file_id}/progress")
-async def file_progress(file_id: str):
+def file_progress(file_id: str):
     """Live per-step status for an in-flight (or finished) ingestion, read straight
     from Postgres — the single source of truth (survives restarts + multi-worker)."""
     pg = _pg()
@@ -393,7 +393,7 @@ async def file_progress(file_id: str):
 
 
 @app.get("/files")
-async def list_files():
+def list_files():
     pg = _pg()
     try:
         return pg.list_documents()
@@ -402,7 +402,7 @@ async def list_files():
 
 
 @app.get("/files/{file_id}")
-async def get_file(file_id: str):
+def get_file(file_id: str):
     pg = _pg()
     try:
         doc = pg.get_document(file_id)
@@ -414,7 +414,7 @@ async def get_file(file_id: str):
 
 
 @app.get("/files/{file_id}/pages")
-async def file_pages(file_id: str):
+def file_pages(file_id: str):
     """List rendered full-page images for a document (page -> /pages/... url).
     Only pages that produced chunks are present."""
     pg = _pg()
@@ -425,7 +425,7 @@ async def file_pages(file_id: str):
 
 
 @app.get("/files/{file_id}/pages/{page}")
-async def file_page(file_id: str, page: int):
+def file_page(file_id: str, page: int):
     """Metadata for one page image (bytes served at the returned image_path).
     Lets the answerer/agent pull up a full page for visual grounding."""
     pg = _pg()
@@ -439,7 +439,7 @@ async def file_page(file_id: str, page: int):
 
 
 @app.delete("/files/{file_id}")
-async def delete_file(file_id: str):
+def delete_file(file_id: str):
     dim = _config.get("embeddings", {}).get("dense_dim", 768)
     collection = _config.get("database", {}).get("qdrant_collection", "chunks")
 
@@ -472,7 +472,7 @@ def _history_to_messages(history: list[dict]) -> list:
 
 
 @app.post("/agent/chat")
-async def agent_chat(req: AgentChatRequest):
+def agent_chat(req: AgentChatRequest):
     """Agentic chat: the model picks which tool to call (ingest/search/sql) instead
     of always going straight to retrieval. Writes (ingest_document) stop and report
     what they want to run — POST again with approved_writes=true to actually run it.
@@ -530,7 +530,7 @@ async def agent_chat(req: AgentChatRequest):
 
 
 @app.get("/agent/sessions")
-async def list_agent_sessions():
+def list_agent_sessions():
     """Past conversations for the chat UI's sidebar, most recently active first."""
     from backend.storage.conversation_store import get_conversation_store
 
@@ -538,7 +538,7 @@ async def list_agent_sessions():
 
 
 @app.get("/agent/sessions/{session_id}")
-async def get_agent_session(session_id: str):
+def get_agent_session(session_id: str):
     """One conversation's full turn history, in the same shape /agent/chat
     returns per turn, so the frontend can render live and reloaded messages
     with the same component."""
@@ -551,8 +551,21 @@ async def get_agent_session(session_id: str):
     ]
 
 
+@app.patch("/agent/sessions/{session_id}")
+def patch_agent_session(session_id: str, body: dict):
+    """Update session metadata: { "title": "...", "pinned": true/false }."""
+    from backend.storage.conversation_store import get_conversation_store
+
+    get_conversation_store().update_session(
+        session_id,
+        title=body.get("title"),
+        pinned=body.get("pinned"),
+    )
+    return {"updated": session_id}
+
+
 @app.delete("/agent/sessions/{session_id}")
-async def delete_agent_session(session_id: str):
+def delete_agent_session(session_id: str):
     from backend.storage.conversation_store import get_conversation_store
 
     get_conversation_store().delete_session(session_id)
@@ -561,7 +574,7 @@ async def delete_agent_session(session_id: str):
 
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "ok", "tools": sorted(_registry.names())}
 
 
@@ -570,14 +583,14 @@ async def health():
 # over the API (real keys live only in .env and are resolved at load time).
 
 @app.get("/config/raw")
-async def config_raw():
+def config_raw():
     """Active config file as editable YAML text (secrets stay as ${ENV} refs)."""
     with open(CONFIG_PATH, encoding="utf-8") as f:
         return {"path": CONFIG_PATH, "active": os.path.basename(CONFIG_PATH), "yaml": f.read()}
 
 
 @app.put("/config")
-async def config_save(body: ConfigSave):
+def config_save(body: ConfigSave):
     """Validate + write the active config, then hot-reload the pipeline."""
     _validate_yaml(body.yaml)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -587,14 +600,14 @@ async def config_save(body: ConfigSave):
 
 
 @app.get("/config/profiles")
-async def config_profiles():
+def config_profiles():
     """List available config profiles (config/*.yaml) + which one is active."""
     files = sorted(os.path.basename(p) for p in glob.glob(os.path.join(CONFIG_DIR, "*.yaml")))
     return {"active": os.path.basename(CONFIG_PATH), "profiles": files}
 
 
 @app.post("/config/profiles")
-async def config_save_profile(body: ProfileSave):
+def config_save_profile(body: ProfileSave):
     """Save the YAML as a new/!existing profile config/<name>.yaml (per customer)."""
     _validate_yaml(body.yaml)
     name = os.path.basename(body.name.strip())
@@ -608,13 +621,13 @@ async def config_save_profile(body: ProfileSave):
 
 
 @app.get("/config/settings")
-async def config_settings():
+def config_settings():
     """Flat, form-friendly view of the editable settings (no YAML for the user)."""
     return _settings_view(_config)
 
 
 @app.put("/config/settings")
-async def config_settings_save(body: SettingsSave):
+def config_settings_save(body: SettingsSave):
     """Apply form settings to the active config (or save_as a new profile) + reload.
     Preserves all other config keys; only the mapped fields change."""
     global CONFIG_PATH
@@ -637,7 +650,7 @@ async def config_settings_save(body: SettingsSave):
 
 
 @app.post("/config/activate")
-async def config_activate(body: ProfileActivate):
+def config_activate(body: ProfileActivate):
     """Switch the active profile to config/<name>.yaml and hot-reload."""
     global CONFIG_PATH
     name = os.path.basename(body.name)
@@ -650,5 +663,5 @@ async def config_activate(body: ProfileActivate):
 
 
 @app.get("/")
-async def root():
+def root():
     return {"service": "Document Intelligence + RAG Accelerator", "docs": "/docs"}

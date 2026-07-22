@@ -296,27 +296,36 @@ const SettingsPage = () => {
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Chunk size (tokens)">
-                    <input type="number" className={inputCls} value={s.chunking_size ?? ''} onChange={(e) => set('chunking_size', Number(e.target.value))} />
+                    <input type="number" className={inputCls} value={s.chunking_size ?? ''} onChange={(e) => set('chunking_size', e.target.value === '' ? null : Number(e.target.value))} />
                   </Field>
                   <Field label="Overlap (tokens)">
-                    <input type="number" className={inputCls} value={s.chunking_overlap ?? ''} onChange={(e) => set('chunking_overlap', Number(e.target.value))} />
+                    <input type="number" className={inputCls} value={s.chunking_overlap ?? ''} onChange={(e) => set('chunking_overlap', e.target.value === '' ? null : Number(e.target.value))} />
                   </Field>
                 </div>
               </section>
 
               <section>
                 <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">AI models</h2>
-                <Field label="Answer LLM provider">
-                  <Select value={s.llm_provider} onChange={(v) => set('llm_provider', v)} options={['groq', 'google', 'ollama', 'openai']} />
+                <Field label="Default LLM provider">
+                  <Select value={s.llm_provider} onChange={(v) => set('llm_provider', v)} options={['groq', 'google', 'ollama', 'openai', 'anthropic']} />
                 </Field>
-                <Field label="Answer LLM model">
+                <Field label="Default LLM model (llm.model)">
                   <input className={inputCls} value={s.llm_model ?? ''} onChange={(e) => set('llm_model', e.target.value)} />
+                </Field>
+                <Field label="Answer model (answering + planning)">
+                  <input className={inputCls} placeholder="inherit default LLM model" value={s.llm_answer_model ?? ''} onChange={(e) => set('llm_answer_model', e.target.value)} />
+                </Field>
+                <Field label="Agent model (chat tool-calling)">
+                  <input className={inputCls} placeholder="inherit default LLM model" value={s.agent_model ?? ''} onChange={(e) => set('agent_model', e.target.value)} />
                 </Field>
                 <Field label="Vision provider">
                   <Select value={s.vision_provider} onChange={(v) => set('vision_provider', v)} options={['google', 'ollama', 'openai']} />
                 </Field>
-                <Field label="Vision model">
+                <Field label="Vision model (figure captioning)">
                   <input className={inputCls} value={s.vision_model ?? ''} onChange={(e) => set('vision_model', e.target.value)} />
+                </Field>
+                <Field label="Vision-OCR model (page transcription)">
+                  <input className={inputCls} placeholder="inherit vision model" value={s.vision_ocr_model ?? ''} onChange={(e) => set('vision_ocr_model', e.target.value)} />
                 </Field>
                 <Field label="Image captioning (vision)">
                   <Toggle value={!!s.vision_enabled} onChange={(v) => set('vision_enabled', v)} on="Enabled" off="Disabled" />
@@ -325,9 +334,25 @@ const SettingsPage = () => {
                   <div className="flex items-center gap-3">
                     <Toggle value={!!s.enrichment_summarize} onChange={(v) => set('enrichment_summarize', v)} />
                     <span className="text-xs text-gray-500">keywords</span>
-                    <input type="number" className={`${inputCls} w-20`} value={s.enrichment_keyword_count ?? ''} onChange={(e) => set('enrichment_keyword_count', Number(e.target.value))} />
+                    <input type="number" className={`${inputCls} w-20`} value={s.enrichment_keyword_count ?? ''} onChange={(e) => set('enrichment_keyword_count', e.target.value === '' ? null : Number(e.target.value))} />
                   </div>
                 </Field>
+
+                <div className="mt-4 pt-4 border-t border-slate-700/60">
+                  <p className="text-xs text-gray-500 mb-3">Per-step model overrides — leave blank to inherit the default LLM model.</p>
+                  <Field label="Categorization model">
+                    <input className={inputCls} placeholder="inherit default" value={s.categorization_model ?? ''} onChange={(e) => set('categorization_model', e.target.value)} />
+                  </Field>
+                  <Field label="Enrichment model (bulk / cheapest)">
+                    <input className={inputCls} placeholder="inherit default" value={s.enrichment_model ?? ''} onChange={(e) => set('enrichment_model', e.target.value)} />
+                  </Field>
+                  <Field label="Query planner model">
+                    <input className={inputCls} placeholder="inherit answer model" value={s.planner_model ?? ''} onChange={(e) => set('planner_model', e.target.value)} />
+                  </Field>
+                  <Field label="Answerer model">
+                    <input className={inputCls} placeholder="inherit answer model" value={s.answerer_model ?? ''} onChange={(e) => set('answerer_model', e.target.value)} />
+                  </Field>
+                </div>
               </section>
             </div>
 

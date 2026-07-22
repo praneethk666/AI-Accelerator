@@ -26,15 +26,19 @@ class AgentTool(Protocol):
 def build_agent_registry() -> dict[str, AgentTool]:
     """Every agent-callable tool, keyed by name. The agent-executor advertises
     these to the LLM and dispatches calls by name."""
+    from backend.agent.clarify_tool import RequestClarificationTool
     from backend.connectors.sql_read import SQLReadTool
     from backend.pipeline.ingest import IngestDocumentTool
+    from backend.retrieval.get_page_context import GetPageContextTool
     from backend.retrieval.list_documents import ListDocumentsTool
     from backend.retrieval.search_documents import SearchDocumentsTool
 
     tools: list[AgentTool] = [
         IngestDocumentTool(),
         SearchDocumentsTool(),
+        GetPageContextTool(),
         ListDocumentsTool(),
         SQLReadTool(),
+        RequestClarificationTool(),
     ]
     return {t.name: t for t in tools}

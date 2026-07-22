@@ -78,6 +78,17 @@ def get_llm(config: dict, max_tokens: int | None = None,
         kw = dict(common)
         if max_tokens:
             kw["max_output_tokens"] = max_tokens
+        # Reasoning is ON by default and the parameter to disable it is MODEL-FAMILY
+        # SPECIFIC (thinking_budget: Gemini 2.5 family; thinking_level: Gemma family) —
+        # config-driven, not hardcoded, since get_llm() builds the client lazily and
+        # can't try-then-fall-back the way _describe_google() does at call time.
+        # Validated live (21-Jul): without this, gemini-2.5-flash burned 424 of 443
+        # output tokens on hidden reasoning for a ONE-SENTENCE summary — 96% waste,
+        # silently inflating both cost and latency on every categorize/enrichment call.
+        if llm_cfg.get("thinking_budget") is not None:
+            kw["thinking_budget"] = llm_cfg["thinking_budget"]
+        if llm_cfg.get("thinking_level") is not None:
+            kw["thinking_level"] = llm_cfg["thinking_level"]
         return ChatGoogleGenerativeAI(
             model=model, **_with_key(kw, "google_api_key", api_key)
         )
@@ -99,6 +110,14 @@ def get_llm(config: dict, max_tokens: int | None = None,
             kw["base_url"] = llm_cfg["base_url"]
         if max_tokens:
             kw["max_tokens"] = max_tokens
+        # Passthrough for provider-specific request fields that aren't part of the
+        # OpenAI schema (e.g. GLM's `thinking: {type: disabled}` — GLM has a reasoning
+        # mode ON by default that otherwise burns the whole max_tokens budget on hidden
+        # reasoning tokens and returns EMPTY content; validated live against z.ai).
+        # Belongs in config, not hardcoded here, since it's specific to whichever
+        # OpenAI-compatible provider is configured.
+        if llm_cfg.get("extra_body"):
+            kw["extra_body"] = llm_cfg["extra_body"]
         llm = ChatOpenAI(model=model, **_with_key(kw, "api_key", api_key))
         # Structured Outputs: if a json_schema is configured and we're on a native OpenAI
         # endpoint (no base_url = not vLLM/OpenRouter), bind the schema so the model is
@@ -123,6 +142,49 @@ def get_llm(config: dict, max_tokens: int | None = None,
         "Use 'groq', 'google', 'ollama', 'openai' (openai + base_url covers any "
         "OpenAI-compatible API such as NVIDIA NIM / OpenRouter / vLLM), or 'anthropic'."
     )
+
+
+def get_llm_for(config: dict, section: dict | None = None, *,
+                max_tokens: int | None = None,
+                default_model: str | None = None) -> BaseChatModel:
+    """Build an LLM for ONE pipeline step, with an optional per-step override.
+
+    `section` is that step's own config dict (e.g. config["enrichment"],
+    config["categorization"], config["query"]["planner"]). If it carries any of
+    model / provider / api_key / base_url / temperature / extra_body /
+    thinking_budget / thinking_level, those override the global `llm` block FOR THIS
+    CALL ONLY; anything unset inherits the global default. extra_body (openai
+    provider) and thinking_budget/thinking_level (google provider) are all
+    provider/model-family-specific reasoning-suppression knobs — if a step points at
+    a DIFFERENT provider or Google model family than the global block, override the
+    relevant one explicitly to avoid inheriting a field the new target doesn't
+    recognize (validated live: NVIDIA 400s on z.ai's `thinking` key; Gemini 2.5
+    rejects thinking_level, Gemma rejects thinking_budget).
+    This is what lets categorize / enrich / plan / answer each run a different model
+    (e.g. a cheap model for bulk enrichment, a stronger one for answering).
+
+    Model resolution order: section.model -> default_model (e.g. llm.answer_model)
+    -> global llm.model. When section switches provider without giving its own
+    api_key, the key is cleared so the SDK reads that provider's default env var
+    (mirrors the agent executor's provider-override handling).
+    """
+    section = section or {}
+    global_llm = config.get("llm", {}) or {}
+    llm_cfg = dict(global_llm)
+
+    chosen_model = section.get("model") or default_model
+    if chosen_model:
+        llm_cfg["model"] = chosen_model
+    for k in ("provider", "api_key", "base_url", "temperature", "extra_body",
+              "thinking_budget", "thinking_level"):
+        if section.get(k) is not None:
+            llm_cfg[k] = section[k]
+
+    ov_provider = section.get("provider")
+    if ov_provider and ov_provider != global_llm.get("provider") and section.get("api_key") is None:
+        llm_cfg["api_key"] = None
+
+    return get_llm({**config, "llm": llm_cfg}, max_tokens=max_tokens)
 
 
 def _clean(value):

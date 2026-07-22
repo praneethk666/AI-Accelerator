@@ -214,6 +214,70 @@ def _table_is_complex(table) -> bool:
     return False
 
 
+def _bbox_iou(a, b) -> float:
+    """Intersection-over-union of two [l,t,r,b] top-left-origin boxes."""
+    l, t = max(a[0], b[0]), max(a[1], b[1])
+    r, bo = min(a[2], b[2]), min(a[3], b[3])
+    if r <= l or bo <= t:
+        return 0.0
+    inter = (r - l) * (bo - t)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _pymupdf_page_tables(fdoc, page_no: int, _cache: dict) -> list:
+    """find_tables() for one page, cached per document-extraction call (a page with
+    N docling tables would otherwise re-run page geometry analysis N times).
+    page_no is Docling's (1-indexed); fitz pages are 0-indexed."""
+    if page_no not in _cache:
+        try:
+            page = fdoc[page_no - 1]
+            found = page.find_tables()
+            _cache[page_no] = [(list(t.bbox), t.extract()) for t in found.tables]
+        except Exception as e:
+            logger.debug("pymupdf: find_tables failed on page %s (%s)", page_no, e)
+            _cache[page_no] = []
+    return _cache[page_no]
+
+
+def _rows_to_table_data(rows) -> dict | None:
+    """pymupdf's find_tables().extract() rows -> our {headers, rows} shape. First row
+    is the header; None cells (merged-cell continuations) become ''."""
+    if not rows or len(rows) < 2:
+        return None
+    clean = [[("" if c is None else str(c).strip()) for c in r] for r in rows]
+    headers, body = clean[0], clean[1:]
+    if not any(any(c for c in r) for r in body):
+        return None
+    return {"headers": headers, "rows": body}
+
+
+def _pymupdf_table_data(fdoc, page_no, bb, cache: dict, min_iou: float = 0.3) -> dict | None:
+    """Match a Docling-located table region to a pymupdf ruled-line table on the same
+    page (by bbox overlap) and return its structure, or None if no good match.
+
+    Why: pymupdf's find_tables() reads the PDF's own vector ruling lines / text
+    alignment — pure geometry, no ML — so it's immune to the failure mode where
+    TableFormer (Docling's table model) mis-segments merged-cell / dense multi-line
+    spec tables (validated on a Toyota machine-spec manual: pymupdf reproduced a
+    37-row merged-cell table cleanly where both TableFormer and VLM transcription
+    garbled row/column alignment). Only works for ruled/digital tables — scanned
+    pages and borderless tables have no vector lines for it to find, hence the
+    caller falls back to TableFormer/VLM when this returns None."""
+    if fdoc is None or bb is None or not isinstance(page_no, int):
+        return None
+    best, best_iou = None, 0.0
+    for tbbox, rows in _pymupdf_page_tables(fdoc, page_no, cache):
+        iou = _bbox_iou(bb, tbbox)
+        if iou > best_iou:
+            best, best_iou = rows, iou
+    if best is None or best_iou < min_iou:
+        return None
+    return _rows_to_table_data(best)
+
+
 def _table_markdown(table, doc) -> str:
     try:
         return table.export_to_markdown(doc)          # newer signature
@@ -432,8 +496,12 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     """Convert a PDF with Docling and emit NormalizedBlock dicts in reading order.
 
     table_source: who transcribes tables. 'docling' (default) = TableFormer
-    (free, structured); 'vlm' = crop each table region and transcribe via GLM
-    (for kinds whose tables come out wrong, e.g. some scans).
+    (free, structured); 'pymupdf' = the PDF's own vector ruling lines (free,
+    geometry-based — best for ruled/digital tables TableFormer mis-segments);
+    'vlm' = crop each table region and transcribe via the vision model (for kinds
+    whose tables come out wrong, e.g. some scans); 'auto' = TableFormer for simple
+    tables, pymupdf for complex ones (merged cells/multi-line headers), VLM only if
+    pymupdf finds no ruled table there (scanned/borderless).
     report: optional dict mutated with decision counts (tables, figures) for tracking."""
     from docling_core.types.doc import TextItem, TableItem, PictureItem
 
@@ -447,6 +515,17 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     conv = _converter(dcfg)
     res = conv.convert(pdf_path)
     doc = res.document
+
+    # Opened lazily only when a table_source that can use it is active; closed at the
+    # end. _pymupdf_cache memoizes find_tables() per page across a page's tables.
+    fdoc = None
+    _pymupdf_cache: dict = {}
+    if table_source in ("pymupdf", "auto"):
+        try:
+            import fitz
+            fdoc = fitz.open(pdf_path)
+        except Exception as e:
+            logger.warning("pymupdf: could not open %s for table extraction (%s)", pdf_path, e)
 
     # accumulate page text so each figure is captioned WITH its page context
     page_text: dict = {}
@@ -480,16 +559,29 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
                     page_text.setdefault(page_no, []).append(txt)
                 continue
-            # 'vlm' = always VLM; 'auto' = VLM only for complex tables; else TableFormer
-            use_vlm = bb and (table_source == "vlm"
-                              or (table_source == "auto" and _table_is_complex(item)))
-            if use_vlm:
+            # 'pymupdf'/'auto' try ruled-line geometry first (free, best for merged-cell
+            # tables); 'vlm' = always VLM; 'auto' falls back to VLM only when pymupdf
+            # found nothing there; anything else stays on free TableFormer.
+            complex_ = _table_is_complex(item)
+            pmd_td = None
+            if fdoc is not None and bb and (table_source == "pymupdf" or
+                                             (table_source == "auto" and complex_)):
+                pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+            use_pymupdf = pmd_td is not None
+            use_vlm = (not use_pymupdf) and bb and (
+                table_source == "vlm" or (table_source == "auto" and complex_))
+            source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
+            if use_pymupdf:
+                td = pmd_td
+                md = _render_table_markdown(td)
+            elif use_vlm:
                 try:
                     md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
                     td = None                       # VLM returns markdown, not a grid
                 except Exception as e:
                     logger.warning("docling: VLM table failed (page %s): %s; "
                                    "using TableFormer", page_no, e)
+                    source = "tableformer"
                     md, td = _table_markdown(item, doc), _table_data(item, doc)
             else:
                 md, td = _table_markdown(item, doc), _table_data(item, doc)
@@ -497,10 +589,10 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 td = _markdown_table_data(md)
             if report is not None:
                 report["tables"]["total"] += 1
-                report["tables"]["vlm_escalated" if use_vlm else "tableformer"] += 1
+                report["tables"][source] = report["tables"].get(source, 0) + 1
                 rec = _pp(report, page_no)
                 if rec:
-                    rec["tables"]["vlm" if use_vlm else "tableformer"] += 1
+                    rec["tables"][source] = rec["tables"].get(source, 0) + 1
             if bb and isinstance(page_no, int):
                 dtables[page_no].append(bb)   # so the YOLO union won't crop it as a figure
             blocks.append(_block(document_id, page_no, filename, "table",
@@ -514,6 +606,9 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 blocks.append(None)  # placeholder, filled after captioning
                 pic_jobs.append((idx, page_no, bb))
                 dfigs[int(page_no)].append(bb)
+
+    if fdoc is not None:
+        fdoc.close()
 
     # Figure UNION: add DocLayout-YOLO boxes that Docling missed (tested: Docling splits
     # collages but misses some figures; YOLO catches those). Skip YOLO boxes that overlap

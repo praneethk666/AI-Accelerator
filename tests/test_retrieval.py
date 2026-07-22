@@ -17,6 +17,9 @@ def chunk_dicts():
 
 def make_config(method: str = "hybrid_rerank", top_n: int = 3):
     return {
+        # query prefix is now config-driven (empty for bge-m3); set it to the nomic
+        # value here so the HyDE prefix-application assertions exercise a real prefix.
+        "embeddings": {"dense_query_prefix": DENSE_QUERY_PREFIX},
         "query": {
             "retrieval": {
                 "method":        method,

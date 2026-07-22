@@ -28,18 +28,22 @@ class IndexTool:
         # Qdrant if it has a vector — if embed partially failed, we skip the
         # vector write (and note it) rather than KeyError the whole step.
         skipped = 0
+        # QdrantStore() makes a live network call in __init__; construct it INSIDE the
+        # try that owns pg.close() so a Qdrant outage can't leak the Postgres connection.
         pg = PostgresStore()
-        vectors = QdrantStore(dim, collection)
         try:
-            for chunk in chunks:
-                pg.write_chunk(chunk)
-                if chunk.get("vector"):
-                    vectors.write_chunk(chunk)
-                else:
-                    skipped += 1
+            vectors = QdrantStore(dim, collection)
+            try:
+                for chunk in chunks:
+                    pg.write_chunk(chunk)
+                    if chunk.get("vector"):
+                        vectors.write_chunk(chunk)
+                    else:
+                        skipped += 1
+            finally:
+                vectors.close()
         finally:
             pg.close()
-            vectors.close()
 
         if skipped:
             msg = f"index: {skipped}/{len(chunks)} chunks had no vector (embed failed?) — text stored, not vector-indexed"

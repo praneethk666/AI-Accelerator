@@ -45,9 +45,11 @@ class _Sink:
         self._lock = threading.Lock()
         self.by_kind: dict[str, dict] = {}
         self._context_tokens = 0  # largest single call's input_tokens this run
+        self._calls_log: list[dict] = []  # raw prompt/response audit trail, this run
 
     def add(self, kind: str, input_tokens=0, output_tokens=0,
-             reasoning_tokens=0, context_tokens=None) -> None:
+             reasoning_tokens=0, context_tokens=None, *,
+             prompt=None, raw_response=None, provider=None, model=None) -> None:
         with self._lock:
             k = self.by_kind.setdefault(kind, {
                 "calls": 0, "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0,
@@ -63,6 +65,20 @@ class _Sink:
             ctx = int(context_tokens if context_tokens is not None else it)
             if ctx > self._context_tokens:
                 self._context_tokens = ctx
+
+            # Audit log: only recorded when the caller passes prompt/raw_response —
+            # optional, since not every record() call site has been wired up to
+            # pass them (e.g. embedding has no prompt/response to log).
+            if prompt is not None or raw_response is not None:
+                self._calls_log.append({
+                    "kind": kind, "provider": provider, "model": model,
+                    "prompt": prompt, "raw_response": raw_response,
+                    "input_tokens": it, "output_tokens": ot,
+                })
+
+    def get_calls_log(self) -> list[dict]:
+        with self._lock:
+            return list(self._calls_log)
 
     def totals(self) -> dict:
         with self._lock:
@@ -93,25 +109,33 @@ def using_sink():
 
 
 def record(kind: str, input_tokens=0, output_tokens=0,
-           reasoning_tokens=0, context_tokens=None) -> None:
-    """Record one model call's token usage into the active sink (no-op if none)."""
+           reasoning_tokens=0, context_tokens=None, *,
+           prompt=None, raw_response=None, provider=None, model=None) -> None:
+    """Record one model call's token usage into the active sink (no-op if none).
+    Pass prompt/raw_response/provider/model too to also log it to the audit trail
+    (get_calls_log()) — used for llm_calls persistence. Optional: omit them for
+    call sites that just need token counting (e.g. embedding)."""
     sink = _SINK.get()
     if sink is not None:
-        sink.add(kind, input_tokens, output_tokens, reasoning_tokens, context_tokens)
+        sink.add(kind, input_tokens, output_tokens, reasoning_tokens, context_tokens,
+                 prompt=prompt, raw_response=raw_response, provider=provider, model=model)
 
 
-def record_from_message(kind: str, message) -> None:
+def record_from_message(kind: str, message, *, prompt=None, provider=None, model=None) -> None:
     """Convenience: pull `usage_metadata` off a LangChain AIMessage and record it.
     Safe to call even when the provider didn't return usage info (records zeros).
     `context_tokens` is set to that call's own input_tokens — the size of the
     context actually sent for THIS call — so the sink can track the largest one
-    across the whole run."""
+    across the whole run. Pass prompt/provider/model to also audit-log the raw
+    response (message.content)."""
     um = getattr(message, "usage_metadata", None) or {}
     input_tokens = um.get("input_tokens", 0) or 0
     output_tokens = um.get("output_tokens", 0) or 0
     reasoning_tokens = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
     record(kind, input_tokens, output_tokens,
-           reasoning_tokens=reasoning_tokens, context_tokens=input_tokens)
+           reasoning_tokens=reasoning_tokens, context_tokens=input_tokens,
+           prompt=prompt, raw_response=getattr(message, "content", None) if prompt is not None else None,
+           provider=provider, model=model)
 
 
 def copy_ctx():

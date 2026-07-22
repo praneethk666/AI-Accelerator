@@ -33,6 +33,8 @@ def run_query(
     *,
     session_id: str = "",
     document_scope: list[str] | None = None,
+    doc_type: str | None = None,
+    industry: str | None = None,
     conversation_history: list | None = None,
 ) -> PipelineState:
     steps = config.get("query", {}).get("steps", DEFAULT_QUERY_STEPS)
@@ -49,6 +51,8 @@ def run_query(
         "query": query,
         "session_id": session_id,
         "document_scope": document_scope or [],
+        "doc_type": doc_type,
+        "industry": industry,
         "conversation_history": history or [],
         "standalone_query": "",
         "sub_questions": [],

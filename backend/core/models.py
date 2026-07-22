@@ -18,18 +18,38 @@ Config keys used:
 """
 from __future__ import annotations
 
-# nomic-embed-text-v1.5 expects task-instruction prefixes (it is a Matryoshka,
-# instruction-tuned model). Documents and queries MUST use different prefixes:
-#   embed_tool (indexing):   DENSE_DOCUMENT_PREFIX + text
-#   retrieval (querying):    DENSE_QUERY_PREFIX + query
+# Dense instruction prefixes are MODEL-SPECIFIC and live in config, not code:
+#   nomic-embed-text-v1.5 REQUIRES different doc/query prefixes (it is instruction-tuned);
+#   bge-m3 (the current default) takes NO prefix and a wrong one silently degrades recall.
+# embed_tool (indexing) uses get_dense_document_prefix(); retrieval uses get_dense_query_prefix().
+# The constants below are the nomic defaults, kept only for reference/back-compat.
 DENSE_DOCUMENT_PREFIX = "search_document: "
 DENSE_QUERY_PREFIX = "search_query: "
 
-DEFAULT_DENSE_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+DEFAULT_DENSE_MODEL = "BAAI/bge-m3"
+
+
+def get_dense_document_prefix(config: dict) -> str:
+    """Instruction prefix prepended to each DOCUMENT before dense encoding.
+    Config-driven so it swaps with the model. Default "" (bge-m3 / prefix-free models)."""
+    return (config.get("embeddings") or {}).get("dense_document_prefix", "") or ""
+
+
+def get_dense_query_prefix(config: dict) -> str:
+    """Instruction prefix prepended to each QUERY before dense encoding.
+    Must differ from the document prefix for instruction-tuned models (nomic).
+    Default "" (bge-m3 / prefix-free models)."""
+    return (config.get("embeddings") or {}).get("dense_query_prefix", "") or ""
+
+import threading
 
 _dense_model = None
 _sparse_model = None
 _reranker = None
+# Guards singleton construction so concurrent ingests (FastAPI background tasks in the
+# threadpool) can't both observe None and double-load a ~2.3GB model when warm_up was
+# skipped/timed out. Double-checked locking; loads happen once.
+_model_lock = threading.Lock()
 
 
 def warm_up(config: dict | None = None) -> None:
@@ -75,23 +95,26 @@ def warm_up(config: dict | None = None) -> None:
             except Exception as exc:
                 logger.warning("model warm_up: %s failed: %s", name, exc)
 
-    _try("dense (nomic)", get_dense_model, 120)
+    _try("dense embedder", get_dense_model, 300)   # bge-m3 first-run download is ~2.3GB
     _try("sparse (bm25)", get_sparse_model, 60)
-    _try("reranker (bge-reranker-large)", get_reranker, 60)
+    _try("reranker", get_reranker, 120)
 
 
 def get_dense_model(config: dict):
-    """Return the shared SentenceTransformer (nomic-embed-text-v1.5, 768-dim).
+    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim).
 
-    nomic is distributed with custom modelling code, so trust_remote_code=True
-    is required. See DENSE_DOCUMENT_PREFIX / DENSE_QUERY_PREFIX for the
-    instruction prefixes documents vs queries must carry.
+    trust_remote_code=True is kept so instruction-tuned models distributed with
+    custom code (e.g. nomic) still load if swapped in via config. See
+    get_dense_document_prefix / get_dense_query_prefix for the model-specific
+    instruction prefixes (empty for bge-m3).
     """
     global _dense_model
     if _dense_model is None:
-        from sentence_transformers import SentenceTransformer
-        model_name = config["embeddings"]["dense_model"]
-        _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
+        with _model_lock:
+            if _dense_model is None:
+                from sentence_transformers import SentenceTransformer
+                model_name = config["embeddings"]["dense_model"]
+                _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
     return _dense_model
 
 
@@ -99,17 +122,21 @@ def get_sparse_model(config: dict):
     """Return the shared fastembed BM25 sparse encoder."""
     global _sparse_model
     if _sparse_model is None:
-        from fastembed import SparseTextEmbedding
-        model_name = config["embeddings"]["sparse_model"]
-        _sparse_model = SparseTextEmbedding(model_name)
+        with _model_lock:
+            if _sparse_model is None:
+                from fastembed import SparseTextEmbedding
+                model_name = config["embeddings"]["sparse_model"]
+                _sparse_model = SparseTextEmbedding(model_name)
     return _sparse_model
 
 
 def get_reranker(config: dict):
-    """Return the shared CrossEncoder reranker (bge-reranker-large)."""
+    """Return the shared CrossEncoder reranker (default BAAI/bge-reranker-v2-m3, multilingual)."""
     global _reranker
     if _reranker is None:
-        from sentence_transformers import CrossEncoder
-        model_name = config["embeddings"]["reranker_model"]
-        _reranker = CrossEncoder(model_name)
+        with _model_lock:
+            if _reranker is None:
+                from sentence_transformers import CrossEncoder
+                model_name = config["embeddings"]["reranker_model"]
+                _reranker = CrossEncoder(model_name)
     return _reranker

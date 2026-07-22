@@ -22,7 +22,7 @@ import json
 import logging
 
 from backend.core import usage
-from backend.core.llm_client import get_llm, clean_message_content
+from backend.core.llm_client import get_llm_for, clean_message_content
 from backend.core.tool import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -74,8 +74,10 @@ class QueryPlannerTool:
 
 
 def _plan(query: str, history: list, config: dict, max_subs: int) -> dict:
-    # query rewriting/decomposition benefits from a stronger model → answer_model.
-    llm = get_llm(config, model=config["llm"].get("answer_model"))
+    # query rewriting/decomposition benefits from a stronger model. Resolution:
+    # query.planner.model -> llm.answer_model -> global llm.model.
+    llm = get_llm_for(config, config.get("query", {}).get("planner"),
+                      default_model=config["llm"].get("answer_model"))
     prompt = _PROMPT.format(
         history=_format_history(history), query=query, max_subs=max_subs
     )

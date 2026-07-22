@@ -10,6 +10,7 @@ def test_search_documents_wraps_run_query_and_formats_sources():
         "answer": "The M6 bolt torque is 12 Nm.",
         "citations": [
             {
+                "document_id": "doc-fixture-001",
                 "filename": "sample.pdf",
                 "page": 1,
                 "sheet": None,
@@ -41,13 +42,17 @@ def test_search_documents_wraps_run_query_and_formats_sources():
         config,
         session_id="",
         document_scope=["doc-fixture-001"],
+        doc_type=None,
+        industry=None,
         conversation_history=None,
     )
     assert result == {
         "answer": "The M6 bolt torque is 12 Nm.",
         "citations": final_state["citations"],
+        "trace_id": None,
         "sources": [
             {
+                "document_id": "doc-fixture-001",
                 "filename": "sample.pdf",
                 "page": 1,
                 "sheet": None,

@@ -99,7 +99,7 @@ def test_orchestration_order_and_return(monkeypatch, tmp_path):
                           on_step=lambda e, s: seen.append(e["step"]),
                           on_complete=lambda r: done.update(r))
 
-    assert sorted(out) == ["document_id", "errors", "metrics", "status"]
+    assert sorted(out) == ["document_id", "errors", "metrics", "status", "trace_id"]
     assert out["status"] == "ready"
     assert seen == ["chunk"]                                 # on_step fired per step
     assert done["status"] == "ready" and len(done["chunks"]) == 1  # on_complete got full result
@@ -117,6 +117,28 @@ def test_status_failed_when_a_step_errors(monkeypatch, tmp_path):
     f.write_bytes(b"fake")
     out = ingest_document(str(f), config={"ingestion": {"steps": ["extract"]}}, registry=object())
     assert out["status"] == "failed"
+
+
+def test_unsupported_format_fails_loud(monkeypatch, tmp_path):
+    # .xdw (DocuWorks) is unextractable: must FAIL LOUD, not finalize an empty "ready".
+    calls = _patch(monkeypatch, {"metrics": [], "chunks": []})
+    f = tmp_path / "drawing.xdw"
+    f.write_bytes(b"DocuWorks binary")
+    out = ingest_document(str(f), config={"ingestion": {"steps": ["chunk"]}}, registry=object())
+    assert out["status"] == "unsupported"
+    assert ("finalize", "unsupported") in calls
+    assert any("DocuWorks" in e or "Unsupported" in e for e in out["errors"])
+
+
+def test_zero_chunk_supported_is_empty(monkeypatch, tmp_path):
+    # supported format (.pdf) but extraction yielded nothing => "empty", not "ready".
+    calls = _patch(monkeypatch, {"metrics": [{"step": "extract", "ms": 1.0, "status": "ok"}],
+                                 "chunks": [], "route": "text_default"})
+    f = tmp_path / "blank.pdf"
+    f.write_bytes(b"%PDF-1.4 empty")
+    out = ingest_document(str(f), config={"ingestion": {"steps": ["extract"]}}, registry=object())
+    assert out["status"] == "empty"
+    assert ("finalize", "empty") in calls
 
 
 def test_explicit_document_id_is_reused(monkeypatch, tmp_path):

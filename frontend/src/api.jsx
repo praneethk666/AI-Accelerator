@@ -3,8 +3,17 @@ import axios from 'axios';
 // Configure API base URL - change localhost:8000 to your backend server
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+// A finite default timeout matters: /agent/chat is synchronous and can run an ingest
+// inline. With no timeout a hung backend never settles the promise, so the chat's
+// `finally` never runs and the composer stays disabled forever (only a reload recovers).
+const DEFAULT_TIMEOUT_MS = 60_000;
+// Agent turns legitimately take minutes (multi-step retrieval, or an approved ingest),
+// so they get a longer bound rather than the default.
+export const AGENT_TIMEOUT_MS = 600_000;
+
 const API = axios.create({
   baseURL: API_BASE_URL,
+  timeout: DEFAULT_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -15,7 +24,9 @@ API.interceptors.response.use(
   (response) => response,
   (error) => {
     console.error('API Error:', error);
-    if (error.response?.status === 404) {
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      throw new Error('The server took too long to respond. It may still be working — check the Ingestion page, or try a narrower question.');
+    } else if (error.response?.status === 404) {
       throw new Error('Resource not found');
     } else if (error.response?.status === 400) {
       throw new Error(error.response?.data?.detail || 'Invalid request');
@@ -88,12 +99,13 @@ export const getProgress = async (fileId) => {
  * @param {boolean} approvedWrites
  * @returns {Promise} { status, answer, pending, tool_calls }
  */
-export const sendAgentChat = async (message, sessionId, approvedWrites = false) => {
+export const sendAgentChat = async (message, sessionId, approvedWrites = false, approvedCalls = null) => {
   return API.post('/agent/chat', {
     message,
     session_id: sessionId,
     approved_writes: approvedWrites,
-  });
+    approved_calls: approvedCalls,
+  }, { timeout: AGENT_TIMEOUT_MS });
 };
 
 /** Past agent-chat conversations, most recently active first (for the sidebar). */

@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
-from backend.core.llm_client import get_llm, clean_message_content
+from backend.core.llm_client import get_llm, get_llm_for, clean_message_content
 from backend.core.tracing import traced_request, traced_tool
 
 logger = logging.getLogger(__name__)
@@ -45,15 +45,27 @@ SYSTEM_PROMPT = (
     "If the document does not cover it, say so clearly and briefly.\n\n"
 
     "## TOOLS\n"
-    "- search_documents(query, document_scope?): Search ingested docs. Pass the "
-    "user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
-    "when the user clearly refers to specific documents (e.g. 'major-08.pptx') — otherwise omit it.\n"
+    "- search_documents(query, document_scope?, doc_type?, industry?): Search ingested docs. "
+    "Pass the user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
+    "when the user clearly refers to specific documents. Pass `doc_type` (e.g. 'invoice', "
+    "'manual') or `industry` ONLY when the question clearly implies a scope (e.g. 'in the "
+    "invoices…') and the value matches something you saw via list_documents — otherwise omit "
+    "all filters and search everything. A filter should narrow on clear intent, never on a guess.\n"
+    "- get_page_context(document_id, page): Fetch a document PAGE's full raw content, "
+    "bypassing chunking entirely. Chunking sometimes fragments a page badly (e.g. a "
+    "label/code split from the table that explains it) — if a search_documents result "
+    "looks incomplete, thin, or cuts off mid-thought (a bare heading or code with no "
+    "real content), call this with that source's document_id and page to get the whole "
+    "page and re-answer from that. Don't call this speculatively on every search — only "
+    "when a returned chunk genuinely looks too fragmented to answer confidently from.\n"
     "- list_documents(): List all ingested documents (id, filename, type, status). "
     "Call this when the user asks what documents exist, or when they mention a "
     "filename you need to look up.\n"
     "- ingest_document(file_path): Ingest a new file the user provides a path for. "
     "Only call this when the user explicitly attaches a file or provides a local path to import a new file.\n"
-    "- sql_read(query): Read-only SQL against the database. Use only when asked.\n\n"
+    "- sql_read(query): Read-only SQL against the database. Use only when asked.\n"
+    "- request_clarification(question, options?): Ask the USER to choose when their "
+    "request is ambiguous (e.g. several documents match). Prefer this over guessing.\n\n"
 
     "## WHEN NOT TO SEARCH\n"
     "Skip search_documents ONLY for:\n"
@@ -72,14 +84,20 @@ SYSTEM_PROMPT = (
     "about it, search restricted ONLY to that document's id or filename.\n\n"
 
     "## DISAMBIGUATION\n"
-    "If multiple documents match and the user hasn't specified which one, list the "
-    "candidates by filename and ask the user to pick — do not guess.\n\n"
+    "If several documents plausibly match and the user hasn't said which, call "
+    "list_documents to see the candidates, then call request_clarification with the "
+    "question and the candidate filenames as options — do NOT guess or pick one silently.\n\n"
+
+    "## MULTI-STEP\n"
+    "You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
+    "then search_documents scoped to it; several searches for a multi-part question; "
+    "or search_documents followed by get_page_context on a fragmented result. "
+    "Work step by step. Just don't repeat the SAME call with the same arguments.\n\n"
 
     "## STYLE\n"
-    "- Be direct and concise. Do not narrate your reasoning or tool usage.\n"
+    "- Be direct and concise in your final answer; don't narrate tool mechanics.\n"
     "- Never say 'I don't have access to files' or 'please provide a file path' "
     "— documents are already ingested and searchable.\n"
-    "- Never call the same tool twice with different guesses. One call, one answer.\n"
     "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature.\n"
     "- Never call ingest_document just because a filename is mentioned; only call it if the user explicitly attaches a new file or provides a local file path."
 )
@@ -89,6 +107,24 @@ class AgentState(TypedDict):
     iterations: int
     pending_approval: list[dict] | None
     approved_writes: bool
+    approved_calls: list[dict] | None
+    clarification: dict | None
+
+
+def _args_key(args: dict | None) -> str:
+    """Stable string key for a tool call's args, for approval matching."""
+    return json.dumps(args or {}, sort_keys=True, default=str)
+
+
+def _is_approved(name: str, args: dict, approved_calls: list[dict] | None) -> bool:
+    """A write runs only if the human approved a call with the SAME name AND args.
+    This binds approval to what was shown — the model can't ingest a different/extra
+    file on the approved re-run than the one the user actually authorized."""
+    key = _args_key(args)
+    return any(
+        c.get("name") == name and _args_key(c.get("args")) == key
+        for c in (approved_calls or [])
+    )
 
 
 def _to_openai_tool(tool: AgentTool) -> dict:
@@ -173,7 +209,7 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
 
 
 def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: set[str],
-                  max_iterations: int):
+                  clarify_tools: set[str], max_iterations: int):
     def agent_node(state: AgentState) -> dict:
         response = _invoke_with_retry(llm_with_tools, state["messages"])
         usage.record_from_message("agent", response)
@@ -183,10 +219,27 @@ def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: se
         last = state["messages"][-1]
         tool_messages: list[ToolMessage] = []
         pending: list[dict] = []
+        clarification: dict | None = None
         for call in getattr(last, "tool_calls", None) or []:
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
 
-            if name in write_tools and not state.get("approved_writes"):
+            # Control tool: the agent is asking the USER to choose. Pause the loop and
+            # surface it as needs_clarification instead of dispatching anything.
+            if name in clarify_tools:
+                if clarification is None:
+                    clarification = {
+                        "question": args.get("question") or "Which option?",
+                        "options": args.get("options") or [],
+                    }
+                tool_messages.append(ToolMessage(
+                    content="awaiting user selection", tool_call_id=call_id,
+                ))
+                continue
+
+            # Write gate: run ONLY if the human approved a call with the same name+args.
+            if name in write_tools and not (
+                state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
+            ):
                 pending.append({"id": call_id, "name": name, "args": args})
                 tool_messages.append(ToolMessage(
                     content="blocked: this action writes data and needs human "
@@ -214,16 +267,30 @@ def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: se
                 content=json.dumps(result, default=str), tool_call_id=call_id,
             ))
 
-        return {"messages": tool_messages, "pending_approval": pending or None}
+        return {"messages": tool_messages, "pending_approval": pending or None,
+                "clarification": clarification}
 
     def route_after_agent(state: AgentState) -> str:
-        if state.get("iterations", 0) >= max_iterations:
-            return END
         last = state["messages"][-1]
-        return "tools" if getattr(last, "tool_calls", None) else END
+        has_calls = bool(getattr(last, "tool_calls", None))
+        if not has_calls:
+            return END
+        if state.get("iterations", 0) < max_iterations:
+            return "tools"
+        # At the iteration cap: still route to tools if the final turn proposed a
+        # WRITE or CLARIFY control call, so it surfaces as needs_approval /
+        # needs_clarification instead of being silently dropped (AC8). Plain reads
+        # at the cap just end — the agent already had its budget.
+        control = write_tools | clarify_tools
+        wants_control = any(c["name"] in control for c in last.tool_calls)
+        return "tools" if wants_control else END
 
     def route_after_tools(state: AgentState) -> str:
-        return END if state.get("pending_approval") else "agent"
+        if state.get("pending_approval") or state.get("clarification"):
+            return END
+        if state.get("iterations", 0) >= max_iterations:
+            return END
+        return "agent"
 
     sg = StateGraph(AgentState)
     sg.add_node("agent", agent_node)
@@ -256,6 +323,7 @@ def run_agent(
     llm=None,
     conversation_history: list[BaseMessage] | None = None,
     approved_writes: bool = False,
+    approved_calls: list[dict] | None = None,
     session_id: str = "",
 ) -> dict:
     """Run one turn of the agent loop.
@@ -265,6 +333,12 @@ def run_agent(
        "token_usage": {...}, "trace_id": str|None}
       {"status": "needs_approval", "pending": [{"id","name","args"}], "tool_calls": [...],
        "answer": None, "messages": [...], "token_usage": {...}, "trace_id": str|None}
+      {"status": "needs_clarification", "question": str, "options": [str], "answer": question,
+       "tool_calls": [...], "messages": [...], "token_usage": {...}, "trace_id": str|None}
+
+    Approval is BOUND to args: to approve a pending write, re-invoke with
+    approved_writes=True AND approved_calls=<the pending list you showed the user>;
+    a write runs only if its name+args match an approved call.
 
     `messages` in the return is the growing LangChain message list — pass it back
     in as `conversation_history` (plus the next user message) to continue the
@@ -282,18 +356,15 @@ def run_agent(
     agent_cfg = (config.get("query") or {}).get("agent") or {}
     max_iterations = agent_cfg.get("max_iterations", 5)
     write_tools = set(agent_cfg.get("write_tools") or [])
+    clarify_tools = set(agent_cfg.get("clarify_tools") or ["request_clarification"])
 
     if llm is None:
-        llm_cfg = {**config.get("llm", {})}
-        if agent_cfg.get("provider"):
-            llm_cfg["provider"] = agent_cfg["provider"]
-        if agent_cfg.get("model"):
-            llm_cfg["model"] = agent_cfg["model"]
-        # an agent-specific provider needs its own key (e.g. GROQ_API_KEY), not the
-        # main llm.api_key placeholder, which may point at a different provider.
-        if agent_cfg.get("provider") and agent_cfg["provider"] != config.get("llm", {}).get("provider"):
-            llm_cfg["api_key"] = None
-        llm = get_llm({**config, "llm": llm_cfg})
+        # get_llm_for handles base_url/api_key overrides too (not just provider/model)
+        # — needed when the agent points at a DIFFERENT OpenAI-compatible endpoint
+        # than the global llm block (e.g. NVIDIA NIM vs z.ai — both provider: openai,
+        # different base_url/key; a provider-only diff check would miss this and try
+        # NVIDIA's model name against z.ai's endpoint).
+        llm = get_llm_for(config, agent_cfg)
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
     llm_with_tools = llm.bind_tools(tool_schemas)
@@ -302,7 +373,7 @@ def run_agent(
     messages += conversation_history or []
     messages.append(HumanMessage(message))
 
-    graph = _build_graph(llm_with_tools, registry, write_tools, max_iterations)
+    graph = _build_graph(llm_with_tools, registry, write_tools, clarify_tools, max_iterations)
 
     # ONE root span + ONE token-usage sink for the whole turn — every LLM call
     # and tool dispatch below (however deep, e.g. search_documents' internal
@@ -317,10 +388,25 @@ def run_agent(
             "iterations": 0,
             "pending_approval": None,
             "approved_writes": approved_writes,
+            "approved_calls": approved_calls,
+            "clarification": None,
         })
 
     token_usage = sink.totals()
     tool_calls = _extract_tool_calls(final_state["messages"])
+    if final_state.get("clarification"):
+        clar = final_state["clarification"]
+        return {
+            "status": "needs_clarification",
+            "question": clar.get("question"),
+            "options": clar.get("options") or [],
+            # answer mirrors the question so simple clients still show something
+            "answer": clar.get("question"),
+            "tool_calls": tool_calls,
+            "messages": final_state["messages"],
+            "token_usage": token_usage,
+            "trace_id": trace_info["trace_id"],
+        }
     if final_state.get("pending_approval"):
         return {
             "status": "needs_approval",
@@ -334,6 +420,13 @@ def run_agent(
 
     last = final_state["messages"][-1]
     answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
+    if not answer.strip():
+        # Hit the iteration cap still wanting a tool (or ended on a ToolMessage): never
+        # surface a blank 'done' answer — tell the user instead of a silent empty reply.
+        answer = (
+            "I couldn't finish answering within my step budget. Please narrow the "
+            "question (e.g. name the document or be more specific) and try again."
+        )
     return {
         "status": "done",
         "answer": answer,

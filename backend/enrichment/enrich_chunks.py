@@ -70,17 +70,19 @@ class EnrichChunksTool:
         llm = None
         if summarize and chunks:
             try:
-                from backend.core.llm_client import get_llm
+                from backend.core.llm_client import get_llm_for
                 # Size the completion budget to the batch so the JSON array for the
                 # whole batch fits: ~160 tokens/chunk (one-line summary + keywords +
                 # JSON punctuation) plus a fixed buffer. This stops the array being
                 # truncated mid-object; split-retry below handles any residual case.
                 max_out = 160 * batch_size + 256
-                llm = get_llm(config, max_tokens=max_out)
+                # per-step override: enrichment.model (bulk/cheap) falls back to global llm.
+                llm = get_llm_for(config, config.get("enrichment"), max_tokens=max_out)
             except Exception:
                 llm = None
 
         results: dict[int, tuple] = {}
+        eligible_indices: set[int] = set()
         if llm is not None:
             from backend.core import usage
             eligible = [
@@ -88,11 +90,20 @@ class EnrichChunksTool:
                 for i, c in enumerate(chunks)
                 if len((c.get("text") or "").strip()) >= 20
             ]
+            eligible_indices = {i for i, _ in eligible}
             for start in range(0, len(eligible), batch_size):
                 _enrich_group(llm, instruction,
                               eligible[start:start + batch_size], usage, results)
 
-        fallback = 0
+        # Two DIFFERENT reasons a chunk ends up with frequency-only keywords, not one:
+        # too_short chunks were never sent to the LLM at all (by design — not worth a
+        # call for a bare heading like "3 Wiring"); llm_failed chunks WERE sent but
+        # the batch never produced a result for them (a real quality loss, worth
+        # surfacing). Conflating them under one "fallback" count previously read as
+        # an 18-23% failure rate on a real run that had ZERO actual LLM failures —
+        # every one was a legitimately-short heading. Only llm_failed is an error.
+        too_short = 0
+        llm_failed = 0
         for i, chunk in enumerate(chunks):
             tags = chunk.setdefault("tags", {})
             if industry is not None:
@@ -112,11 +123,18 @@ class EnrichChunksTool:
             else:
                 tags["keywords"] = _keywords(chunk.get("text") or "", top_k)
                 if llm is not None:
-                    fallback += 1
+                    if i in eligible_indices:
+                        llm_failed += 1
+                    else:
+                        too_short += 1
 
-        if llm is not None and fallback:
+        if too_short:
+            logger.info("enrich: %d/%d chunks too short for LLM summarization "
+                        "(used frequency keywords instead — expected, not an error)",
+                        too_short, len(chunks))
+        if llm is not None and llm_failed:
             state.setdefault("errors", []).append(
-                f"enrich: {fallback}/{len(chunks)} chunks used fallback keywords "
+                f"enrich: {llm_failed}/{len(chunks)} chunks used fallback keywords "
                 f"(LLM enrichment failed for those batches)"
             )
         return state
@@ -166,16 +184,28 @@ def _retry_after_s(msg: str, default: float) -> float:
     return (float(m.group(1)) + 0.5) if m else default
 
 
+_RETRYABLE = ("429", "quota", "rate limit", "rate_limit", "ratelimit",
+              "resource_exhausted", "resourceexhausted",
+              "500", "internal error", "503", "unavailable", "overloaded")
+
+
 def _is_rate_limit(exc: Exception) -> bool:
+    """Matches ANY transient error worth retrying, not just 429s — real fallback
+    fell back on 503 UNAVAILABLE errors this narrower check used to miss (validated
+    live, 21-Jul: 18-23% of chunks across two documents fell back to offline
+    frequency keywords; vision_client.py's broader _RETRYABLE already covered this
+    for vision calls, enrichment's own check just hadn't kept up)."""
     s = (str(exc) + type(exc).__name__).lower()
-    return "429" in s or "rate_limit" in s or "ratelimit" in s
+    return any(tok in s for tok in _RETRYABLE)
 
 
 def _invoke_with_backoff(llm, prompt: str, attempts: int = 4):
-    """Invoke the LLM, REACTIVELY backing off on 429s (honoring the server's retry
-    hint). Groq free tier caps tokens-per-minute (TPM 6000), so a batch can tip over
-    even when request-pacing is fine — waiting a couple seconds and retrying turns
-    that failure into a success instead of a frequency-keyword fallback."""
+    """Invoke the LLM, REACTIVELY backing off on 429s AND transient 5xx errors
+    (honoring the server's retry hint when it gives one, e.g. Groq's rate-limit
+    body). A batch can tip over a provider's per-minute quota even when request
+    pacing is fine, or hit a transient 503 under sustained load — waiting and
+    retrying turns that failure into a success instead of a frequency-keyword
+    fallback."""
     delay = 2.0
     for i in range(attempts):
         try:
@@ -200,15 +230,20 @@ def _enrich_batch(llm, instruction: str, texts: list[str], usage) -> list | None
     ]
     for idx, t in enumerate(texts):
         parts.append(f'\n--- Chunk {idx} ---\n{t[:1500]}')
+    prompt = "\n".join(parts)
     try:
         # Pace under the free-tier RPM (e.g. Groq ~30/min -> ~2s); covers split-retry
         # calls too since every LLM call funnels through here.
         from backend.core import pacing
         pacing.pace("enrichment", _ENRICH_INTERVAL_S)
-        reply = _invoke_with_backoff(llm, "\n".join(parts))
+        reply = _invoke_with_backoff(llm, prompt)
         um = getattr(reply, "usage_metadata", None) or {}
-        usage.record("enrichment", um.get("input_tokens"), um.get("output_tokens"))
-        return _extract_json_array(getattr(reply, "content", str(reply)))
+        raw = getattr(reply, "content", str(reply))
+        model = getattr(llm, "model", None) or getattr(llm, "model_name", None)
+        provider = type(llm).__name__
+        usage.record("enrichment", um.get("input_tokens"), um.get("output_tokens"),
+                     prompt=prompt, raw_response=raw, provider=provider, model=model)
+        return _extract_json_array(raw)
     except Exception as exc:
         # Log WHY so a failed run is diagnosable: a 429/rate-limit reads very
         # differently from a JSON/parse error here.

@@ -78,6 +78,10 @@ const ChatPage = () => {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  // Mirrors sessionId so an in-flight reply can check whether the user switched
+  // conversations before it landed (otherwise A's answer appends under B).
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
   // Close dropdown on click outside (uses document listener, no shared ref)
   useEffect(() => {
@@ -223,10 +227,37 @@ const ChatPage = () => {
     content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
     toolCalls: data.tool_calls || [],
     pending: data.pending || [],
+    question: data.question || null,
+    options: data.options || [],
     tokenUsage: data.token_usage || null,
     traceId: data.trace_id || null,
     originalText,
   });
+
+  // The agent asked the user to choose (needs_clarification): send their pick as the
+  // next message so the agent proceeds scoped to that choice.
+  const handleClarify = async (optionText, msgIdx) => {
+    const reqSession = sessionId;
+    // Mark the originating prompt answered so its option buttons go inert (otherwise
+    // they stay clickable and a stray click re-fires the choice as a whole new turn).
+    setMessages((prev) => [
+      ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
+      { role: 'user', content: optionText },
+    ]);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await sendAgentChat(optionText, reqSession, false);
+      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
+      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, optionText)]);
+      loadSessions();
+    } catch (err) {
+      console.error('Clarify error:', err);
+      if (sessionIdRef.current === reqSession) setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim() && !attachedFile) return;
@@ -243,12 +274,17 @@ const ChatPage = () => {
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
+    const reqSession = sessionId;
     try {
-      const res = await sendAgentChat(sentText, sessionId, false);
+      const res = await sendAgentChat(sentText, reqSession, false);
+      // Drop the reply if the user switched conversations while it was in flight —
+      // it's already persisted server-side under reqSession.
+      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
       setMessages((prev) => [...prev, agentMessageFromResponse(res.data, sentText)]);
       loadSessions();
     } catch (err) {
       console.error('Chat error:', err);
+      if (sessionIdRef.current !== reqSession) return;
       setMessages((prev) => [
         ...prev,
         {
@@ -270,15 +306,17 @@ const ChatPage = () => {
       return;
     }
     setLoading(true);
+    const reqSession = sessionId;
     try {
-      const res = await sendAgentChat(msg.originalText, sessionId, true);
+      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || []);
+      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
       setMessages((prev) =>
         prev.map((m, i) => (i === msgIdx ? agentMessageFromResponse(res.data, msg.originalText) : m))
       );
       loadSessions();
     } catch (err) {
       console.error('Approval error:', err);
-      setError(err.message);
+      if (sessionIdRef.current === reqSession) setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -425,7 +463,8 @@ const ChatPage = () => {
 
             {messages.map((msg, idx) => (
               <MessageRow key={idx} msg={msg} onApprove={() => handleApproval(idx, true)}
-                          onDecline={() => handleApproval(idx, false)} loading={loading} />
+                          onDecline={() => handleApproval(idx, false)}
+                          onClarify={(opt) => handleClarify(opt, idx)} loading={loading} />
             ))}
 
             {loading && (() => {
@@ -535,7 +574,7 @@ const parseSources = (toolCalls) => {
   return sources;
 };
 
-const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
+const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls) : [];
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
@@ -724,6 +763,27 @@ const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
                       <XMarkIcon className="h-3.5 w-3.5" /> Decline
                     </button>
                   </div>
+                </div>
+              )}
+              {/* Agent asked the user to choose (needs_clarification) */}
+              {msg.status === 'needs_clarification' && (
+                <div className="mt-3 pt-3 border-t border-slate-700 space-y-2">
+                  {msg.options && msg.options.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {msg.options.map((opt, i) => (
+                        <button
+                          key={i}
+                          onClick={() => onClarify(opt)}
+                          disabled={loading || msg.clarifyAnswered}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500 italic">Type your answer below.</p>
+                  )}
                 </div>
               )}
               {msg.status === 'declined' && (

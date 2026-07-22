@@ -80,7 +80,8 @@ def test_sql_read_tool_registered_returns_rows_and_blocks_writes(monkeypatch):
     result = tool.run("SELECT id, name FROM widgets", limit=50)
 
     assert connect_calls == ["postgresql://example"]
-    assert fake.cursor_obj.executed == "SELECT id, name FROM widgets LIMIT 50"
+    # LIMIT goes on its OWN line so a trailing '-- comment' can't swallow it.
+    assert fake.cursor_obj.executed == "SELECT id, name FROM widgets\nLIMIT 50"
     assert result == {
         "columns": ["id", "name"],
         "rows": [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}],
@@ -100,3 +101,16 @@ def test_sql_read_tool_registered_returns_rows_and_blocks_writes(monkeypatch):
             tool.run(query)
 
     assert connect_calls == ["postgresql://example"]
+
+    # REGRESSION (AGENT-1): a '--' line comment must NOT comment out the injected LIMIT
+    # (that dumped whole tables), and a mid-query comment must not be collapsed onto one
+    # line (which corrupted the query). Run last so connect_calls bookkeeping above holds.
+    tool.run("SELECT text FROM chunks\n-- get all", limit=25)
+    executed = fake.cursor_obj.executed
+    assert executed.endswith("\nLIMIT 25"), executed
+    assert executed.splitlines()[-1].strip() == "LIMIT 25", executed
+
+    tool.run("SELECT id\n-- pick\nFROM documents", limit=10)
+    executed = fake.cursor_obj.executed
+    assert "-- pick\nFROM documents" in executed, executed   # newlines preserved
+    assert executed.endswith("\nLIMIT 10"), executed

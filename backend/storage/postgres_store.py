@@ -96,6 +96,87 @@ class PostgresStore:
             ),
         )
 
+    def write_blocks(self, document_id: str, blocks: list[dict]) -> None:
+        """Persist the raw extracted blocks (extractor output BEFORE chunking), in
+        reading order. Lets chunking be re-run later without re-extracting, and
+        gives full visibility into what was actually pulled from the document."""
+        if not blocks:
+            return
+        # psycopg3 returns a uuid.UUID object for this column elsewhere (e.g. a
+        # chunk's document_id from get_chunks_by_ids) — str() defensively so a
+        # caller passing that value straight through doesn't hit "operator does
+        # not exist: text = uuid" (validated live, 21-Jul).
+        document_id = str(document_id)
+        self.conn.execute("DELETE FROM document_blocks WHERE document_id::text = %s",
+                          (document_id,))
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO document_blocks
+                    (block_id, document_id, block_order, type, text, table_data,
+                     source_ref, metadata, confidence, language)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (block_id) DO NOTHING
+                """,
+                [
+                    (
+                        b.get("block_id"), document_id, i, b.get("type"), b.get("text"),
+                        _Json(b.get("table_data")) if b.get("table_data") else None,
+                        _Json(b.get("source_ref")),
+                        _Json(b.get("metadata")) if b.get("metadata") else None,
+                        b.get("confidence"), b.get("language"),
+                    )
+                    for i, b in enumerate(blocks)
+                ],
+            )
+
+    def get_blocks(self, document_id: str) -> list[dict]:
+        """Fetch a document's raw extracted blocks, in reading order."""
+        document_id = str(document_id)  # see write_blocks — caller may pass a uuid.UUID
+        rows = self.conn.execute(
+            """
+            SELECT block_id, type, text, table_data, source_ref, metadata,
+                   confidence, language
+            FROM document_blocks WHERE document_id::text = %s
+            ORDER BY block_order
+            """,
+            (document_id,),
+        ).fetchall()
+        return [
+            {
+                "block_id": str(r[0]), "document_id": document_id, "type": r[1],
+                "text": r[2], "table_data": r[3], "source_ref": r[4],
+                "metadata": r[5], "confidence": r[6], "language": r[7],
+            }
+            for r in rows
+        ]
+
+    def write_llm_calls(self, document_id: str, calls: list[dict]) -> None:
+        """Persist the raw prompt + raw response for every LLM/vision call made
+        during ingestion (categorize/vision/enrichment) — the full record, since
+        those steps only keep the fields they parsed out in their normal tables."""
+        if not calls:
+            return
+        import uuid
+        document_id = str(document_id)  # see write_blocks — caller may pass a uuid.UUID
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO llm_calls
+                    (call_id, document_id, kind, provider, model, prompt,
+                     raw_response, input_tokens, output_tokens)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        str(uuid.uuid4()), document_id, c.get("kind"), c.get("provider"),
+                        c.get("model"), c.get("prompt"), c.get("raw_response"),
+                        c.get("input_tokens"), c.get("output_tokens"),
+                    )
+                    for c in calls
+                ],
+            )
+
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Fetch full chunk rows by chunk_id (hydrate Qdrant search hits)."""
         if not chunk_ids:

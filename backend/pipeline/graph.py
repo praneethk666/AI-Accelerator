@@ -243,6 +243,7 @@ def run_pipeline(tools, state: PipelineState, config, on_step=None) -> PipelineS
             final = graph.invoke(state)
         if isinstance(final, dict):
             final["token_usage"] = sink.totals()
+            final["_calls_log"] = sink.get_calls_log()
         return final
 
     # stream_mode="values" yields the full accumulated state after each step;
@@ -261,6 +262,7 @@ def run_pipeline(tools, state: PipelineState, config, on_step=None) -> PipelineS
                 seen += 1
     if isinstance(final, dict):
         final["token_usage"] = sink.totals()
+        final["_calls_log"] = sink.get_calls_log()
     return final
 
 

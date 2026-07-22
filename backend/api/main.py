@@ -147,6 +147,9 @@ class AgentChatRequest(BaseModel):
     message: str
     session_id: str = "web"
     approved_writes: bool = False
+    # the pending write(s) the user approved, echoed back so approval is bound to the
+    # exact name+args that were shown (not whatever the model re-proposes).
+    approved_calls: list[dict] | None = None
 
 
 class ConfigSave(BaseModel):
@@ -172,17 +175,37 @@ class SettingsSave(BaseModel):
 _SETTINGS_MAP = {
     "default_industry": ["default_industry"],
     "ocr_engine": ["ocr", "engine"],
+    # global LLM defaults
     "llm_provider": ["llm", "provider"],
     "llm_model": ["llm", "model"],
+    "llm_answer_model": ["llm", "answer_model"],
+    # vision
     "vision_provider": ["vision", "provider"],
     "vision_model": ["vision", "model"],
+    "vision_ocr_model": ["vision_ocr", "model"],
     "vision_enabled": ["vision", "enabled"],
+    # agent
+    "agent_provider": ["query", "agent", "provider"],
+    "agent_model": ["query", "agent", "model"],
+    # per-step model overrides (blank => inherit global llm.model)
+    "categorization_model": ["categorization", "model"],
+    "enrichment_model": ["enrichment", "model"],
+    "planner_model": ["query", "planner", "model"],
+    "answerer_model": ["query", "answerer", "model"],
+    # chunking / enrichment
     "chunking_strategy": ["chunking", "strategy"],
     "chunking_size": ["chunking", "size"],
     "chunking_overlap": ["chunking", "overlap"],
     "enrichment_summarize": ["enrichment", "summarize"],
     "enrichment_keyword_count": ["enrichment", "keyword_count"],
     "enrichment_prompt": ["enrichment", "prompt"],
+}
+
+# Optional model-override fields: a BLANK value means "inherit the global llm block",
+# so on save we REMOVE the key rather than writing an empty model name.
+_OPTIONAL_OVERRIDE_KEYS = {
+    "llm_answer_model", "vision_ocr_model", "agent_provider", "agent_model",
+    "categorization_model", "enrichment_model", "planner_model", "answerer_model",
 }
 
 
@@ -209,12 +232,26 @@ def _settings_view(cfg: dict) -> dict:
 
 def _apply_settings(raw: dict, settings: dict) -> dict:
     for key, path in _SETTINGS_MAP.items():
-        if key not in settings or settings[key] is None:
+        if key not in settings:
+            continue
+        val = settings[key]
+        # optional override left blank => remove the key so the step inherits the global default
+        if key in _OPTIONAL_OVERRIDE_KEYS and (val is None or val == ""):
+            cur = raw
+            for k in path[:-1]:
+                if not isinstance(cur, dict) or k not in cur:
+                    cur = None
+                    break
+                cur = cur[k]
+            if isinstance(cur, dict):
+                cur.pop(path[-1], None)
+            continue
+        if val is None:
             continue
         cur = raw
         for k in path[:-1]:
             cur = cur.setdefault(k, {})
-        cur[path[-1]] = settings[key]
+        cur[path[-1]] = val
     # structured settings (replace wholesale when provided)
     if isinstance(settings.get("vision_prompts"), dict):
         raw.setdefault("vision", {})["prompt"] = settings["vision_prompts"]
@@ -498,7 +535,7 @@ def agent_chat(req: AgentChatRequest):
     result = run_agent(
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
-        session_id=req.session_id,
+        approved_calls=req.approved_calls, session_id=req.session_id,
     )
     tool_calls = [
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
@@ -519,10 +556,24 @@ def agent_chat(req: AgentChatRequest):
             )
         except Exception:
             logger.debug("agent chat history save failed", exc_info=True)
+    elif result["status"] == "needs_clarification":
+        # Persist the question so the follow-up (the user's choice) carries context —
+        # otherwise the agent gets a bare option token with no memory of what it asked.
+        _agent_sessions[req.session_id] = _qa_only(result["messages"])
+        try:
+            store = get_conversation_store()
+            store.save_turn(req.session_id, "user", req.message)
+            store.save_turn(req.session_id, "assistant",
+                            result.get("question") or result.get("answer") or "")
+        except Exception:
+            logger.debug("agent chat clarification save failed", exc_info=True)
     return {
         "status": result["status"],
         "answer": result.get("answer"),
         "pending": result.get("pending"),
+        # needs_clarification: a machine-readable chooser for the UI
+        "question": result.get("question"),
+        "options": result.get("options"),
         "tool_calls": tool_calls,
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),

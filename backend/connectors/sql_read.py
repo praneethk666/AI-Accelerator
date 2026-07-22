@@ -46,6 +46,16 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_advisory_lock",
     "pg_advisory_xact_lock",
     "pg_notify",
+    # server-side filesystem / external access — blocked even inside a SELECT so a
+    # prompt-injected query can't read/write host files or reach out via dblink.
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "lo_import",
+    "lo_export",
+    "dblink",
+    "dblink_exec",
 )
 
 
@@ -129,19 +139,28 @@ class SQLReadTool:
 def _connect(dsn: str):
     import psycopg
 
-    return psycopg.connect(dsn, autocommit=True, options="-c default_transaction_read_only=on")
+    # Read-only transaction + hard statement/idle timeouts so an LLM-authored
+    # pg_sleep, accidental cross join, or huge scan can't pin a worker thread.
+    return psycopg.connect(
+        dsn, autocommit=True,
+        options=(
+            "-c default_transaction_read_only=on "
+            "-c statement_timeout=15000 "
+            "-c idle_in_transaction_session_timeout=15000"
+        ),
+    )
 
 
 def _validate_read_only_query(query: str) -> str:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    stripped = query.strip()
-    if ";" in stripped.rstrip(";"):
+    stripped = query.strip().rstrip(";").strip()
+    # Validate against the comment/literal-stripped form so keywords in strings or
+    # comments don't false-trigger, and a real second statement is still caught.
+    inspected = _inspection_text(stripped)
+    if ";" in inspected.rstrip(";").strip():
         raise ValueError("multiple SQL statements are not allowed")
-
-    collapsed = re.sub(r"\s+", " ", stripped).strip()
-    inspected = _inspection_text(collapsed)
     lowered = inspected.lower().lstrip("(")
 
     if not lowered.startswith(_READ_ONLY_PREFIXES):
@@ -155,7 +174,10 @@ def _validate_read_only_query(query: str) -> str:
         if re.search(rf"\b{re.escape(function)}\s*\(", lowered):
             raise ValueError(f"forbidden SQL function: {function}")
 
-    return collapsed.rstrip(";")
+    # Return with ORIGINAL newlines preserved (do NOT collapse). A collapsed query
+    # turns a mid-query '-- comment' into a trailing one that would comment out the
+    # appended LIMIT; keeping newlines (and appending LIMIT on its own line) prevents it.
+    return stripped
 
 
 def _safe_limit(limit: int) -> int:
@@ -167,12 +189,16 @@ def _safe_limit(limit: int) -> int:
 
 
 def _apply_limit(query: str, limit: int) -> str:
-    lowered = query.lower()
-    if re.search(r"\blimit\s+\d+\b", lowered):
+    # Decide on the comment/literal-stripped text so a commented-out '-- limit 5' or a
+    # LIMIT inside a string can't fool the guards.
+    inspected = _inspection_text(query).lower()
+    if inspected.startswith(("show", "describe", "desc", "explain")):
         return query
-    if lowered.startswith("show") or lowered.startswith("describe") or lowered.startswith("desc"):
+    if re.search(r"\blimit\s+\d+\b", inspected):
         return query
-    return f"{query} LIMIT {limit}"
+    # Append on a NEW line: a trailing '-- comment' on the query's last line would
+    # otherwise swallow the LIMIT and dump the whole table (AGENT-1).
+    return f"{query}\nLIMIT {limit}"
 
 
 def _inspection_text(query: str) -> str:

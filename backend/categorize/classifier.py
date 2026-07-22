@@ -1,9 +1,11 @@
 """Core categorization engine.
 
 Vision-first design:
-- Determine `document_type` from actual content only: vision for PDFs/images
-  (rendered pages), a text LLM for word/ppt/excel/csv (extracted text).
-  Filename is never a signal for document_type or industry.
+- Determine `document_type` from content: vision for PDFs/images (rendered pages),
+  a text LLM for word/ppt/excel/csv (extracted text). The filename + parent folder
+  are supplied as a WEAK HINT only (helpful in structured corpora where folders
+  name the type, e.g. '03_Instruction manual') — content is the primary signal and
+  wins on conflict. The prompt's type menu is built from config['document_types'].
 - Map `document_type` -> `route` via config.type_to_route.
 - Determine `industry` from the same vision/text-LLM read, else a text
   keyword scan, else the configured default. A vision/text-LLM industry
@@ -31,7 +33,7 @@ import fitz
 
 from .text_extractor import extract_text, extract_toc_text
 from backend.core.vision_client import describe_image
-from backend.core.llm_client import get_llm
+from backend.core.llm_client import get_llm_for
 
 
 def detect_file_type(file_path: str) -> str:
@@ -158,12 +160,53 @@ def _heuristic_doctype(
     return "report", 0.5, "text-LLM unavailable; defaulted to 'report' (text route)"
 
 
+# Human-readable hints for the prompt. The ENUM is config["document_types"] (single
+# source of truth); this only describes each type. Add a type in BOTH config and here.
+_DOCTYPE_HINTS = {
+    "invoice": "a tax invoice / bill (line items, HSN, tax, totals)",
+    "purchase_order": "a purchase order (ordered items, PO number, vendor)",
+    "financial_statement": "balance sheet, P&L, ledger and similar",
+    "report": "a general report — only if the content actually reads as a report",
+    "research_paper": "an academic / research / scientific publication",
+    "manual": "service/user/instruction manual (procedures, parts, troubleshooting) — even if it contains diagrams/photos",
+    "contract": "an agreement / contract",
+    "policy": "a policy or terms document",
+    "datasheet": "a component/product datasheet (specs, ratings, pinouts)",
+    "presentation": "slides / a deck",
+    "spreadsheet": "structured tabular data in rows and columns",
+    "cad_drawing": "a mechanical engineering drawing — title block, revision block, dimensioned views, BOM; NOT a manual that merely includes drawings",
+    "circuit_diagram": "an electrical schematic / wiring diagram",
+    "schematic": "primarily technical/flow diagrams (not a full CAD/circuit drawing)",
+    "image": "a plain photo/screenshot/graphic with NO structured document layout",
+    "unknown": "not any of the above, or too ambiguous to classify",
+}
+
+
+def _doctype_menu(config: Dict[str, Any]) -> str:
+    """Build the prompt's DOCUMENT TYPES menu from config['document_types'] so the model
+    can only pick a type the router actually knows (no silent collapse to 'report')."""
+    types = config.get("document_types") or list(_DOCTYPE_HINTS)
+    return "\n".join(
+        f"- {t}: {_DOCTYPE_HINTS[t]}" if t in _DOCTYPE_HINTS else f"- {t}"
+        for t in types
+    )
+
+
+def _path_hint(file_path: str) -> str:
+    """filename + parent folder as a WEAK hint. In structured corpora the folder
+    (e.g. '03_Instruction manual', '07_Electronic data') is highly informative; the
+    prompt tells the model to weigh it as a hint only and let page content win on conflict."""
+    fn = os.path.basename(file_path)
+    folder = os.path.basename(os.path.dirname(file_path.rstrip("/")))
+    return f"filename: {fn}" + (f"\nparent folder: {folder}" if folder else "")
+
+
 def _text_llm_classify(
-    text: str, known_industries: list[str], config: Dict[str, Any]
+    text: str, known_industries: list[str], config: Dict[str, Any], file_path: str = ""
 ) -> Tuple[str, float, str, Optional[str], str]:
-    """Classify a document from extracted TEXT CONTENT only (no filename) using
-    the configured text LLM (backend.core.llm_client.get_llm). Used for file
-    types vision can't render here (word/ppt/excel/csv) — same document-type
+    """Classify a document from extracted TEXT CONTENT (plus filename/folder as a weak
+    hint) using the configured text LLM (backend.core.llm_client.get_llm_for). Used for
+    file types vision can't render here (word/ppt/excel/csv) — same document-type
     vocabulary as the vision prompt, same JSON contract.
 
     Returns (document_type, confidence, reasoning, industry_or_None, industry_evidence).
@@ -173,23 +216,15 @@ def _text_llm_classify(
     industry (see _evidence_supported).
     """
     industries_line = ", ".join(known_industries)
-    prompt = f"""Classify this document by its DOMINANT content, based only on the text below.
+    path_hint = _path_hint(file_path) if file_path else ""
+    hint_block = (
+        f"\n\nFILENAME / FOLDER (a HINT only — page content is the primary signal; "
+        f"ignore it if it conflicts with the content):\n{path_hint}" if path_hint else ""
+    )
+    prompt = f"""Classify this document by its DOMINANT content, based mainly on the text below.
 
 DOCUMENT TYPES:
-- manual: service/user/instruction manuals (procedures, parts, troubleshooting).
-- circuit_diagram: primarily an electrical schematic / wiring diagram (rare in text-only content).
-- cad_drawing: primarily a mechanical engineering drawing (rare in text-only content).
-- schematic: primarily technical/flow diagrams (rare in text-only content).
-- spreadsheet: structured tabular data organized into rows and columns
-- invoice: a tax invoice / bill (line items, HSN, tax, totals).
-- financial_statement: balance sheet, P&L, ledger and similar.
-- purchase_order: a purchase order.
-- contract: an agreement / contract.
-- policy: a policy or terms document.
-- research_paper: an academic / research / scientific / technical publication paper.
-- report: a general report - choose this only if the content actually reads as a report.
-- unknown: the document is not any of the above, or the content is too ambiguous to classify.
-- presentation: slides / a deck.
+{_doctype_menu(config)}
 
 Return ONLY a JSON object with these exact keys:
 - "document_type": EXACTLY ONE value from the list above — a single token (e.g. "invoice").
@@ -205,13 +240,21 @@ Return ONLY a JSON object with these exact keys:
 - "reasoning": one short sentence citing the textual evidence you used
 
 Document text (truncated):
-{text[:4000]}
+{text[:4000]}{hint_block}
 
 Respond with ONLY the JSON object, no other text, no markdown."""
 
-    llm = get_llm(config)
+    # per-step override: categorization.model falls back to global llm.
+    llm = get_llm_for(config, config.get("categorization"))
     response = llm.invoke(prompt)
     response_text = (getattr(response, "content", None) or str(response)).strip()
+    try:
+        from backend.core import usage
+        llm_cfg = {**config.get("llm", {}), **(config.get("categorization") or {})}
+        usage.record_from_message("categorize", response, prompt=prompt,
+                                  provider=llm_cfg.get("provider"), model=llm_cfg.get("model"))
+    except Exception:
+        pass
 
     json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
     if not json_match:
@@ -352,37 +395,24 @@ def categorize(
             # ---- Vision-first (and vision-final) ----
             stitched_bytes = image_bytes
 
-            # Build classification prompt from page content only — no filename
-            # signal at all, since filenames are arbitrary and tell you nothing
-            # reliable about what's actually on the page.
+            # Classification prompt = page content (primary) + a weak filename/folder
+            # hint (added to extra_context below). Content wins on conflict.
             extra_context = ""
             if toc_text:
                 extra_context += f"\nTable of Contents excerpt:\n{toc_text[:500]}"
+            path_hint = _path_hint(file_path)
+            if path_hint:
+                extra_context += (
+                    f"\nFILENAME / FOLDER (a HINT only — the page content shown is the "
+                    f"primary signal; ignore it if it conflicts):\n{path_hint}"
+                )
 
             industries_line = ", ".join(known_industries)
 
             prompt = f"""Classify this document by its DOMINANT content across the pages shown.
 
 DOCUMENT TYPES:
-- manual: service/user/instruction manuals (procedures, parts, troubleshooting) — choose
-  this for a manual EVEN IF it contains diagrams or photos.
-- circuit_diagram: the document IS primarily an electrical schematic / wiring diagram.
-- cad_drawing: the document IS primarily a mechanical engineering drawing — title block,
-  revision block, dimensioned views, BOM. NOT a manual that merely includes drawings.
-- schematic: primarily technical/flow diagrams.
-- invoice: a tax invoice / bill (line items, HSN, tax, totals).
-- financial_statement: balance sheet, P&L, ledger and similar.
-- purchase_order: a purchase order.
-- contract: an agreement / contract.
-- policy: a policy or terms document.
-- research_paper: an academic / research / scientific / technical publication paper.
-- report: a general report - choose this only if the content actually reads as a report.
-- presentation: slides / a deck.
-- image: a plain photograph, screenshot, product image, or generic graphic with NO
-  structured document layout — not a scan/photo of a report/invoice/manual page, and
-  not primarily a diagram/schematic/CAD drawing. Choose this whenever the content is
-  just a picture rather than a document.
-- unknown: the document is not any of the above, or the content is too ambiguous to classify.
+{_doctype_menu(config)}
 
 Return ONLY a JSON object with these exact keys:
 - "document_type": EXACTLY ONE value from the list above — a single token (e.g. "invoice").
@@ -423,10 +453,13 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                     evidence = (result.get("industry_evidence") or "").strip()
                     MIN_VERIFY_TEXT_CHARS = 40  # if less than this, we can't verify the model's claimed evidence
                     if vi in known_industries and vi != "general":
+                        # Branches are MUTUALLY EXCLUSIVE: either we can't verify (short
+                        # text -> confidence-only, higher bar) OR we require the evidence
+                        # phrase to appear. Previously both ran, so a low-confidence pick
+                        # could still slip through on a coincidental evidence match.
                         if len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
                             # Nothing to verify against (pure-visual content, e.g. CAD/vector
-                            # drawings) — fall back to trusting the model's own confidence,
-                            # with a HIGHER bar since we can't cross-check it.
+                            # drawings) — trust the model's own confidence, with a HIGHER bar.
                             if conf >= 0.75:
                                 vision_industry = vi
                                 reasoning_parts.append(
@@ -439,7 +472,7 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                                     f"No extractable text to verify industry evidence and "
                                     f"confidence={conf:.2f} too low to accept '{vi}' unverified."
                                 )
-                        if _evidence_supported(evidence, verify_text):
+                        elif _evidence_supported(evidence, verify_text):
                             vision_industry = vi
                         else:
                             reasoning_parts.append(
@@ -490,7 +523,7 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             if extracted.strip():
                 try:
                     doc_type, conf, reasoning, text_industry, text_evidence = _text_llm_classify(
-                        extracted, known_industries, config
+                        extracted, known_industries, config, file_path=file_path
                     )
                     doc_type = _coerce_doctype(doc_type, supported_types)
                     if text_industry and _evidence_supported(text_evidence, extracted):

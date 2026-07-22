@@ -105,6 +105,16 @@ def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) 
     client = OpenAI(api_key=api_key, base_url=vcfg.get("base_url") or None)
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
 
+    # Passthrough for provider-specific request fields outside the OpenAI schema
+    # (e.g. GLM's `thinking: {type: disabled}` — GLM's reasoning mode is ON by
+    # default and otherwise burns completion tokens on hidden reasoning, sometimes
+    # returning EMPTY content; validated live against z.ai's GLM-4.6V-Flash).
+    create_kwargs = {}
+    if vcfg.get("extra_body"):
+        create_kwargs["extra_body"] = vcfg["extra_body"]
+    if vcfg.get("max_tokens"):
+        create_kwargs["max_tokens"] = vcfg["max_tokens"]
+
     with _trace(prompt, model) as t:
         resp = client.chat.completions.create(
             model=model,
@@ -115,14 +125,16 @@ def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) 
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }],
+            **create_kwargs,
         )
         result = resp.choices[0].message.content
         try:
             from backend.core import usage
             u = getattr(resp, "usage", None)
-            if u is not None:
-                usage.record("vision", getattr(u, "prompt_tokens", 0),
-                             getattr(u, "completion_tokens", 0))
+            usage.record("vision", getattr(u, "prompt_tokens", 0) if u else 0,
+                         getattr(u, "completion_tokens", 0) if u else 0,
+                         prompt=prompt, raw_response=result,
+                         provider="openai", model=model)
         except Exception:
             pass
         t["output"] = result
@@ -131,10 +143,21 @@ def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) 
 
 def _describe_google(image_bytes: bytes, prompt: str, model: str, config: dict) -> str:
     # New google-genai SDK (the old google.generativeai is deprecated AND can't set
-    # thinking config). Gemma 4 has a built-in reasoning mode that's ON by default on
-    # AI Studio, so it "thinks out loud" before the JSON; thinking_level=MINIMAL
-    # suppresses it at the source → pure JSON, and fewer tokens (faster/cheaper).
-    # block_builder._extract_json stays as a backup for any reply that still narrates.
+    # thinking config). Every Google multimodal model we've used has reasoning ON by
+    # default, but the parameter to turn it off differs BY MODEL GENERATION — and a
+    # rejected parameter fails the whole call, not just that field, so we must try
+    # each and fall back, not just pick one:
+    #   thinking_budget=0    — Gemini 2.5 family (Flash/Pro/Flash-Lite). thinking_level
+    #                          is REJECTED here (400 "not supported for this model") and
+    #                          the model silently thinks anyway if you don't catch that —
+    #                          validated live: 1281 hidden reasoning tokens and 9.7s
+    #                          latency on a one-sentence caption request, vs 4.5s / 0
+    #                          reasoning tokens with thinking_budget=0. This is NOT a
+    #                          cosmetic difference — it was silently ~5x'ing both cost
+    #                          and latency on every single vision call.
+    #   thinking_level=MINIMAL — Gemma 4 family; REJECTS thinking_budget instead.
+    # Try both, oldest-parameter-first is wrong here since it's model-family-specific,
+    # not a version order — just attempt each and use whichever the model accepts.
     from google import genai
     from google.genai import types
 
@@ -147,25 +170,31 @@ def _describe_google(image_bytes: bytes, prompt: str, model: str, config: dict) 
     contents = [prompt, image_part]
 
     with _trace(prompt, model) as t:
-        try:
-            resp = client.models.generate_content(
-                model=model, contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    thinking_config=types.ThinkingConfig(thinking_level="MINIMAL"),
-                ),
-            )
-        except Exception:
-            # A model may reject thinking_config or the mime type (e.g. non-Gemma) —
-            # fall back to a plain call; the JSON extractor still cleans the reply.
+        resp = None
+        for thinking_kwargs in ({"thinking_budget": 0}, {"thinking_level": "MINIMAL"}):
+            try:
+                resp = client.models.generate_content(
+                    model=model, contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        thinking_config=types.ThinkingConfig(**thinking_kwargs),
+                    ),
+                )
+                break
+            except Exception:
+                continue
+        if resp is None:
+            # Neither thinking-suppression parameter was accepted (unknown model) —
+            # plain call; the JSON extractor downstream still cleans the reply, and
+            # this model just pays its default reasoning cost rather than failing.
             resp = client.models.generate_content(model=model, contents=contents)
         result = resp.text
-        _record_google_usage(resp)
+        _record_google_usage(resp, prompt=prompt, model=model)
         t["output"] = result
     return result
 
 
-def _record_google_usage(resp) -> None:
+def _record_google_usage(resp, *, prompt=None, model=None) -> None:
     """Record Gemini/Gemma token usage (response.usage_metadata) into the run sink."""
     try:
         from backend.core import usage
@@ -175,6 +204,9 @@ def _record_google_usage(resp) -> None:
                 "vision",
                 getattr(um, "prompt_token_count", 0),
                 getattr(um, "candidates_token_count", 0),
+                reasoning_tokens=getattr(um, "thoughts_token_count", 0) or 0,
+                prompt=prompt, raw_response=getattr(resp, "text", None),
+                provider="google", model=model,
             )
     except Exception:
         pass
@@ -191,6 +223,12 @@ def _describe_ollama(image_bytes: bytes, prompt: str, model: str, config: dict) 
             messages=[{"role": "user", "content": prompt, "images": [b64]}],
         )
         result = response["message"]["content"]
+        try:
+            from backend.core import usage
+            usage.record("vision", 0, 0, prompt=prompt, raw_response=result,
+                        provider="ollama", model=model)
+        except Exception:
+            pass
         t["output"] = result
     return result
 

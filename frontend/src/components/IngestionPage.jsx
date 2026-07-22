@@ -7,6 +7,7 @@ import {
   DocumentIcon,
   CheckCircleIcon,
   ExclamationCircleIcon,
+  XCircleIcon,
   TrashIcon,
   ChatBubbleLeftIcon,
   ArrowPathIcon,
@@ -210,19 +211,34 @@ const IngestionPage = () => {
     navigate(`/chat?fileId=${fileId}`);
   };
 
+  // The backend emits LOWERCASE statuses: ready | processing | failed | unsupported | empty.
+  // The old check compared against 'Ready' (capital R), which never matched — so every
+  // successfully ingested file rendered as a yellow warning and the green state was dead
+  // code. Each status now gets its own icon/colour so a hard failure, an unsupported
+  // format and an empty extraction are distinguishable at a glance.
   const getStatusIcon = (status) => {
-    if (status === 'Ready') {
-      return <CheckCircleIcon className="h-5 w-5 text-green-500" />;
-    } else {
-      return <ExclamationCircleIcon className="h-5 w-5 text-yellow-500" />;
+    switch ((status || '').toLowerCase()) {
+      case 'ready':
+        return <CheckCircleIcon className="h-5 w-5 text-green-500" />;
+      case 'processing':
+        return <ArrowPathIcon className="h-5 w-5 text-blue-400 animate-spin" />;
+      case 'failed':
+        return <XCircleIcon className="h-5 w-5 text-red-500" />;
+      default: // unsupported | empty | unknown
+        return <ExclamationCircleIcon className="h-5 w-5 text-yellow-500" />;
     }
   };
 
   const getStatusColor = (status) => {
-    if (status === 'Ready') {
-      return 'bg-green-500/20 text-green-400';
-    } else {
-      return 'bg-yellow-500/20 text-yellow-400';
+    switch ((status || '').toLowerCase()) {
+      case 'ready':
+        return 'bg-green-500/20 text-green-400';
+      case 'processing':
+        return 'bg-blue-500/20 text-blue-400';
+      case 'failed':
+        return 'bg-red-500/20 text-red-400';
+      default: // unsupported | empty | unknown
+        return 'bg-yellow-500/20 text-yellow-400';
     }
   };
 

@@ -73,6 +73,9 @@ psycopg[binary]>=3.1,<4  # SQL read tool/Postgres stores; code imports `psycopg`
 fastapi
 uvicorn[standard]
 python-multipart         # file uploads
+# Explicit (was only transitive): chunk_tool falls back to text.split() without it,
+# which collapses a whole Japanese/CJK page into ONE oversized chunk (no whitespace).
+tiktoken
 
 # ── MCP connector stubs ───────────────────────────────────────────────────────
 mcp

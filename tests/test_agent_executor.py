@@ -109,7 +109,8 @@ def test_write_tool_needs_approval_then_runs_once_approved():
     assert result["pending"] == [{"id": "call_1", "name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}]
     assert ingest.calls == []  # blocked — must not have run
 
-    # User approves; caller re-invokes with approved_writes=True (restart-based).
+    # User approves; caller re-invokes with approved_writes=True AND echoes the
+    # approved call back (approval is bound to the exact name+args shown).
     llm_approved = _ScriptedLLM([
         _tool_call_message("ingest_document", {"file_path": "/tmp/report.pdf"}),
         AIMessage(content="Ingested — document_id doc-1, status ready."),
@@ -120,11 +121,48 @@ def test_write_tool_needs_approval_then_runs_once_approved():
         registry={"ingest_document": ingest},
         llm=llm_approved,
         approved_writes=True,
+        approved_calls=[{"name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}],
     )
 
     assert result["status"] == "done"
     assert ingest.calls == [{"file_path": "/tmp/report.pdf"}]
     assert "doc-1" in result["answer"]
+
+
+def test_approval_is_bound_to_approved_args():
+    """Approving one file must NOT authorize a different one the model re-proposes."""
+    ingest = _FakeIngestTool()
+    llm = _ScriptedLLM([
+        _tool_call_message("ingest_document", {"file_path": "/tmp/EVIL.pdf"}),
+    ])
+    result = run_agent(
+        "please ingest /tmp/report.pdf",
+        config=_CONFIG,
+        registry={"ingest_document": ingest},
+        llm=llm,
+        approved_writes=True,
+        approved_calls=[{"name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}],
+    )
+    assert result["status"] == "needs_approval"   # args mismatch => re-blocked
+    assert ingest.calls == []                     # the un-approved file did NOT run
+
+
+def test_request_clarification_pauses_for_user_choice():
+    """The agent calling request_clarification pauses the loop with a machine-readable
+    question + options instead of guessing."""
+    llm = _ScriptedLLM([
+        _tool_call_message("request_clarification",
+                           {"question": "Which document?", "options": ["a.pdf", "b.pdf"]}),
+    ])
+    result = run_agent(
+        "what is the torque spec?",
+        config=_CONFIG,
+        registry={},          # clarify is intercepted before dispatch; no tool needed
+        llm=llm,
+    )
+    assert result["status"] == "needs_clarification"
+    assert result["question"] == "Which document?"
+    assert result["options"] == ["a.pdf", "b.pdf"]
 
 
 def test_iteration_cap_terminates_a_runaway_tool_calling_loop():

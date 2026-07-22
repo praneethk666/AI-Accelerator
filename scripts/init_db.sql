@@ -45,6 +45,45 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at    TIMESTAMP DEFAULT NOW()
 );
 
+-- Raw extracted blocks (extractor output BEFORE chunking — text/heading/table/
+-- image_caption in reading order). Two reasons to keep these: (1) lets chunking
+-- be re-run later without re-extracting (extraction, not chunking, is the
+-- expensive/slow step — docling + vision calls); (2) full visibility into what
+-- was actually pulled from the document, independent of how it got chunked.
+CREATE TABLE IF NOT EXISTS document_blocks (
+    block_id      UUID PRIMARY KEY,
+    document_id   UUID REFERENCES documents(document_id) ON DELETE CASCADE,
+    block_order   INTEGER NOT NULL,   -- position in the extracted stream (reading order)
+    type          TEXT NOT NULL,      -- text | heading | table | image_caption
+    text          TEXT,
+    table_data    JSONB,
+    source_ref    JSONB,
+    metadata      JSONB,
+    confidence    REAL,
+    language      TEXT,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_document_blocks_doc ON document_blocks (document_id, block_order);
+
+-- Full audit trail of every LLM/vision call made during ingestion: the exact
+-- prompt sent and the RAW, unparsed response. categorize/vision/enrichment only
+-- keep the fields they parsed out (document_type, caption, summary, ...) in
+-- their normal tables — this is the complete record, so nothing is lost even if
+-- a parser is wrong or a future need shows up that wasn't anticipated.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    call_id       UUID PRIMARY KEY,
+    document_id   UUID REFERENCES documents(document_id) ON DELETE CASCADE,
+    kind          TEXT NOT NULL,      -- categorize | vision | enrichment
+    provider      TEXT,
+    model         TEXT,
+    prompt        TEXT,
+    raw_response  TEXT,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    created_at    TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_doc ON llm_calls (document_id, kind);
+
 -- Rendered full-page images, one per PDF page that produced chunks. Lets the
 -- answerer/agent pull up the whole page and hand it to the vision model when a
 -- retrieved chunk is ambiguous (visual grounding / "show me the source").

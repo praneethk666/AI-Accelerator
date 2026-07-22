@@ -39,7 +39,19 @@ EXT_TO_FILE_TYPE = {
     ".pptx": "ppt", ".ppt": "ppt",
     ".docx": "docx", ".doc": "docx",
     ".png": "image", ".jpg": "image", ".jpeg": "image",
-    ".tif": "image", ".tiff": "image",
+    ".tif": "image", ".tiff": "image", ".bmp": "image", ".gif": "image",
+}
+
+# Known-but-unextractable formats seen in real corpora (e.g. Toyota manuals). We
+# can't read these, so we FAIL LOUD with a specific reason rather than silently
+# finalizing an empty "ready" doc. Convert to PDF/image upstream to ingest them.
+_UNSUPPORTED_HINTS = {
+    ".xdw": "Fuji Xerox DocuWorks — convert to PDF first",
+    ".xbd": "Fuji Xerox DocuWorks binder — convert to PDF first",
+    ".ipw": "proprietary drawing format — export to PDF/image first",
+    ".shzz": "proprietary format — export to PDF/image first",
+    ".zmw": "proprietary format — export to PDF/image first",
+    ".zmn": "proprietary format — export to PDF/image first",
 }
 
 # Stable namespace so the same file bytes always map to the same document_id.
@@ -114,8 +126,11 @@ def ingest_document(
             agent-facing return.
 
     Returns:
-        {"document_id", "status", "metrics", "errors"} — status is "ready" unless
-        a pipeline step errored, then "failed".
+        {"document_id", "status", "metrics", "errors", "trace_id"}. status is one of:
+          ready       — extracted content and indexed (>=1 chunk)
+          empty       — supported format but zero chunks extracted (surfaced, not hidden)
+          unsupported — file type we can't extract (e.g. .xdw DocuWorks); nothing run
+          failed      — a pipeline step raised
     """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(file_path)
@@ -135,28 +150,56 @@ def ingest_document(
         pg.close()
     _preclean(document_id, cfg)
 
+    # Fail LOUD on formats we cannot extract: an "unknown" file_type enables no
+    # extractor, so the pipeline would produce zero chunks yet still finalize
+    # "ready" — hiding the file. Short-circuit to an explicit "unsupported" status.
+    ext = os.path.splitext(file_path)[1].lower()
+    unsupported_msg = None
+    if file_type == "unknown":
+        hint = _UNSUPPORTED_HINTS.get(ext)
+        unsupported_msg = (
+            f"Unsupported file type '{ext or '(none)'}'"
+            + (f" ({hint})" if hint else "")
+            + f". Supported: {', '.join(sorted(set(EXT_TO_FILE_TYPE)))}."
+        )
+        logger.warning("ingest %s (%s): %s", filename, document_id, unsupported_msg)
+
     # run the pipeline (graph owns routing/extraction; we just seed file_type)
     state = {"document_id": document_id, "file_path": file_path,
              "file_type": file_type, "errors": []}
-    
+
     with traced_request(
         "ingest_document", input={"filename": filename, "file_type": file_type},
         metadata={"document_id": document_id, "file_path": file_path},
     ) as trace_info:
-        try:
-            result = run_pipeline(reg, state, _ingestion_cfg(cfg), on_step=on_step)
-            # "failed" only if a STEP errored — a non-fatal warning in errors must not
-            # mark an otherwise-successful ingest as failed.
-            step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
-            status = "failed" if step_failed else "ready"
-        except Exception as exc:
-            logger.exception("ingestion failed for %s", filename)
-            result, status = {"errors": [str(exc)]}, "failed"
+        if unsupported_msg:
+            result, status = {"errors": [unsupported_msg]}, "unsupported"
+        else:
+            try:
+                result = run_pipeline(reg, state, _ingestion_cfg(cfg), on_step=on_step)
+                # "failed" only if a STEP errored — a non-fatal warning in errors must not
+                # mark an otherwise-successful ingest as failed.
+                step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
+                status = "failed" if step_failed else "ready"
+            except Exception as exc:
+                logger.exception("ingestion failed for %s", filename)
+                result, status = {"errors": [str(exc)]}, "failed"
     trace_id = trace_info["trace_id"]
 
     metrics = result.get("metrics", []) or []
     errors = result.get("errors", []) or []
     chunks = result.get("chunks", []) or []
+
+    # A SUPPORTED file that extracted nothing is not a success — surface it instead
+    # of finalizing "ready" with zero content (corrupt/empty/image-only-without-OCR).
+    if status == "ready" and not chunks:
+        status = "empty"
+        errors = list(errors) + [
+            "No content extracted (zero chunks). The file may be corrupt, empty, "
+            "or image-only without a working OCR/vision path."
+        ]
+        logger.warning("ingest %s (%s): zero chunks -> status 'empty'", filename, document_id)
+
     indexed_tokens = sum(int(c.get("token_count") or 0) for c in chunks)
 
     # persist terminal status + aggregates (DB-backed status the API reports)
@@ -176,6 +219,18 @@ def ingest_document(
                 indexed_tokens=indexed_tokens,
                 chunk_count=len(chunks),
             )
+            # Raw extracted blocks (pre-chunking) and the full prompt/response audit
+            # trail for every LLM/vision call — kept even on a "failed"/"empty"
+            # status, since that's exactly when the raw record is most useful for
+            # debugging. Best-effort: never let this break a successful ingest.
+            try:
+                pg.write_blocks(document_id, result.get("blocks") or [])
+            except Exception:
+                logger.exception("write_blocks failed for %s", document_id)
+            try:
+                pg.write_llm_calls(document_id, result.get("_calls_log") or [])
+            except Exception:
+                logger.exception("write_llm_calls failed for %s", document_id)
         finally:
             pg.close()
     except Exception:

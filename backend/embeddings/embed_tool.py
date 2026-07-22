@@ -1,8 +1,8 @@
 """embed tool — chunk text -> dense + sparse vectors. Replaces the hash stub.
 
-- dense: nomic-embed-text-v1.5 (768-dim) via get_dense_model; documents carry the
-  "search_document: " instruction prefix nomic expects (queries use the query
-  prefix in retrieval). Vectors are L2-normalized for cosine search.
+- dense: config-selected embedder via get_dense_model (default BAAI/bge-m3, 1024-dim);
+  documents carry the model-specific document prefix from config (empty for bge-m3,
+  "search_document: " for nomic). Vectors are L2-normalized for cosine search.
 - sparse: Qdrant/bm25 via get_sparse_model -> {"indices", "values"} for the BM25
   leg of hybrid retrieval (stored as a named sparse vector in Qdrant).
 - writes chunk["vector"] + chunk["sparse_vector"] in place (Chunk schema fields).
@@ -13,7 +13,11 @@ batch — encoding is per-batch, but the tool is wrapped by the graph's try/exce
 
 from __future__ import annotations
 
-from backend.core.models import DENSE_DOCUMENT_PREFIX, get_dense_model, get_sparse_model
+from backend.core.models import (
+    get_dense_document_prefix,
+    get_dense_model,
+    get_sparse_model,
+)
 from backend.core.tool import PipelineState
 
 
@@ -34,10 +38,21 @@ class EmbedTool:
         # embedding INPUT is augmented.
         inputs = [_embed_input(c) for c in chunks]
 
-        # dense: batch-encode with the nomic document prefix, normalized for cosine
+        # dense: batch-encode with the (model-specific, config-driven) document prefix,
+        # normalized for cosine. Empty prefix for bge-m3; nomic sets "search_document: ".
+        # batch_size caps PEAK memory per sub-batch (validated live: on a 105-page,
+        # 640-chunk document, MPS ran out of memory here — docling/YOLO/OCR/chunking
+        # models loaded earlier in this same process had already consumed most of
+        # Apple's MPS ceiling by the time embed ran, so bge-m3 had little headroom
+        # left; a smaller batch_size plus freeing the MPS cache first gives it room).
+        ecfg = config.get("embeddings") or {}
+        batch_size = int(ecfg.get("dense_batch_size", 16))
+        _free_mps_cache()
+        doc_prefix = get_dense_document_prefix(config)
         dense_vecs = dense.encode(
-            [DENSE_DOCUMENT_PREFIX + t for t in inputs],
+            [doc_prefix + t for t in inputs],
             normalize_embeddings=True,
+            batch_size=batch_size,
         )
         # sparse: BM25 passage embeddings (passage vs query matters for BM25/IDF)
         sparse_vecs = list(sparse.passage_embed(inputs))
@@ -49,6 +64,19 @@ class EmbedTool:
                 "values": svec.values.tolist(),
             }
         return state
+
+
+def _free_mps_cache() -> None:
+    """Best-effort: release PyTorch's cached (unfreed) MPS allocations from earlier
+    steps in this process (docling/YOLO/OCR/chunking models) before bge-m3 asks for
+    its own. No-op on CPU/CUDA or if torch isn't available — MPS-specific quirk
+    where cached memory isn't returned to the pool between calls by default."""
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
 
 
 def _embed_input(chunk: dict) -> str:

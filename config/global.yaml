@@ -6,66 +6,129 @@
 # ── LLM ───────────────────────────────────────────────────────────────────────
 # provider: groq | google | ollama | openai
 # `openai` + base_url reaches ANY OpenAI-compatible API (NVIDIA NIM, OpenRouter,
-# Together, vLLM, …). api_key is usually a ${ENV_VAR}; blank => SDK's default env.
+# Together, z.ai, DeepSeek, vLLM, …). api_key is usually a ${ENV_VAR}; blank => SDK's
+# default env.
 # Recipes:
-#   Groq (default): provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
-#   Gemini/Vertex:  provider: google  model: gemini-1.5-flash       api_key: ${GOOGLE_API_KEY}
+#   z.ai GLM (default): provider: openai  model: glm-4.7-flash
+#                        base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
+#   Groq:           provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
+#   Gemini (AI Studio): provider: google  model: gemini-2.5-flash   api_key: ${GOOGLE_API_KEY}
+#   DeepSeek:       provider: openai  model: deepseek-chat
+#                   base_url: https://api.deepseek.com/v1           api_key: ${DEEPSEEK_API_KEY}
 #   NVIDIA NIM:     provider: openai  model: meta/llama-3.1-8b-instruct
 #                   base_url: https://integrate.api.nvidia.com/v1   api_key: ${NVIDIA_API_KEY}
 #   OpenRouter:     provider: openai  model: <org/model>
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  # ACTIVE (PRODUCTION): OpenAI gpt-4o-mini — tighter field-rule following + generous PAID rate
-  # limit (no TPM wall), ~$0.15/1M in. Needs OPENAI_API_KEY in .env.
-  provider: openai
-  model: gpt-4o-mini
-  answer_model: gpt-4o-mini
-  api_key: ${OPENAI_API_KEY}
+  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash (PAID) — back to this after a same-day
+  # detour through z.ai GLM (free) proved unreliable under REAL ingestion load: the
+  # servo manual's table-stitch arbitration hit 429s 3x, and enrich_chunks (a few dozen
+  # batched calls) took 26.2 MINUTES. Real cost data from that run (Postgres
+  # documents.token_usage, 21-Jul): 213 enrichment calls, 258,546 tokens, $0 (z.ai
+  # free) — so z.ai's problem was never cost, it was throughput. Gemini 2.5-flash paid
+  # tier gets 150-300+ RPM (Tier 1, checked live) vs the restrictive per-model quotas
+  # we hit on both z.ai and Gemma-4-31b — worth the modest real spend to stop losing
+  # engineering time to free/cheap-tier throughput ceilings. ONE key (GOOGLE_API_KEY)
+  # powers llm + vision + vision_ocr; agent stays on NVIDIA (separate credit pool, no
+  # issues observed there, low call volume).
+  provider: google
+  model: gemini-2.5-flash
+  answer_model: gemini-2.5-flash
+  api_key: ${GOOGLE_API_KEY}
   temperature: 0.2
+  thinking_budget: 0        # REQUIRED, not optional — Gemini 2.5-flash has reasoning
+                             # ON by default. Validated live (21-Jul): without this, a
+                             # ONE-SENTENCE summary request burned 424 of 443 output
+                             # tokens on hidden reasoning (96% waste) — silently
+                             # inflates cost AND latency on every categorize/enrichment
+                             # call. thinking_budget=0 fixed it (443 -> 20 tokens).
+                             # NOTE: this is the Gemini 2.5 family's parameter name;
+                             # Gemma models use thinking_level instead (see vision:
+                             # block, which tries both — get_llm() here does not,
+                             # since it can't try-then-fall-back at call time; if you
+                             # swap llm.model to a Gemma model, change this key too).
   # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
-  # TESTING (free): Groq — llama-3.3-70b for field extraction is consistent; free
-  # tier caps at ~6000-12000 TPM so it throttles big VOLUME but is fine for samples/validation.
-  # provider: groq
-  # model: llama-3.1-8b-instant       # bulk/cheap tasks (chunk enrichment)
-  # answer_model: llama-3.3-70b-versatile   # answering, query planning
-  # api_key: ${GROQ_API_KEY}
-  # Anthropic Claude: excellent structured-JSON field discipline, cheap. Needs ANTHROPIC_API_KEY.
-  # provider: anthropic
-  # model: claude-haiku-4-5
-  # answer_model: claude-haiku-4-5
-  # api_key: ${ANTHROPIC_API_KEY}
+  # ── Alternatives (swap provider/model above) ──────────────────────────────────
+  # z.ai GLM (FREE, used until 21-Jul, unreliable under batch load): provider: openai
+  #           model: glm-4.7-flash  base_url: https://api.z.ai/api/paas/v4/
+  #           api_key: ${ZAI_API_KEY}  extra_body: { thinking: { type: disabled } }
+  #           (GLM needs thinking disabled or it returns EMPTY content — required if
+  #           you ever switch back, not optional)
+  # OpenAI (PAID):  provider: openai  model: gpt-4o-mini  answer_model: gpt-4o-mini  api_key: ${OPENAI_API_KEY}
+  # DeepSeek (cheap paid, ~$0.87/M out — fallback if the GLM free tier proves too
+  #           rate-limited): provider: openai  model: deepseek-chat
+  #           base_url: https://api.deepseek.com/v1  api_key: ${DEEPSEEK_API_KEY}
+  # Groq (free):    provider: groq    model: llama-3.1-8b-instant  answer_model: llama-3.3-70b-versatile  api_key: ${GROQ_API_KEY}
+  #                 NOTE: Groq free tier caps EACH model at ~100K tokens/day (per-model bucket) — hit this 15-Jul.
+  # Anthropic:      provider: anthropic  model: claude-haiku-4-5  answer_model: claude-haiku-4-5  api_key: ${ANTHROPIC_API_KEY}
 
+# ── Per-step model overrides (MODULAR) ────────────────────────────────────────
+# Any step below may pin its OWN model (and optionally provider/api_key/base_url/
+# temperature); anything unset inherits the global llm block above. Cost/quality knob:
+# run bulk enrichment on a cheap model, answering on a stronger one, etc. Resolution is
+# always: step.model -> (answer_model for plan/answer) -> global llm.model.
+#   categorization.model     categorize/classify document_type + industry
+#   enrichment.model         per-chunk summary + keywords (bulk — biggest cost lever)
+#   query.planner.model      query rewriting/decomposition
+#   query.answerer.model     final grounded answer
+# Handled in code by get_llm_for(config, section) — see backend/core/llm_client.py.
+
+# ── Categorization ────────────────────────────────────────────────────────────
+categorization:
+  # model:                   # optional per-step override; unset => inherits llm.model
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
 vision:
   # ONE vision model for ALL vision tasks (categorize + figure captioning), matching
   # vision_ocr so cropping/grounding/transcription all use the same model.
-  # TESTING: NVIDIA Build API — Qwen2-VL-7B (same Qwen VL family as a self-hosted
-  # GPU target, OpenAI-compatible). Add NVIDIA_API_KEY=<your ngc key> to .env.
-  # Swap back to the self-hosted block below for production.
-  provider: openai
-  model: meta/llama-3.2-11b-vision-instruct
-  base_url: https://integrate.api.nvidia.com/v1
-  api_key: ${NVIDIA_API_KEY}
-  # PRODUCTION: self-hosted Qwen3-VL on your own GPU box (data never leaves your
-  # network — preferred when the corpus is sensitive/client data).
-  # provider: openai
-  # model: qwen3-vl
-  # base_url: http://<your-gpu-host>:8000/v1
-  # api_key: ${VLLM_API_KEY}
-  # FALLBACK — Gemini 2.5 Flash (free tier 15 req/min, 1500/day):
-  # provider: google
-  # model: gemini-2.5-flash
-  # api_key: ${GOOGLE_API_KEY}
+  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash (PAID) — replaces the SAME-DAY Gemma
+  # 4-31b-it detour once we learned Gemma has its OWN restrictive per-model quota (30
+  # RPM / 16K input-tokens-min) that billing does NOT lift — it caused a 429 storm and
+  # a 22.7-MINUTE extract step on a 105-page manual. Gemini 2.5-flash's paid tier gets
+  # 150-300+ RPM (Tier 1, checked live 21-Jul) — a real, much higher ceiling, not an
+  # assumption this time. Also a live head-to-head on the same wiring-diagram image
+  # showed Gemini 2.5-flash's caption was noticeably more specific/accurate than
+  # Gemma's (correctly separated the two amplifier units, named exact connectors) —
+  # it's the flagship model, Gemma is the smaller efficiency-optimized sibling.
+  # Real measured cost for the ONE document that fully ingested on Gemma (Postgres
+  # documents.token_usage, 21-Jul): 259 vision calls, 183,942 tokens, $0.0223 total —
+  # confirms vision cost is negligible regardless of which of these two models is used,
+  # so there's no real tradeoff left once Gemini also wins on quality AND throughput.
+  # Gemini has a reasoning mode too, but it's suppressed natively in _describe_google()
+  # (thinking_level=MINIMAL) — no extra_body needed here, unlike the openai provider.
+  # IMPORTANT FINDING (provider-independent): on the Toyota GL32Mi-63 spec-table page,
+  # GENERAL VLM table transcription (the VLM-escalation path below,
+  # extraction.by_kind.*.table_source) is structurally worse than pymupdf's ruled-line
+  # extraction — confirmed on THREE different vision models (raw TableFormer,
+  # GLM-4.6V-Flash, NVIDIA nemotron-nano-12b-v2-vl). Don't rely on any VLM for table
+  # structure regardless of provider; general figure/photo captioning (this block's
+  # actual job) is a different, lower-precision task.
+  provider: google
+  model: gemini-2.5-flash
+  api_key: ${GOOGLE_API_KEY}
+  # ── Alternatives (swap provider/model above) ──────────────────────────────────
+  # Gemma-4-31b-it (cheaper but 30 RPM/16K-TPM hard quota, not worth it — see above):
+  #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
+  # z.ai GLM (FREE, unreliable under batch load — see llm: block): provider: openai
+  #           model: glm-4.6v-flash  base_url: https://api.z.ai/api/paas/v4/
+  #           api_key: ${ZAI_API_KEY}  extra_body: { thinking: { type: disabled } }
+  # NVIDIA Build API (free credits): provider: openai  model: meta/llama-3.2-11b-vision-instruct
+  #                                  base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # Self-hosted Qwen3-VL (private):  provider: openai  model: qwen3-vl
+  #                                  base_url: http://<your-gpu-host>:8000/v1  api_key: ${VLLM_API_KEY}
   enabled: true
   dpi: 150                  # render resolution for PDF image regions
   min_image_px: 150         # images smaller than this (each side) are skipped
   timeout_s: 120
-  max_retries: 3
-  max_concurrency: 2        # conservative on NVIDIA Build free-tier credits
-  min_interval_s: 1
+  max_retries: 5            # retry/backoff is the safety net for transient 429/5xx
+  max_concurrency: 3        # moderate, not maximal — burned by wrong "unlimited paid
+                             # tier" assumptions twice today (Gemma, and z.ai). Raise
+                             # once real ingestion confirms headroom at this setting.
+  min_interval_s: 0.5       # ~120 RPM ceiling this enforces, comfortably under even
+                             # the lowest documented paid tier (150 RPM) — a deliberate
+                             # safety margin, not the same mistake as min_interval_s: 0.
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
@@ -96,22 +159,34 @@ vision_ocr:
   enabled: true
   mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on
                             # hard pages) | always (VLM-ONLY: skips Paddle/pymupdf entirely)
-  # TESTING: NVIDIA Build API — matches the vision: block above.
-  provider: openai
-  model: meta/llama-3.2-11b-vision-instruct
-  base_url: https://integrate.api.nvidia.com/v1
-  api_key: ${NVIDIA_API_KEY}
-  # PRODUCTION: self-hosted Qwen3-VL — matches the `vision:` block above.
-  # provider: openai
-  # model: qwen3-vl
-  # base_url: http://<your-gpu-host>:8000/v1
-  # api_key: ${VLLM_API_KEY}
-  # FALLBACK — Gemini 2.5 Flash (Google AI Studio, free tier):
-  # provider: google
-  # model: gemini-2.5-flash
-  # api_key: ${GOOGLE_API_KEY}
+                            # Back to always (21-Jul, v2, Gemini 2.5-flash): every
+                            # scanned/mixed page gets proper VLM transcription instead
+                            # of the weaker free Paddle fallback. Was "complex" for a
+                            # few hours today while on Gemma's restrictive 30 RPM
+                            # quota; Gemini's 150-300+ RPM tier removes that constraint
+                            # — this restores the original pre-session behavior.
+  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash — matches the vision: block above
+  # (same rationale: real per-call cost is negligible, much higher rate ceiling than
+  # Gemma, and measurably better caption quality — see there). Shares GOOGLE_API_KEY.
+  provider: google
+  model: gemini-2.5-flash
+  api_key: ${GOOGLE_API_KEY}
+  # ── Alternatives (swap provider/model above) ──────────────────────────────────
+  # Gemma-4-31b-it (cheaper but 30 RPM/16K-TPM hard quota, not worth it):
+  #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
+  # z.ai GLM (FREE, unreliable under batch load): provider: openai  model: glm-4.6v-flash
+  #           base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
+  #           extra_body: { thinking: { type: disabled } }
+  # NVIDIA Build API:      provider: openai  model: meta/llama-3.2-11b-vision-instruct
+  #                        base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # Self-hosted Qwen3-VL:  provider: openai  model: qwen3-vl
+  #                        base_url: http://<your-gpu-host>:8000/v1  api_key: ${VLLM_API_KEY}
   dpi: 150
-  min_interval_s: 0         # no pacing on self-hosted vLLM
+  min_interval_s: 0.5       # MUST match vision.min_interval_s — both blocks call the
+                             # same model through the same pacing.pace("vision", ...)
+                             # key (backend/core/vision_client.py); a mismatch here
+                             # would let these calls skip pacing while still drawing
+                             # from the same shared per-minute quota.
   max_retries: 3
   timeout_s: 120
   # Grounding: one VLM call returns text + tables AND figure bounding boxes, so the
@@ -198,17 +273,26 @@ extraction:
     # Per-page router: VLM-transcribe ONLY pages whose text is missing (scanned) or
     # garbled (broken fonts). Clean digital pages cost 0 tokens.
     page_rescue: true
-    # Budget for VLM page-transcriptions per doc (0 = unlimited). Past the cap, scanned
-    # pages fall back to free local PaddleOCR — bounds cost on huge scanned docs.
-    max_vlm_pages: 0
+    # Budget for VLM page-transcriptions per doc (0 = unlimited — AVOID: on the paid
+    # Gemini key this was a cost cap; on the free z.ai key it's a TIME/RELIABILITY cap
+    # instead — a 1000-page scanned manual would make 1000 sequential rate-limited
+    # calls). Past the cap, scanned pages fall back to free local PaddleOCR, bounding
+    # cost/time on huge scans either way.
+    max_vlm_pages: 60
     device: auto              # auto | cpu | cuda | mps  (cuda on the GPU box)
     num_threads: 4
   # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
   # per-page VLM rescue); the tunable knob is TABLES:
-  #   auto    -> TableFormer for simple tables, VLM only for COMPLEX ones (merged
-  #              cells or multi-line headers). Best of both — free where safe, VLM
-  #              where TableFormer clips (validated on the Mendoza forms). Default.
-  #   docling -> always TableFormer (free). vlm -> always crop+GLM.
+  #   auto    -> TableFormer for simple tables; for COMPLEX ones (merged cells or
+  #              multi-line headers), try pymupdf's ruled-line geometry first (free,
+  #              validated 21-Jul: reproduced a 37-row merged-cell Toyota spec table
+  #              cleanly where TableFormer AND the VLM both garbled row alignment),
+  #              falling back to VLM only if pymupdf finds no ruled table there
+  #              (scanned pages, borderless tables). Best of both, free-first. Default.
+  #   pymupdf -> always try ruled-line geometry (free); TableFormer if no match found.
+  #              Use when a corpus is mostly clean ruled/digital tables and you want
+  #              to skip VLM spend entirely for tables.
+  #   docling -> always TableFormer (free). vlm -> always crop+VLM.
   by_kind:
     digital: { table_source: auto }
     scanned: { table_source: auto }
@@ -235,13 +319,30 @@ extraction:
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 embeddings:
-  # nomic-embed-text-v1.5 chosen over BAAI/bge-large-en-v1.5 for CPU compatibility:
-  # bge-large (1.3GB) causes deadlocks on Windows and is too slow on CPU (~148s/21 chunks).
-  # nomic runs well on CPU (15-100ms), 768-dim, MTEB 62.39, 8192 token context.
-  dense_model: nomic-ai/nomic-embed-text-v1.5
-  dense_dim: 768
+  # BAAI/bge-m3: MULTILINGUAL (100+ langs incl. Japanese) dense embedder — chosen for the
+  # bilingual JP/EN Toyota corpus and its alphanumeric part numbers. Native dense+sparse+
+  # ColBERT, 8192-token context, 1024-dim. Heavier than nomic (~568M, ~2.3GB) so slower on
+  # CPU; uses Apple-Silicon MPS / GPU when available. Reranker upgraded to the matching
+  # multilingual bge-reranker-v2-m3.
+  # PREFIXES: bge-m3 takes NO instruction prefix — keep dense_*_prefix EMPTY. (nomic needs
+  # "search_document: " / "search_query: "; a wrong prefix silently degrades recall.)
+  # Alt (English-only, lighter/faster on CPU): dense_model nomic-ai/nomic-embed-text-v1.5,
+  #   dense_dim 768, dense_document_prefix "search_document: ", dense_query_prefix "search_query: ",
+  #   reranker_model BAAI/bge-reranker-large.
+  dense_model: BAAI/bge-m3
+  dense_dim: 1024
+  dense_document_prefix: ""             # bge-m3: none. nomic: "search_document: "
+  dense_query_prefix: ""                # bge-m3: none. nomic: "search_query: "
+  dense_batch_size: 16                  # caps peak MPS/GPU memory per encode() sub-batch.
+                                         # Validated live (21-Jul): a 640-chunk document hit
+                                         # "MPS backend out of memory" at the default
+                                         # (unbatched) call — docling/YOLO/OCR/chunking
+                                         # models loaded earlier in the same process had
+                                         # already consumed most of Apple's MPS ceiling.
+                                         # Lower (e.g. 8) on a memory-constrained Mac;
+                                         # raise on a real GPU box with headroom.
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
-  reranker_model: BAAI/bge-reranker-large
+  reranker_model: BAAI/bge-reranker-v2-m3   # multilingual reranker matching bge-m3
   # SemanticChunker uses this lightweight model to decide split boundaries only —
   # potion-base-32M (32M params) avoids loading the full dense model twice.
   chunking_model: minishlab/potion-base-32M
@@ -252,16 +353,27 @@ chunking:
   size: 400                 # tokens (not characters)
   overlap: 50               # tokens
   section_aware: true       # break chunks at headings (section-scoped) + tag the
-                            # section; tables/images stay atomic (never split).
+                            # section; images stay atomic (never split).
+  split_large_tables: true  # tables ARE atomic (one chunk) UNLESS bigger than `size`
+                            # tokens rendered — then split by ROW GROUP with the header
+                            # repeated in every sub-chunk (source_ref gets table_part/
+                            # table_parts/table_row_range). Validated 21-Jul on a 37-row
+                            # Toyota spec table: as one chunk, a single-row query ("wheel
+                            # spindle power") retrieves the whole table; row-grouped, it
+                            # retrieves the 3-4 rows that matter. false = old behavior
+                            # (always one chunk per table, however large).
 
 # ── Enrichment ────────────────────────────────────────────────────────────────
 # enrich_chunks stamps tags + (when summarize) an LLM one-line summary + semantic
 # keywords on each chunk. summarize: false -> offline frequency keywords only.
 enrichment:
   summarize: true
+  # model:                   # optional per-step override; unset => inherits llm.model
   keyword_count: 6           # fallback frequency keywords if the LLM is off/fails
-  min_interval_s: 2          # proactive pacing: >=2s between enrichment LLM calls (Groq
-                             # free tier ~30/min). Set 0 on a paid key. Backoff is the net.
+  min_interval_s: 0.3        # back on paid Gemini 2.5-flash (21-Jul, v2) — light pacing
+                             # only, not the 1.5s z.ai needed. Was 0 under the original
+                             # paid setup; keeping a small margin given today's two wrong
+                             # "unlimited paid tier" assumptions already burned time twice.
   batch_size: 5              # chunks summarized per LLM call. Smaller batches => shorter
                              # JSON replies that are far less likely to truncate or
                              # partially fail (fewer keyword fallbacks); the tradeoff is
@@ -288,6 +400,10 @@ query:
 
   planner:
     max_sub_questions: 4        # QueryPlannerTool: cap on decomposed sub-questions
+    # model:                    # override; unset => answer_model, then global llm.model
+
+  answerer:
+    # model:                    # override; unset => answer_model, then global llm.model
 
   hyde:
     enabled: false              # generate hypothetical answer before encoding
@@ -298,21 +414,41 @@ query:
   # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
   retrieval:
     method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
-    top_n: 20                   # candidates fetched from Qdrant before reranking
-    candidate_k: 80             # wider pool for reranking (typically top_n * 4)
+    top_n: 20                   # fused chunks returned by plain hybrid (no reranker)
+    candidate_k: 80             # wide pool the reranker actually scores (hybrid_rerank fuses to this)
     rerank_top_k: 5             # chunks kept after reranking
     dense_weight: 0.6           # RRF weight for dense leg (hybrid methods)
     sparse_weight: 0.4          # RRF weight for sparse/BM25 leg
+    # rerank_min_score:         # OPTIONAL cross-encoder score floor. Unset = disabled (keep
+                                # top rerank_top_k regardless). bge-reranker-v2-m3 scores are
+                                # logits (can be negative); calibrate on real queries before
+                                # enabling — too high returns 0 chunks and the answerer refuses.
 
   agent:
     max_iterations: 5
-    # Needs a provider with NATIVE tool-calling. Groq is free-tier and fast;
-    # swap to gpt-4o-mini for production by pointing provider/model there (the
-    # llm.api_key mechanism is unaffected — this block only overrides
-    # provider/model, and reads its own key via the provider's default env var,
-    # e.g. GROQ_API_KEY).
-    provider: groq
-    model: llama-3.3-70b-versatile
+    # ACTIVE (21-Jul): NVIDIA Build (nemotron-3-super-120b-a12b) — DIFFERENT
+    # OpenAI-compatible endpoint than the global llm: block (z.ai). This is the
+    # lowest-volume, most tool-calling-critical step, so it gets the faster/stronger
+    # model (validated live: 0.77s, correct native tool_calls, NVIDIA's own hybrid
+    # Mamba-Transformer arch — not Llama, unlike the Groq/Llama-3.3 model that broke
+    # the tool loop with malformed XML). Bulk steps (enrichment/categorize) stay on
+    # z.ai, where NVIDIA's CREDIT-BASED free tier (not rate-limited-but-unlimited
+    # like z.ai — it WILL run out, faster on bigger models) would drain fastest.
+    # NOTE: NVIDIA Build's free tier is dev/test/research only per their terms —
+    # not licensed for production traffic (requires NVIDIA AI Enterprise for that).
+    provider: openai
+    model: nvidia/nemotron-3-super-120b-a12b
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key: ${NVIDIA_API_KEY}
+    extra_body: {}   # REQUIRED: clears z.ai's `thinking: disabled` (llm: block above)
+                      # — NVIDIA's endpoint 400s on that unrecognized field (validated
+                      # live, 21-Jul). Different OpenAI-compatible provider = different
+                      # extra_body; don't drop this when changing agent providers again.
+    # ── Alternatives ───────────────────────────────────────────────────────────
+    # Inherit the global llm: block instead (z.ai, same key as everything else):
+    #   provider: openai
+    #   model: glm-4.7-flash
+    # (leave provider/model/base_url/api_key all unset here to fully inherit)
     # Tools in this list are NOT executed on first ask — the executor stops and
     # reports what it wants to run; a human must approve before it re-runs with
     # approved_writes=True. Read-only tools (search_documents, sql_read) run free.
@@ -338,15 +474,24 @@ query:
 # Never use os.getenv() for model names — keep them in config so they're swappable.
 
 # ── Document taxonomy ─────────────────────────────────────────────────────────
+# The categorize prompt's type menu is BUILT FROM this list (single source of truth,
+# see classifier._doctype_menu) — every value here must have a type_to_route entry
+# below, and descriptions live in classifier._DOCTYPE_HINTS. Add a type in BOTH places.
 document_types:
   - invoice
+  - purchase_order
+  - financial_statement
   - report
   - research_paper
-  - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
-  - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
+  - manual            # service/instruction manuals (procedures, parts, troubleshooting)
+  - contract
+  - policy
   - datasheet
   - presentation
   - spreadsheet
+  - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
+  - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
+  - schematic         # technical/flow diagrams (not a full CAD/circuit drawing)
   - image
   - unknown
 
@@ -389,16 +534,22 @@ categorization:
 # cad_drawing and circuit_diagram are separate routes — same steps but different
 # vision prompts and retrieval strategy, both wired in the graph (backend/pipeline/graph.py).
 type_to_route:
-  cad_drawing:     cad_route      # mechanical drawings → CADExtractionTool with mechanical prompt
-  circuit_diagram: circuit_route  # electrical diagrams → CADExtractionTool with electrical prompt
-  datasheet:       diagram_heavy
-  report:          text_default
-  research_paper:  text_default
-  invoice:         text_default
-  presentation:    text_default
-  spreadsheet:     text_default
-  image:           image_route
-  unknown:         text_default
+  cad_drawing:         cad_route      # mechanical drawings → CADExtractionTool, mechanical prompt
+  circuit_diagram:     circuit_route  # electrical diagrams → CADExtractionTool, electrical prompt
+  schematic:           diagram_heavy  # flow/technical diagrams — caption but no CAD extraction
+  datasheet:           diagram_heavy
+  report:              text_default
+  research_paper:      text_default
+  manual:              text_default
+  invoice:             text_default
+  purchase_order:      text_default
+  financial_statement: text_default
+  contract:            text_default
+  policy:              text_default
+  presentation:        text_default
+  spreadsheet:         text_default
+  image:               image_route
+  unknown:             text_default
 
 # "extract" is a placeholder in the steps below. At build time the graph expands
 # it into concrete extractors; at runtime exactly one runs. Values MUST match a

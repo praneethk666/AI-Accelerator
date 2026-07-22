@@ -20,7 +20,7 @@ from typing import Optional
 
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
-from backend.core.models import DENSE_QUERY_PREFIX, get_dense_model, get_reranker
+from backend.core.models import get_dense_query_prefix, get_dense_model, get_reranker
 from backend.core import usage
 from backend.core.llm_client import get_llm, clean_message_content
 from backend.retrieval.vector_store import VectorStore
@@ -52,7 +52,16 @@ class RetrievalTool:
             return state
 
         retrieval_cfg = config["query"]["retrieval"]
-        filters       = {"document_id": doc_scope} if doc_scope else None
+        # HARD filter = explicit document_id scope (a choice the user/agent made — respect it).
+        # SOFT filter = doc_type / industry (a hint the agent inferred). Both are ANDed by the
+        # store, but the soft filter must never HIDE the answer: if it yields zero chunks we
+        # retry the sub-question without it (keeping the hard scope). Empty -> whole corpus.
+        hard_filters: dict = {"document_id": doc_scope} if doc_scope else {}
+        soft_filters: dict = {}
+        if state.get("doc_type"):
+            soft_filters["doc_type"] = state["doc_type"]
+        if state.get("industry"):
+            soft_filters["industry"] = state["industry"]
 
         all_chunks: list[Chunk] = []
         seen_ids:   set[str]   = set()
@@ -63,8 +72,17 @@ class RetrievalTool:
                     query=query,
                     retrieval_cfg=retrieval_cfg,
                     full_config=config,
-                    filters=filters,
+                    filters={**hard_filters, **soft_filters} or None,
                 )
+                if soft_filters and not result["chunks"]:
+                    logger.info(
+                        "RetrievalTool: soft filter %s returned 0 for %r — retrying without it",
+                        soft_filters, query[:50],
+                    )
+                    result = _retrieve_one(
+                        query=query, retrieval_cfg=retrieval_cfg, full_config=config,
+                        filters=(hard_filters or None),
+                    )
                 logger.debug(
                     "RetrievalTool q=%r method=%s n=%d %.1fms",
                     query[:60], result["method"],
@@ -122,29 +140,33 @@ def _retrieve_one(
 
 # ── methods ───────────────────────────────────────────────────────────────────
 
-def _embed_query(embedder, query: str) -> list[float]:
-    # nomic queries MUST carry the query prefix (different from the document
-    # prefix used at index time) — otherwise dense recall silently degrades.
+def _embed_query(embedder, query: str, full_config: dict) -> list[float]:
+    # The query prefix is model-specific and config-driven (empty for bge-m3;
+    # "search_query: " for nomic). It MUST differ from the document prefix used at
+    # index time for instruction-tuned models, or dense recall silently degrades.
+    prefix = get_dense_query_prefix(full_config)
     return embedder.encode(
-        DENSE_QUERY_PREFIX + query, normalize_embeddings=True
+        prefix + query, normalize_embeddings=True
     ).tolist()
 
 
 def _naive(query, cfg, full_config, filters):
     top_k    = cfg["top_n"]
     embedder = get_dense_model(full_config)
-    q_emb    = _embed_query(embedder, query)
+    q_emb    = _embed_query(embedder, query, full_config)
     return VectorStore.search(q_emb, full_config, top_k=top_k, filters=filters)
 
 
-def _hybrid(query, cfg, full_config, filters):
-    top_k         = cfg["top_n"]
+def _hybrid(query, cfg, full_config, filters, fuse_top_k=None):
+    # fuse_top_k lets the reranker path request the FULL candidate pool (candidate_k)
+    # instead of the answer-facing top_n. Default (None) = top_n for direct hybrid use.
+    top_k         = fuse_top_k if fuse_top_k is not None else cfg["top_n"]
     dense_weight  = cfg["dense_weight"]
     sparse_weight = cfg["sparse_weight"]
     candidate_k   = cfg["candidate_k"]
 
     embedder    = get_dense_model(full_config)
-    q_emb       = _embed_query(embedder, query)
+    q_emb       = _embed_query(embedder, query, full_config)
     dense_hits  = VectorStore.search(q_emb, full_config, top_k=candidate_k, filters=filters)
     sparse_hits = KeywordIndex.search(query, full_config, top_k=candidate_k, filters=filters)
 
@@ -156,13 +178,26 @@ def _hybrid(query, cfg, full_config, filters):
 def _hybrid_rerank(query, cfg, full_config, filters):
     candidate_k  = cfg["candidate_k"]
     rerank_top_k = cfg["rerank_top_k"]
-    candidates   = _hybrid(query, cfg, full_config, filters)[:candidate_k]
+    # Fuse the FULL candidate_k pool (not top_n) so the reranker actually sees the
+    # wide pool it was configured for. Previously _hybrid returned top_n=20 and the
+    # [:candidate_k] slice was a no-op, so a right-doc chunk ranked 21-80 by RRF was
+    # dropped BEFORE the cross-encoder could rescore it — the many-docs failure mode.
+    candidates   = _hybrid(query, cfg, full_config, filters, fuse_top_k=candidate_k)
     if not candidates:
         return []
 
     reranker = get_reranker(full_config)
     scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
     ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+
+    # Optional relevance gate: drop candidates below a calibrated cross-encoder score
+    # so an all-wrong-doc result returns nothing (answerer then refuses) instead of
+    # forcing 5 irrelevant chunks in. Unset by default — bge-reranker scores are
+    # logits (can be negative); calibrate on real queries before enabling.
+    min_score = cfg.get("rerank_min_score")
+    if min_score is not None:
+        ranked = [(s, c) for s, c in ranked if s >= min_score]
+
     return [c for _, c in ranked[:rerank_top_k]]
 
 
@@ -176,7 +211,7 @@ def _hyde(query, cfg, full_config, filters):
     usage.record_from_message("hyde", response)
     hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
-    hyp_emb  = _embed_query(embedder, hyp)
+    hyp_emb  = _embed_query(embedder, hyp, full_config)
     return VectorStore.search(hyp_emb, full_config, top_k=top_k, filters=filters)
 
 

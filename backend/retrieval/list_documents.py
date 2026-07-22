@@ -68,8 +68,15 @@ class ListDocumentsTool:
         if industry:
             docs = [d for d in docs
                     if (d.get("industry") or "").strip().lower() == industry.strip().lower()]
-        return {
-            "count": len(docs),
+        # Cap the payload: on a 1000+ doc corpus the full list is re-sent to the LLM on
+        # every agent iteration (token/cost blowup). Return a page; the agent narrows via
+        # the document_type/industry filters or searches directly.
+        total = len(docs)
+        CAP = 50
+        shown = docs[:CAP]
+        result: dict[str, Any] = {
+            "count": total,
+            "returned": len(shown),
             "documents": [
                 {
                     "document_id": d.get("document_id"),
@@ -78,8 +85,14 @@ class ListDocumentsTool:
                     "industry": d.get("industry"),
                     "status": d.get("status"),
                 }
-                for d in docs
+                for d in shown
             ],
         }
+        if total > CAP:
+            result["note"] = (
+                f"Showing the first {CAP} of {total} documents. Narrow with the "
+                f"document_type/industry filters, or just call search_documents."
+            )
+        return result
 
     __call__ = run

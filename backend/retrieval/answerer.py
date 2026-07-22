@@ -33,7 +33,7 @@ import logging
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core import usage
-from backend.core.llm_client import get_llm, clean_message_content
+from backend.core.llm_client import get_llm_for, clean_message_content
 from backend.retrieval.pg_store import PGStore
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,110 @@ _ANSWER_SYSTEM = (
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler."
 )
+
+
+# Markers of a 'the docs don't answer this' reply — used to suppress a misleading
+# full source list on a refusal (the answer drew on nothing).
+_REFUSAL_MARKERS = (
+    "could not find this in the provided",
+    "no relevant passages found",
+    "not in the provided documents",
+    "don't have information",
+)
+
+
+def _looks_like_refusal(answer: str) -> bool:
+    a = (answer or "").lower()
+    return any(m in a for m in _REFUSAL_MARKERS)
+
+
+# Same threshold enrich_chunks uses to decide a chunk is too short for LLM
+# summarization — missing tags.summary is a ready-made "this chunk is thin"
+# signal we don't have to invent (headings, bare labels like "Alarm code:
+# 11H"). token_count is a fallback for the rare case summary is absent for
+# another reason (summarize: false in config).
+_THIN_TOKEN_FLOOR = 20
+
+
+def _is_thin(chunk: dict) -> bool:
+    tags = chunk.get("tags") or {}
+    if not (tags.get("summary") or "").strip():
+        return True
+    return int(chunk.get("token_count") or 0) < _THIN_TOKEN_FLOOR
+
+
+def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
+    """Auto-Merging Retrieval: a chunk too thin to be a useful standalone answer
+    source (see _is_thin) is replaced with its FULL PAGE content from
+    document_blocks — same escape hatch the get_page_context agent tool offers,
+    but applied automatically rather than depending on an LLM to notice a
+    citation looks fragmented and decide to ask for it.
+
+    Validated live, 21-Jul: an agent had get_page_context available and a
+    citation for the fuller page sitting right in front of it, and answered
+    from a shallower source instead — pure LLM judgment about "is this result
+    good enough" isn't reliable enough on its own. This makes the expansion
+    unconditional for thin chunks instead of optional.
+
+    Caps how many DISTINCT pages get fetched (max_pages) to bound DB round
+    trips when many candidate chunks happen to be thin, and dedupes by
+    (document_id, page) since several thin chunks often share one page (e.g.
+    a bare heading AND a bare label both orphaned on the same alarm-code page)."""
+    thin_ids = {c["chunk_id"] for c in chunks if _is_thin(c)}
+    if not thin_ids:
+        return chunks
+
+    from backend.storage.postgres_store import PostgresStore
+
+    cache: dict[tuple, str] = {}
+    store = None
+    try:
+        for chunk in chunks:
+            if chunk["chunk_id"] not in thin_ids or len(cache) >= max_pages:
+                continue
+            ref = chunk.get("source_ref") or {}
+            doc_id, page = chunk.get("document_id"), ref.get("page")
+            if not doc_id or page is None:
+                continue
+            doc_id = str(doc_id)  # psycopg returns uuid.UUID for this column; keep
+                                  # the cache key + get_blocks() param a plain str
+            key = (doc_id, page)
+            if key in cache:
+                continue
+            if store is None:
+                store = PostgresStore()
+            try:
+                blocks = store.get_blocks(doc_id)
+            except Exception:
+                logger.exception("get_blocks failed expanding thin chunk (doc %s, page %s)",
+                                 doc_id, page)
+                continue
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") == page
+            ]
+            parts = [b.get("text") for b in page_blocks if (b.get("text") or "").strip()]
+            if parts:
+                cache[key] = "\n\n".join(parts)
+    finally:
+        if store is not None:
+            store.close()
+
+    if not cache:
+        return chunks
+
+    out = []
+    for chunk in chunks:
+        ref = chunk.get("source_ref") or {}
+        doc_id = chunk.get("document_id")
+        key = (str(doc_id) if doc_id else doc_id, ref.get("page"))
+        if chunk["chunk_id"] in thin_ids and key in cache:
+            c = dict(chunk)
+            c["text"] = cache[key]
+            out.append(c)
+        else:
+            out.append(chunk)
+    return out
 
 
 class AnswererTool:
@@ -85,14 +189,25 @@ class AnswererTool:
             _log(session_id, turn, query, answer_text, config)
             return state
 
+        chunks = _expand_thin_chunks(chunks)
+
         try:
+            # Enforce the configured context budget so a burst of large bge-m3 chunks
+            # (up to max_sub_questions x rerank_top_k) can't blow up cost/context on the
+            # paid model. Approx 4 chars/token; 0/unset => no cap. Chunks arrive best-first.
+            max_ctx_tokens = int((config.get("query") or {}).get("max_context_tokens") or 0)
             context_blocks = []
+            used_tokens = 0
             for i, chunk in enumerate(chunks, start=1):
                 ref   = chunk.get("source_ref") or {}
                 label = _locator(ref)
                 summary = (chunk.get("tags") or {}).get("summary")
                 header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
-                context_blocks.append(f"{header}\n{chunk.get('text') or ''}")
+                block = f"{header}\n{chunk.get('text') or ''}"
+                if max_ctx_tokens and context_blocks and used_tokens + len(block) // 4 > max_ctx_tokens:
+                    break
+                context_blocks.append(block)
+                used_tokens += len(block) // 4
 
             user_msg = (
                 "Context:\n\n"
@@ -100,9 +215,10 @@ class AnswererTool:
                 + f"\n\nQuestion: {query}"
             )
 
-            # answering is reasoning-heavy → use llm.answer_model if set (a stronger
-            # model), falling back to the default llm.model.
-            llm      = get_llm(config, model=config["llm"].get("answer_model"))
+            # answering is reasoning-heavy. Resolution: query.answerer.model ->
+            # llm.answer_model -> global llm.model.
+            llm      = get_llm_for(config, config.get("query", {}).get("answerer"),
+                                   default_model=config["llm"].get("answer_model"))
             response = llm.invoke([
                 {"role": "system", "content": _ANSWER_SYSTEM},
                 {"role": "user",   "content": user_msg},
@@ -118,6 +234,7 @@ class AnswererTool:
                 ref = chunk.get("source_ref") or {}
                 tags = chunk.get("tags") or {}
                 citations.append({
+                    "document_id": chunk.get("document_id"),
                     "filename":   ref.get("filename"),
                     "page":       ref.get("page"),
                     "sheet":      ref.get("sheet"),
@@ -128,6 +245,10 @@ class AnswererTool:
                     "image_path": chunk.get("image_path"),
                     "table_data": chunk.get("table_data"),
                 })
+
+            # Don't attach a source list to a 'not found' answer — it drew on nothing.
+            if _looks_like_refusal(answer_text):
+                citations = []
 
             state["answer"]    = answer_text
             state["citations"] = citations

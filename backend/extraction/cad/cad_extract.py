@@ -150,8 +150,16 @@ class CADExtractionTool:
                 "Expected 'cad_drawing' or 'circuit_diagram'."
             )
         cadcfg = (config.get("extraction") or {}).get("cad") or {}
+        
+        # Shadow/override standard vision configs if custom CAD vision overrides are present
+        run_config = config
+        if "vision" in cadcfg:
+            run_config = config.copy()
+            run_config["vision"] = cadcfg["vision"]
+            run_config["vision_ocr"] = cadcfg["vision"]
+
         cap = int(cadcfg.get("max_pages", 0) or 0)          # 0 = unlimited VLM pages
-        dpi = int((config.get("vision") or {}).get("dpi", 150))
+        dpi = int((run_config.get("vision") or {}).get("dpi", 150))
 
         from backend.extraction.page_router import profile_page, classify_page, should_tile
 
@@ -174,16 +182,16 @@ class CADExtractionTool:
                     break
                 try:
                     page_class = classify_page(profile_page(page), document_type)
-                    if should_tile(page, page_class, config):
+                    if should_tile(page, page_class, run_config):
                         # Oversized sheet: tile so small text/designators stay legible.
                         from backend.extraction.large_format import transcribe_large_page
-                        md = transcribe_large_page(page, config, prompts.SCHEMATIC_TILE)
+                        md = transcribe_large_page(page, run_config, prompts.SCHEMATIC_TILE)
                         from backend.extraction.vision_ocr import markdown_to_blocks
                         page_blocks = markdown_to_blocks(md, document_id, pg, filename)
                     else:
                         # Normal sheet: single-shot region-JSON extraction (precise boxes).
                         raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"),
-                                             prompt, config)
+                                             prompt, run_config)
                         page_blocks = _region_blocks(raw, document_id, pg, filename)
                     if page_blocks:
                         vlm_pages += 1

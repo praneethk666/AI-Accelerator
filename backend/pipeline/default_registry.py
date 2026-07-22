@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _TOOL_SPECS: list[tuple[str, str]] = [
     ("backend.categorize.categorize_tool", "CategorizeTool"),
     ("backend.extraction.docling_pdf.tool", "DoclingPDFTool"),
+    ("backend.extraction.pymupdf_pdf.tool", "PyMuPDFTool"),
     ("backend.extraction.excel.tool", "ExcelExtractorTool"),
     ("backend.extraction.ppt.tool", "PPTExtractorTool"),
     ("backend.extraction.word.tool", "WordExtractorTool"),

@@ -24,6 +24,8 @@ import {
   EllipsisVerticalIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 
 // "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
@@ -61,8 +63,63 @@ const PinIcon = ({ className }) => (
   </svg>
 );
 
+const SidebarToggleIcon = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M9 3v18" />
+  </svg>
+);
+
+const NewChatIcon = ({ className }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+    <line x1="12" y1="9" x2="12" y2="15" />
+    <line x1="9" y1="12" x2="15" y2="12" />
+  </svg>
+);
+
+const Tooltip = ({ children, content }) => {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div
+      className="relative flex items-center"
+      onMouseEnter={() => setVisible(true)}
+      onMouseLeave={() => setVisible(false)}
+      onClick={() => setVisible(false)}
+    >
+      {children}
+      {visible && (
+        <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 bg-slate-950 text-white text-xs px-2.5 py-1.5 rounded-lg whitespace-nowrap z-[9999] shadow-xl border border-slate-800 font-medium pointer-events-none">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [pageViewer, setPageViewer] = useState(null);
+  // pageViewer: null | { pages: [{page, documentId, filename, score}], activeIdx: number }
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState([]);
@@ -91,6 +148,23 @@ const ChatPage = () => {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // Prevent the BROWSER from zooming the entire UI with Ctrl+scroll.
+  // The PDF viewer handles its own internal zoom separately.
+  useEffect(() => {
+    const preventBrowserZoom = (e) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    window.addEventListener('wheel', preventBrowserZoom, { passive: false });
+    return () => window.removeEventListener('wheel', preventBrowserZoom);
+  }, []);
+
+  // Automatically close sidebar when PDF Viewer opens
+  useEffect(() => {
+    if (pageViewer) {
+      setSidebarOpen(false);
+    }
+  }, [pageViewer]);
+
   const fileId = searchParams.get('fileId');
 
   useEffect(() => { loadSessions(); }, []);
@@ -111,10 +185,25 @@ const ChatPage = () => {
   };
 
   const handleNewChat = () => {
-    setSessionId(newSessionId());
+    const newId = newSessionId();
+    setSessionId(newId);
     setMessages([]);
     setAttachedFile(null);
     setError(null);
+    setSessions((prev) => {
+      // Remove any existing empty placeholders to avoid cluttering the sidebar
+      const filtered = prev.filter((s) => !s.isPlaceholder);
+      return [
+        {
+          session_id: newId,
+          title: 'New chat',
+          pinned: false,
+          last_active: new Date().toISOString(),
+          isPlaceholder: true,
+        },
+        ...filtered,
+      ];
+    });
   };
 
   const handleSelectSession = async (id) => {
@@ -133,6 +222,8 @@ const ChatPage = () => {
       setSessionId(id);
       setAttachedFile(null);
       setError(null);
+      // Clean up any empty placeholders
+      setSessions((prev) => prev.filter((s) => !s.isPlaceholder || s.session_id === id));
     } catch (err) {
       console.error('Failed to load session:', err);
       setError('Could not load that conversation');
@@ -228,6 +319,31 @@ const ChatPage = () => {
     originalText,
   });
 
+  // Extract page-level sources from a response and open/close the page viewer.
+  const updatePageViewer = (data) => {
+    const toolCalls = data.tool_calls || [];
+    const allSources = [];
+    for (const call of toolCalls) {
+      if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
+      try {
+        const parsed = JSON.parse(call.result);
+        if (Array.isArray(parsed.sources)) allSources.push(...parsed.sources);
+      } catch { /* skip malformed */ }
+    }
+    const pageSources = allSources
+      .filter(s => s.page != null && s.document_id)
+      // Deduplicate by (document_id, page)
+      .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
+      // Already sorted by score desc from backend, but re-sort just in case
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+    if (pageSources.length > 0) {
+      setPageViewer({ pages: pageSources, activeIdx: 0 });
+    } else {
+      setPageViewer(null);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim() && !attachedFile) return;
 
@@ -235,6 +351,21 @@ const ChatPage = () => {
       ? `${input.trim()}${input.trim() ? '\n\n' : ''}📎 ${attachedFile.filename}`
       : input;
     const sentText = composeSentText(input, attachedFile);
+    const rawInput = input.trim();
+
+    // If we have a placeholder for the current session, update its title immediately
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.session_id === sessionId
+          ? {
+              ...s,
+              title: rawInput ? rawInput.slice(0, 60) : (attachedFile ? attachedFile.filename : 'New chat'),
+              last_active: new Date().toISOString(),
+              isPlaceholder: false,
+            }
+          : s
+      )
+    );
 
     setMessages((prev) => [...prev, { role: 'user', content: displayText }]);
     setInput('');
@@ -246,6 +377,7 @@ const ChatPage = () => {
     try {
       const res = await sendAgentChat(sentText, sessionId, false);
       setMessages((prev) => [...prev, agentMessageFromResponse(res.data, sentText)]);
+      updatePageViewer(res.data);
       loadSessions();
     } catch (err) {
       console.error('Chat error:', err);
@@ -275,6 +407,7 @@ const ChatPage = () => {
       setMessages((prev) =>
         prev.map((m, i) => (i === msgIdx ? agentMessageFromResponse(res.data, msg.originalText) : m))
       );
+      updatePageViewer(res.data);
       loadSessions();
     } catch (err) {
       console.error('Approval error:', err);
@@ -292,13 +425,32 @@ const ChatPage = () => {
   };
 
   return (
-    <div className="flex h-screen bg-slate-900 text-gray-100">
+    <div className="flex h-screen bg-slate-900 text-gray-100 relative">
       {/* Sidebar */}
-      <div className="w-64 flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800">
+      <div
+        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-300 ${
+          sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
+        }`}
+      >
+        {/* Sidebar Header */}
+        <div className="p-3 flex items-center justify-between border-b border-slate-800/60 h-14">
+          <div className="flex items-center gap-2 font-semibold text-white tracking-wide text-sm truncate">
+            <span>AI Accelerator</span>
+          </div>
+          <Tooltip content="Close sidebar">
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-850 rounded-lg transition-all"
+            >
+              <SidebarToggleIcon className="h-4 w-4" />
+            </button>
+          </Tooltip>
+        </div>
+
         <div className="p-3">
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-sm font-medium text-gray-200 transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full border border-slate-800 hover:border-slate-700 bg-slate-900/50 hover:bg-slate-800 text-sm font-medium text-gray-200 transition-all shadow-sm"
           >
             <PlusIcon className="h-4 w-4" />
             New chat
@@ -402,13 +554,41 @@ const ChatPage = () => {
       </div>
 
       {/* Main chat column */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {contextFile && (
-          <div className="border-b border-slate-800 px-4 py-2 text-xs text-gray-500 flex items-center gap-1.5 flex-shrink-0">
-            <DocumentIcon className="h-3.5 w-3.5" />
-            Context: {contextFile.filename}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Top Header Bar */}
+        <div className="h-14 flex items-center px-4 justify-between bg-slate-900/40 backdrop-blur-sm z-30 flex-shrink-0">
+          <div className="flex items-center gap-3">
+            {!sidebarOpen && (
+              <div className="flex items-center gap-0.5 bg-slate-950/80 border border-slate-800/80 rounded-full p-1 shadow-md">
+                <Tooltip content="Open sidebar">
+                  <button
+                    onClick={() => setSidebarOpen(true)}
+                    className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
+                  >
+                    <SidebarToggleIcon className="h-4 w-4" />
+                  </button>
+                </Tooltip>
+                <div className="w-[1px] h-3.5 bg-slate-800 mx-1" />
+                <Tooltip content="New chat">
+                  <button
+                    onClick={handleNewChat}
+                    className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
+                  >
+                    <NewChatIcon className="h-4 w-4" />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+            {contextFile && (
+              <span className="text-xs text-gray-500 flex items-center gap-1.5 ml-2">
+                <DocumentIcon className="h-3.5 w-3.5 text-blue-500/85" />
+                Context: {contextFile.filename}
+              </span>
+            )}
           </div>
-        )}
+          
+          <div className="flex items-center gap-2" />
+        </div>
 
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-3xl mx-auto px-4 py-8">
@@ -424,8 +604,14 @@ const ChatPage = () => {
             )}
 
             {messages.map((msg, idx) => (
-              <MessageRow key={idx} msg={msg} onApprove={() => handleApproval(idx, true)}
-                          onDecline={() => handleApproval(idx, false)} loading={loading} />
+              <MessageRow
+                key={idx}
+                msg={msg}
+                onApprove={() => handleApproval(idx, true)}
+                onDecline={() => handleApproval(idx, false)}
+                loading={loading}
+                onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })}
+              />
             ))}
 
             {loading && (() => {
@@ -514,9 +700,268 @@ const ChatPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Col 3: Page Viewer Panel */}
+      {pageViewer && (
+        <PageViewerPanel
+          viewer={pageViewer}
+          onClose={() => setPageViewer(null)}
+          onPageChange={(idx) => setPageViewer((v) => ({ ...v, activeIdx: idx }))}
+          sidebarOpen={sidebarOpen}
+        />
+      )}
     </div>
   );
 };
+
+// ── PageViewerPanel ───────────────────────────────────────────────────────────
+// Right-side panel that shows the PDF page image for the current page.
+// Supports page navigation, button-based zoom, and trackpad/mouse-wheel zoom.
+const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
+  const { pages, activeIdx } = viewer;
+  const active = pages[activeIdx];
+  
+  const [currentPage, setCurrentPage] = useState(active?.page || 1);
+  const [totalPages, setTotalPages] = useState(null);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
+  const [scale, setScale] = useState(1);
+  const containerRef = useRef(null);
+
+  // When active page changes from parent, sync currentPage and reset scale
+  useEffect(() => {
+    if (active?.page) {
+      setCurrentPage(active.page);
+      setScale(1);
+    }
+  }, [activeIdx, active?.page]);
+
+  // Fetch total page count for active document
+  useEffect(() => {
+    if (!active?.document_id) return;
+    setTotalPages(null);
+    fetch(`http://localhost:8000/files/${active.document_id}/pdf-info`)
+      .then((res) => {
+        if (!res.ok) throw new Error();
+        return res.json();
+      })
+      .then((data) => {
+        setTotalPages(data.total_pages);
+      })
+      .catch((err) => {
+        console.error("Failed to load PDF info:", err);
+      });
+  }, [active?.document_id]);
+
+  // Reset image status when current page changes
+  useEffect(() => {
+    setImgLoaded(false);
+    setImgError(false);
+  }, [currentPage, active?.document_id]);
+
+  // Trap Ctrl + MouseWheel / trackpad pinch zooms on the viewer container
+  // to zoom the document internally and prevent the browser from zooming the dashboard.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const factor = 0.08;
+        setScale((prev) => {
+          const newScale = e.deltaY < 0 ? prev + factor : prev - factor;
+          return Math.max(0.4, Math.min(newScale, 3.5)); // bound scale
+        });
+      }
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
+
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+    setScale(1);
+    // If the new page is in our cited pages, update activeIdx in parent
+    const idx = pages.findIndex((p) => p.page === page);
+    if (idx !== -1) {
+      onPageChange(idx);
+    }
+  };
+
+  const handleToggleZoom = () => {
+    setScale((prev) => (prev > 1.1 ? 1 : 1.8));
+  };
+
+  const imageUrl = active?.document_id
+    ? `http://localhost:8000/files/${active.document_id}/pages/${currentPage}/image`
+    : null;
+
+  const maxScore = Math.max(...pages.map((p) => p.score ?? 0), 0.001);
+  const multiPage = pages.length > 1;
+
+  return (
+    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${
+      sidebarOpen 
+        ? 'w-[40%] min-w-[40%] max-w-[40%]' 
+        : 'w-[50%] min-w-[50%] max-w-[50%]'
+    }`}>
+      {/* Header matching user request */}
+      <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
+        <span className="text-xs font-bold text-gray-200 truncate flex-1" title={active?.filename}>
+          {active?.filename}
+        </span>
+        
+        {/* Navigation */}
+        <div className="flex items-center gap-3 select-none flex-shrink-0">
+          <button
+            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+            disabled={currentPage <= 1}
+            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+            title="Previous Page"
+          >
+            <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
+          </button>
+          
+          <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
+            {currentPage} / {totalPages || '...'}
+          </span>
+          
+          <button
+            onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
+            disabled={currentPage >= (totalPages || 1)}
+            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+            title="Next Page"
+          >
+            <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
+          </button>
+        </div>
+
+        {/* Zoom Controls */}
+        <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
+          <button
+            onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
+            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+            title="Zoom Out"
+          >
+            －
+          </button>
+          
+          <button 
+            onClick={() => setScale(1)}
+            className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
+            title="Reset to 100%"
+          >
+            {Math.round(scale * 100)}%
+          </button>
+
+          <button
+            onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
+            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+            title="Zoom In"
+          >
+            ＋
+          </button>
+
+          <button
+            onClick={() => setScale(1)}
+            className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
+            title="Reset Zoom to 100%"
+          >
+            Reset
+          </button>
+        </div>
+
+        {/* Close Button */}
+        <button
+          onClick={onClose}
+          className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all flex-shrink-0"
+          title="Close viewer"
+        >
+          <XMarkIcon className="h-4 w-4 stroke-[2.5]" />
+        </button>
+      </div>
+
+      {/* Page Badges — cited pages shown below header */}
+      {multiPage && (
+        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5">
+          {pages.map((p, i) => {
+            const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
+            const isActive = p.page === currentPage;
+            return (
+              <button
+                key={i}
+                onClick={() => handlePageChange(p.page)}
+                className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${
+                  isActive
+                    ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                }`}
+                title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
+              >
+                <span>P.{p.page}</span>
+                <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}
+                    style={{ width: `${Math.round(confidence * 100)}%` }}
+                  />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Page Canvas — overflow:auto creates scrollbars when zoomed in */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto bg-slate-950 p-4"
+      >
+        {imageUrl && (
+          <div
+            style={{
+              /* Scale < 1 → shrink & center via auto margin.
+                 Scale > 1 → grow wider than panel → scrollbars appear. */
+              width: scale <= 1
+                ? `${Math.round(scale * 100)}%`
+                : `${Math.round(scale * 100)}%`,
+              marginLeft: scale <= 1 ? 'auto' : '0',
+              marginRight: scale <= 1 ? 'auto' : '0',
+              transition: 'width 150ms ease-out',
+              position: 'relative',
+            }}
+          >
+            {!imgLoaded && !imgError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
+                <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+                <span>Rendering Page {currentPage}...</span>
+              </div>
+            )}
+            {imgError && (
+              <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
+                <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
+                <span>Page image not available.</span>
+              </div>
+            )}
+            <img
+              src={imageUrl}
+              alt={`Page ${currentPage}`}
+              onLoad={() => setImgLoaded(true)}
+              onError={() => { setImgError(true); setImgLoaded(true); }}
+              className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${
+                imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+              }`}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 
 // Best-effort: search_documents' tool result is a JSON string of
 // {answer, citations, sources}. Pull sources out for a citation strip; anything
@@ -535,11 +980,18 @@ const parseSources = (toolCalls) => {
   return sources;
 };
 
-const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
+const MessageRow = ({ msg, onApprove, onDecline, loading, onViewPages }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls) : [];
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
+
+  // Page sources for the "View Source Pages" button — filtered + sorted by score
+  const pageSources = sources
+    .filter(s => s.page != null && s.document_id)
+    .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const hasPageSources = pageSources.length > 0;
 
   return (
     <div className={`py-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -728,6 +1180,19 @@ const MessageRow = ({ msg, onApprove, onDecline, loading }) => {
               )}
               {msg.status === 'declined' && (
                 <p className="mt-2 text-xs text-gray-500 italic">Declined — not run.</p>
+              )}
+
+              {/* View Source Pages button — always visible when page sources exist */}
+              {hasPageSources && (
+                <div className="mt-3 pt-2.5 border-t border-slate-800/60">
+                  <button
+                    onClick={() => onViewPages(pageSources)}
+                    className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40 rounded-lg px-3 py-1.5 transition-all font-medium"
+                  >
+                    <DocumentIcon className="h-3.5 w-3.5" />
+                    View Source {pageSources.length > 1 ? `Pages (${pageSources.length})` : 'Page'}
+                  </button>
+                </div>
               )}
             </div>
           </div>

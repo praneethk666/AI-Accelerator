@@ -36,18 +36,20 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are a document intelligence assistant. Your job is to answer questions "
-    "by searching the ingested document corpus — not from your own knowledge.\n\n"
+    "by searching the ingested document corpus — NOT from your own knowledge.\n\n"
 
-    "## DEFAULT BEHAVIOR — ALWAYS SEARCH FIRST\n"
-    "For EVERY question, definition, factual query, or topic request, call "
-    "search_documents FIRST. Never answer from memory. The documents are the "
-    "source of truth. If the document has an answer, report it with citations. "
-    "If the document does not cover it, say so clearly and briefly.\n\n"
+    "## ABSOLUTE MANDATE — ALWAYS CALL search_documents FIRST\n"
+    "You are strictly prohibited from answering any question using internal memory or pre-training knowledge.\n"
+    "For EVERY question, numbered item, factual query, or section lookup, you MUST call "
+    "search_documents FIRST before returning any text answer. Never output an answer without calling search_documents.\n"
+    "If the document context contains the answer, report it with exact inline citations.\n"
+    "If the document context does not contain the answer, state plainly: "
+    "'I could not find this in the provided documents.'\n\n"
 
     "## TOOLS\n"
     "- search_documents(query, document_scope?): Search ingested docs. Pass the "
     "user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
-    "when the user clearly refers to specific documents (e.g. 'major-08.pptx') — otherwise omit it.\n"
+    "when the user clearly refers to specific documents (e.g. 'Digital_4pages.pdf') — otherwise omit it.\n"
     "- list_documents(): List all ingested documents (id, filename, type, status). "
     "Call this when the user asks what documents exist, or when they mention a "
     "filename you need to look up.\n"
@@ -59,29 +61,17 @@ SYSTEM_PROMPT = (
     "Skip search_documents ONLY for:\n"
     "1. Pure greetings/sign-off (hello, thanks, bye) — reply naturally in plain text.\n"
     "2. Requests to list documents — call list_documents instead.\n"
-    "3. Requests to ingest a new file (with a path or attachment) — call ingest_document instead.\n\n"
+    "3. Requests to ingest a new file — call ingest_document instead.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
-    "(e.g., 'major-08.pptx'), you MUST restrict your search strictly to that document "
-    "by passing its filename or UUID in the `document_scope` parameter of `search_documents`. "
-    "Never search the entire corpus when a specific file is targeted.\n\n"
-
-    "## AFTER AN INGEST\n"
-    "When the user attaches a file: ingest it first. Then if they ask a question "
-    "about it, search restricted ONLY to that document's id or filename.\n\n"
-
-    "## DISAMBIGUATION\n"
-    "If multiple documents match and the user hasn't specified which one, list the "
-    "candidates by filename and ask the user to pick — do not guess.\n\n"
+    "(e.g., 'Digital_4pages.pdf'), you MUST restrict your search strictly to that document "
+    "by passing its filename or UUID in the `document_scope` parameter of `search_documents`.\n\n"
 
     "## STYLE\n"
     "- Be direct and concise. Do not narrate your reasoning or tool usage.\n"
-    "- Never say 'I don't have access to files' or 'please provide a file path' "
-    "— documents are already ingested and searchable.\n"
-    "- Never call the same tool twice with different guesses. One call, one answer.\n"
-    "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature.\n"
-    "- Never call ingest_document just because a filename is mentioned; only call it if the user explicitly attaches a new file or provides a local file path."
+    "- Never invent or hallucinate laptop prices, generic section names, or dialog boxes not in context.\n"
+    "- Never output raw function calls or XML/markdown tags in text content."
 )
 
 class AgentState(TypedDict):
@@ -172,12 +162,30 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
     raise last_exc
 
 
-def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: set[str],
-                  max_iterations: int):
+_GREETINGS = {"hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye", "good morning", "good evening"}
+
+
+def _is_greeting(text: str) -> bool:
+    clean = text.strip().lower().rstrip("!.,")
+    return clean in _GREETINGS
+
+
+def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
+                  max_iterations: int, is_question: bool):
+    llm_auto = llm.bind_tools(tool_schemas)
+    try:
+        llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
+    except Exception:
+        llm_required = llm_auto
+
     def agent_node(state: AgentState) -> dict:
-        response = _invoke_with_retry(llm_with_tools, state["messages"])
+        iters = state.get("iterations", 0)
+        # On iteration 0 for non-greetings, FORCE the model to call a tool (tool_choice="required").
+        # On iteration 1+ (after a tool has returned its data), allow auto choice to synthesize text.
+        active_llm = llm_required if (iters == 0 and is_question) else llm_auto
+        response = _invoke_with_retry(active_llm, state["messages"])
         usage.record_from_message("agent", response)
-        return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
+        return {"messages": [response], "iterations": iters + 1}
 
     def tools_node(state: AgentState) -> dict:
         last = state["messages"][-1]
@@ -296,13 +304,12 @@ def run_agent(
         llm = get_llm({**config, "llm": llm_cfg})
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
-    llm_with_tools = llm.bind_tools(tool_schemas)
-
+    is_question = not _is_greeting(message)
     messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
     messages += conversation_history or []
     messages.append(HumanMessage(message))
 
-    graph = _build_graph(llm_with_tools, registry, write_tools, max_iterations)
+    graph = _build_graph(llm, tool_schemas, registry, write_tools, max_iterations, is_question)
 
     # ONE root span + ONE token-usage sink for the whole turn — every LLM call
     # and tool dispatch below (however deep, e.g. search_documents' internal

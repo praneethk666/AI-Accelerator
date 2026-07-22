@@ -39,19 +39,14 @@ from backend.retrieval.pg_store import PGStore
 logger = logging.getLogger(__name__)
 
 _ANSWER_SYSTEM = (
-    "You are a precise document-intelligence assistant for technical and enterprise "
-    "documents (service manuals, datasheets, reports).\n"
-    "Rules:\n"
-    "- Answer using ONLY the provided context passages. Never use outside knowledge "
-    "or guess.\n"
-    "- Cite every fact inline as [filename, p.N], using the passage you drew it from; "
-    "if several support it, cite the most specific.\n"
-    "- Copy exact values VERBATIM — part numbers, model names, measurements, torque "
-    "specs, fault codes. Never paraphrase or round a number.\n"
-    "- If a relevant table or figure caption is in the context, use it and cite it.\n"
-    "- If the context only partially answers, answer what it supports and state plainly "
-    "what is missing.\n"
-    "- If the answer is not in the context, reply EXACTLY: "
+    "You are a strict, ultra-precise document-intelligence QA assistant.\n"
+    "CRITICAL ANTI-HALLUCINATION RULES:\n"
+    "- Answer using ONLY the explicit facts written in the provided context passages. Never use outside knowledge or training memory.\n"
+    "- Copy exact values and numbers VERBATIM from the text — if the text says 'eight separate records', state '8 separate records'. Never hallucinate numbers, prices, or product names.\n"
+    "- NEVER invent terms like 'Laptop Computer', '$2,499.00', 'Cover Page', 'Table of Contents', 'Detail Pages', or 'Run Command Line' unless those EXACT words appear in the context passages.\n"
+    "- Cite every fact inline as [filename, p.N] using the exact passage source.\n"
+    "- Include all specific technical identifiers, codes, values, part numbers, and step-by-step details present in the context passages rather than vague high-level summaries.\n"
+    "- If the context does not contain the exact answer, reply EXACTLY:\n"
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler."
 )
@@ -118,15 +113,17 @@ class AnswererTool:
                 ref = chunk.get("source_ref") or {}
                 tags = chunk.get("tags") or {}
                 citations.append({
-                    "filename":   ref.get("filename"),
-                    "page":       ref.get("page"),
-                    "sheet":      ref.get("sheet"),
-                    "slide":      ref.get("slide"),
-                    "snippet":    (chunk.get("text") or "")[:200],
-                    "summary":    tags.get("summary"),
-                    "keywords":   tags.get("keywords"),
-                    "image_path": chunk.get("image_path"),
-                    "table_data": chunk.get("table_data"),
+                    "filename":    ref.get("filename"),
+                    "page":        ref.get("page"),
+                    "document_id": chunk.get("document_id"),
+                    "score":       chunk.get("_score"),
+                    "sheet":       ref.get("sheet"),
+                    "slide":       ref.get("slide"),
+                    "snippet":     (chunk.get("text") or "")[:200],
+                    "summary":     tags.get("summary"),
+                    "keywords":    tags.get("keywords"),
+                    "image_path":  chunk.get("image_path"),
+                    "table_data":  chunk.get("table_data"),
                 })
 
             state["answer"]    = answer_text

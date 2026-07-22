@@ -171,6 +171,7 @@ class SettingsSave(BaseModel):
 # else stays as-is in the YAML.
 _SETTINGS_MAP = {
     "default_industry": ["default_industry"],
+    "pdf_extractor_digital": ["pdf_extractors", "digital"],
     "ocr_engine": ["ocr", "engine"],
     "llm_provider": ["llm", "provider"],
     "llm_model": ["llm", "model"],
@@ -203,6 +204,7 @@ def _settings_view(cfg: dict) -> dict:
     # dropdown / option lists
     view["_industries"] = cfg.get("industries", [])
     view["_available_tools"] = sorted(_registry.names())
+    view["_digital_pdf_options"] = ["pymupdf_pdf", "docling_pdf"]
     view["_active"] = os.path.basename(CONFIG_PATH)
     return view
 
@@ -436,6 +438,107 @@ def file_page(file_id: str, page: int):
     if not rec:
         raise HTTPException(404, "page image not found")
     return rec
+
+
+@app.get("/files/{file_id}/pdf")
+def file_pdf(file_id: str):
+    """Stream the original PDF file for this document so the frontend can
+    embed it in an <iframe> with a #page=N fragment for visual grounding.
+    Only serves PDF documents; returns 404 for other file types."""
+    from fastapi.responses import FileResponse
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    if doc.get("file_type") != "pdf":
+        raise HTTPException(400, "document is not a PDF")
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        # Fall back: scan uploads dir for {file_id}_*.pdf
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
+        if not matches:
+            raise HTTPException(404, "PDF file not found on disk")
+        file_path = matches[0]
+    filename = doc.get("filename") or os.path.basename(file_path)
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@app.get("/files/{file_id}/pages/{page}/image")
+def file_page_image_ondemand(file_id: str, page: int):
+    """Render a specific page of a PDF to JPEG on the fly and return it."""
+    import fitz
+    from fastapi.responses import Response
+
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+
+    if not doc:
+        raise HTTPException(404, "document not found")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
+        if not matches:
+            raise HTTPException(404, "PDF file not found on disk")
+        file_path = matches[0]
+
+    try:
+        pdf = fitz.open(file_path)
+        total_pages = len(pdf)
+        if page < 1 or page > total_pages:
+            raise HTTPException(400, f"invalid page number: {page}. PDF has {total_pages} pages.")
+
+        # Render page to JPEG with 150 DPI for high quality
+        pix = pdf[page - 1].get_pixmap(dpi=150)
+        image_bytes = pix.tobytes("jpeg", jpg_quality=85)
+        pdf.close()
+
+        return Response(content=image_bytes, media_type="image/jpeg")
+    except Exception as exc:
+        logger.exception("Failed to render page %d on-demand for %s", page, file_id)
+        raise HTTPException(500, f"failed to render page: {exc}")
+
+
+@app.get("/files/{file_id}/pdf-info")
+def file_pdf_info(file_id: str):
+    """Get metadata about the PDF (like total number of pages) using PyMuPDF."""
+    import fitz
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
+        if not matches:
+            raise HTTPException(404, "PDF file not found on disk")
+        file_path = matches[0]
+
+    try:
+        pdf = fitz.open(file_path)
+        total_pages = len(pdf)
+        pdf.close()
+        return {"total_pages": total_pages, "filename": doc.get("filename")}
+    except Exception as exc:
+        raise HTTPException(500, f"failed to read PDF: {exc}")
 
 
 @app.delete("/files/{file_id}")

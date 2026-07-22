@@ -163,7 +163,13 @@ def _hybrid_rerank(query, cfg, full_config, filters):
     reranker = get_reranker(full_config)
     scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
     ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
-    return [c for _, c in ranked[:rerank_top_k]]
+    # Stamp the reranker score so it overrides the RRF _score from _hybrid.
+    result = []
+    for score, chunk in ranked[:rerank_top_k]:
+        c = dict(chunk)
+        c["_score"] = float(score)
+        result.append(c)
+    return result
 
 
 def _hyde(query, cfg, full_config, filters):
@@ -194,4 +200,10 @@ def _rrf_fuse(dense_hits, sparse_hits, w_dense, w_sparse, top_k, k):
         scores[cid]    = scores.get(cid, 0.0) + w_sparse * (1.0 / (k + rank))
         chunk_map[cid] = chunk
     ranked = sorted(scores, key=lambda cid: scores[cid], reverse=True)
-    return [chunk_map[cid] for cid in ranked[:top_k]]
+    # Stamp the RRF fusion score onto each chunk as _score.
+    result = []
+    for cid in ranked[:top_k]:
+        c = dict(chunk_map[cid])
+        c["_score"] = scores[cid]
+        result.append(c)
+    return result

@@ -288,6 +288,9 @@ const SettingsPage = () => {
                 <Field label="Default industry" hint="Used when auto-detection is unsure; also picks the industry vision prompt.">
                   <Select value={s.default_industry} onChange={(v) => set('default_industry', v)} options={industries} />
                 </Field>
+                <Field label="Digital PDF Extractor Engine" hint="pymupdf_pdf = Fast PyMuPDF Native + Bbox Table Exclusion + Row Alarm Chunker. docling_pdf = IBM Docling + TableFormer.">
+                  <Select value={s.pdf_extractor_digital} onChange={(v) => set('pdf_extractor_digital', v)} options={s._digital_pdf_options || ['pymupdf_pdf', 'docling_pdf']} />
+                </Field>
                 <Field label="Scanned OCR engine" hint="surya = best quality (slower). paddle = fast (big scanned docs on CPU).">
                   <Select value={s.ocr_engine} onChange={(v) => set('ocr_engine', v)} options={['surya', 'paddle']} />
                 </Field>

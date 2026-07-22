@@ -35,6 +35,7 @@ from backend.core.schemas import Chunk
 from backend.core import usage
 from backend.core.llm_client import get_llm, clean_message_content
 from backend.retrieval.pg_store import PGStore
+from backend.core.tracing import record_handled_error
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,7 @@ class AnswererTool:
             state["errors"]    = errors
             state["answer"]    = "An error occurred while generating the answer."
             state["citations"] = []
+            record_handled_error("answerer_failure", str(exc), **{"query": query[:100]})
 
         return state
 

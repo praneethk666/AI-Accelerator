@@ -30,7 +30,7 @@ from langgraph.graph.message import add_messages
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
 from backend.core.llm_client import get_llm, clean_message_content
-from backend.core.tracing import traced_request, traced_tool
+from backend.core.tracing import traced_request, traced_tool, record_handled_error
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
             tool = registry.get(name)
             # Each tool dispatch gets its own child span under the request's root
             # trace (see traced_request in run_agent below) — this is what lets a
-            # single Langfuse trace show every tool the agent called for this
+            # single Grafana trace show every tool the agent called for this
             # request, not just isolated per-call traces.
             with traced_tool(f"tool:{name}", input=args) as span:
                 if tool is None:
@@ -217,6 +217,9 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                     except Exception as exc:  # a bad tool call must not kill the loop
                         logger.warning("agent tool %s failed: %s", name, exc)
                         result = {"error": str(exc)}
+                        record_handled_error(
+                            "tool_failure", str(exc), **{"tool.name": name}
+                        )
                 span["output"] = result
             tool_messages.append(ToolMessage(
                 content=json.dumps(result, default=str), tool_call_id=call_id,
@@ -280,11 +283,11 @@ def run_agent(
 
     The whole turn (agent tool-picking LLM calls, every dispatched tool, and any
     LLM calls those tools make internally — e.g. search_documents' query_planner /
-    retrieval / answerer) runs inside ONE Langfuse root span (`traced_request`,
-    no-op unless LANGFUSE_* env vars are set) and ONE token-usage sink, so a
-    single request shows up as a single trace_id in Langfuse with every tool as a
-    child span, and "tokens used" in the API response covers the whole turn, not
-    just the agent's own tool-picking calls.
+    retrieval / answerer) runs inside ONE OpenTelemetry root span (`traced_request`,
+    no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set) and ONE token-usage sink, so a
+    single request shows up as a single trace_id in Grafana Tempo with every tool
+    as a child span, and "tokens used" in the API response covers the whole turn,
+    not just the agent's own tool-picking calls
     """
     registry = registry if registry is not None else build_agent_registry()
     agent_cfg = (config.get("query") or {}).get("agent") or {}

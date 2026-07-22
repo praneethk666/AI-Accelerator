@@ -1,129 +1,165 @@
-"""Shared Langfuse tracing helpers for grouping a whole request under ONE trace.
+"""backend/core/tracing.py — OpenTelemetry tracing, exported to Grafana Cloud Tempo.
 
-Problem this solves: backend/core/llm_client.py attaches a fresh
-`langfuse.langchain.CallbackHandler()` to every LLM call. Langfuse v4 is
-OTEL-based — when a CallbackHandler starts a run and there is NO currently
-active OTEL span, it opens a brand new root trace for that single call. That's
-why, before this module existed, every LLM call (agent tool-picking, the
-search_documents answerer, query_planner, retrieval's hyp expansion, ...) in
-one user turn showed up as its own disconnected trace in Langfuse Cloud —
-there was no way to see "everything that happened for this one request".
+Public API is unchanged from the Langfuse version so callers don't need to
+change their call sites:
 
-The fix doesn't touch llm_client.py or vision_client.py at all. Per the
-CallbackHandler's own root-context logic, if a span is already active in the
-current OTEL context, the handler attaches its generation to THAT span instead
-of starting a new trace. So we just need to open one root span per request
-(`traced_request`, e.g. wrapping run_agent()'s whole tool-calling loop) and
-every nested LLM call and tool invocation that happens inside that `with`
-block — however deep the call stack — automatically nests under it as long as
-it runs in the same thread/async task (contextvars propagate down the call
-stack; that's the same mechanism backend/core/usage.py's token sink relies on).
+    with traced_request(name, input=..., metadata=...) as trace_info:
+        trace_info["trace_id"]          # str, always available
 
-`traced_tool` wraps each individual tool dispatch (tools_node's tool.run(...))
-in its own child span, so tools that don't call an LLM themselves (list_documents,
-sql_read) still show up as a distinct step in the trace, not just a gap.
+    with traced_tool(name, input=...) as span:
+        span["output"] = result          # optional, becomes a span attribute
 
-Both are no-ops (yield None) when LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY aren't
-set — same on/off switch already used by llm_client._langfuse_callbacks() and
-vision_client._langfuse_enabled(), so tracing stays fully optional.
+New: record_handled_error(...) — call this at any point where an exception
+is caught and appended to state["errors"] instead of raised, so it still
+shows up in Grafana even though the pipeline swallows it and continues.
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
-from contextlib import contextmanager
-from typing import Any
+from typing import Any, Iterator
+
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.trace import Status, StatusCode
 
 logger = logging.getLogger(__name__)
 
-
-def langfuse_enabled() -> bool:
-    """Only "on" when both keys are set — see vision_client._langfuse_enabled()
-    for why we gate this (unconfigured langfuse v4 otherwise starts an OTEL
-    exporter against localhost:3001 and retries forever)."""
-    return bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
+_INITIALIZED = False
 
 
-def _client():
-    if not langfuse_enabled():
-        return None
+def _init_tracer_provider() -> None:
+    global _INITIALIZED
+    if _INITIALIZED:
+        return
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        # No Grafana Cloud config present -> tracing is a no-op, mirroring the
+        # old "no-op unless LANGFUSE_* env vars are set" behavior.
+        _INITIALIZED = True
+        return
+
+    resource = Resource.create({
+        "service.name": os.getenv("OTEL_SERVICE_NAME", "ai-accelerator"),
+        "service.namespace": os.getenv("OTEL_SERVICE_NAMESPACE", "backend"),
+    })
+    provider = TracerProvider(resource=resource)
+    exporter = OTLPSpanExporter()  # reads endpoint/headers from OTEL_EXPORTER_OTLP_* env vars
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    # Auto-instrument every LangChain model call (agent tool-picking, answerer,
+    # query_planner, retrieval's hyp expansion, ...) so each becomes its own
+    # child span of whatever span is currently active — this is the OTel
+    # replacement for llm_client.py's old per-call Langfuse CallbackHandler.
+    # Optional dependency: pip install opentelemetry-instrumentation-langchain.
+    # Guarded the same way the old _langfuse_callbacks() guarded its import, so
+    # its absence never breaks a call, just skips the per-LLM-call span level.
     try:
-        from langfuse import get_client
-        return get_client()
+        from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+        LangchainInstrumentor().instrument()
     except Exception:
-        logger.debug("langfuse client unavailable", exc_info=True)
-        return None
+        logger.debug("opentelemetry-instrumentation-langchain not installed; "
+                      "LLM calls will still be captured under their parent "
+                      "tool/step span, just without their own dedicated span.")
+
+    _INITIALIZED = True
 
 
-@contextmanager
-def traced_request(name: str, *, input: Any = None, metadata: dict | None = None):
-    """Open ONE root span for an entire request (e.g. one /agent/chat turn).
+def _tracer():
+    _init_tracer_provider()
+    return trace.get_tracer("ai-accelerator")
 
-    Everything invoked inside this `with` block — the agent's own tool-picking
-    LLM calls, each dispatched tool (wrap those with `traced_tool` too), and any
-    LLM calls those tools make internally (search_documents' query_planner /
-    retrieval / answerer) — nests under this one trace, so Langfuse Cloud shows
-    a single trace_id per request with every tool call as a child span.
 
-    Yields a dict the caller can mutate: {"trace_id": str|None}. Stays None when
-    Langfuse isn't configured — callers should treat that as "tracing is off" and
-    simply not surface trace info, not as an error.
-    """
-    info: dict[str, Any] = {"trace_id": None}
-    client = _client()
-    if client is None:
-        yield info
-        return
-
+def _summarize(value: Any, limit: int = 2000) -> str:
     try:
-        cm = client.start_as_current_observation(
-            name=name, as_type="agent", input=input, metadata=metadata,
-        )
-        cm.__enter__()
+        s = value if isinstance(value, str) else json.dumps(value, default=str)
     except Exception:
-        logger.debug("failed to open langfuse root span %r", name, exc_info=True)
-        yield info
-        return
+        s = str(value)
+    return s if len(s) <= limit else s[: limit - 3] + "..."
 
-    try:
-        info["trace_id"] = client.get_current_trace_id()
-        yield info
-    finally:
+
+class _SpanHandle(dict):
+    """Dict-like wrapper so call sites can do span['output'] = result, matching
+    the old Langfuse span object's interface."""
+
+    def __init__(self, otel_span):
+        super().__init__()
+        self._otel_span = otel_span
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "output":
+            self._otel_span.set_attribute("tool.output_summary", _summarize(value))
+        elif key == "error":
+            self._otel_span.set_attribute("error.message", _summarize(value))
+
+
+@contextlib.contextmanager
+def traced_request(
+    name: str,
+    *,
+    input: Any = None,
+    metadata: dict | None = None,
+) -> Iterator[dict]:
+    """Root span for one full request/turn (agent chat, ingest, query)."""
+    tracer = _tracer()
+    metadata = metadata or {}
+    with tracer.start_as_current_span(name) as span:
+        span.set_attribute("input_summary", _summarize(input))
+        for k, v in metadata.items():
+            span.set_attribute(f"metadata.{k}", _summarize(v, 200))
+
+        ctx = span.get_span_context()
+        trace_id_hex = format(ctx.trace_id, "032x") if ctx and ctx.trace_id else None
+        trace_info = {"trace_id": trace_id_hex}
+
         try:
-            cm.__exit__(None, None, None)
-        except Exception:
-            logger.debug("failed to close langfuse root span %r", name, exc_info=True)
+            yield trace_info
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
 
 
-@contextmanager
-def traced_tool(name: str, *, input: Any = None):
-    """Child span for ONE tool dispatch, nested under the active `traced_request`
-    (no-op, standalone span, if there isn't one — still fine, just unparented).
-    Mutate the yielded box's "output" key before the block ends to record the
-    tool's result on the span."""
-    box: dict[str, Any] = {"output": None}
-    client = _client()
-    if client is None:
-        yield box
-        return
+@contextlib.contextmanager
+def traced_tool(name: str, *, input: Any = None) -> Iterator[_SpanHandle]:
+    """Child span for one tool/step/LLM-call dispatch."""
+    tracer = _tracer()
+    with tracer.start_as_current_span(name) as otel_span:
+        tool_name = name.split(":", 1)[-1] if ":" in name else name
+        otel_span.set_attribute("tool.name", tool_name)
+        otel_span.set_attribute("tool.input_summary", _summarize(input))
 
-    try:
-        cm = client.start_as_current_observation(name=name, as_type="tool", input=input)
-        span = cm.__enter__()
-    except Exception:
-        logger.debug("failed to open langfuse tool span %r", name, exc_info=True)
-        yield box
-        return
-
-    try:
-        yield box
-    finally:
+        handle = _SpanHandle(otel_span)
         try:
-            if span is not None:
-                span.update(output=box["output"])
-        except Exception:
-            logger.debug("failed to record output on tool span %r", name, exc_info=True)
-        try:
-            cm.__exit__(None, None, None)
-        except Exception:
-            logger.debug("failed to close langfuse tool span %r", name, exc_info=True)
+            yield handle
+        except Exception as exc:
+            otel_span.record_exception(exc)
+            otel_span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
+        else:
+            if "error" in handle:
+                otel_span.set_status(Status(StatusCode.ERROR, str(handle["error"])))
+
+
+def record_handled_error(error_type: str, message: str, **attrs: Any) -> None:
+    """Call at the point a caught exception is appended to state['errors']
+    instead of raised (graph.py steps, answerer.py, classifier.py). Marks the
+    CURRENT active span as errored so handled failures are visible in Grafana
+    even though the pipeline continues past them."""
+    span = trace.get_current_span()
+    if span is None or not span.is_recording():
+        logger.warning("record_handled_error with no active span: %s: %s", error_type, message)
+        return
+    span.set_attribute("error.type", error_type)
+    span.set_attribute("error.message", _summarize(message, 500))
+    for k, v in attrs.items():
+        span.set_attribute(k, _summarize(v, 200))
+    span.add_event("handled_error", {"error.type": error_type, "error.message": _summarize(message, 500)})
+    span.set_status(Status(StatusCode.ERROR, message))

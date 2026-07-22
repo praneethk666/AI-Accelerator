@@ -3,7 +3,9 @@
 #
 # Optional add-ons live in their own files (bring up only what you need):
 #   docker-compose.devtools.yml       — Adminer (Postgres browser)
-#   docker-compose.observability.yml  — Langfuse (LLM tracing) + Grafana (metrics)
+#   (Tracing now goes straight to Grafana Cloud over OTLP — see .env's
+#   OTEL_EXPORTER_OTLP_* vars and backend/core/tracing.py. No local
+#   observability container needed.)
 # Combine with -f, e.g.:
 #   docker compose -f docker-compose.yml -f docker-compose.devtools.yml up -d
 services:

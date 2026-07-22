@@ -18,7 +18,7 @@ import logging
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState
-from backend.core.tracing import traced_request
+from backend.core.tracing import traced_request, record_handled_error
 from backend.pipeline.graph import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def run_query(
     # any other way (a script, a future non-agentic endpoint) it opens its own
     # root trace instead, so query_planner/retrieval/answerer's per-step spans
     # (from graph.py's _make_node, shared with the ingest pipeline) are never
-    # left unparented. No-op unless LANGFUSE_* env vars are set.
+    # left unparented. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
     with traced_request(
         "run_query", input=query,
         metadata={"session_id": session_id, "document_scope": document_scope},
@@ -89,4 +89,5 @@ def _load_history(session_id: str, config: dict) -> list:
         return get_conversation_store().load_history(session_id)
     except Exception as exc:  # store down / not configured — degrade to no history
         logger.debug("conversation history unavailable: %s", exc)
+        record_handled_error("history_load_failure", str(exc), **{"session_id": session_id})
         return []

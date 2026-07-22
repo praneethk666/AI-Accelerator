@@ -47,7 +47,11 @@ class VectorStore:
 
 
 def _hydrate(hits: list[dict]) -> list[dict]:
-    """Fetch chunk text/tags from Postgres for the hit chunk_ids, in hit order."""
+    """Fetch chunk text/tags from Postgres for the hit chunk_ids, in hit order.
+    The Qdrant cosine score is preserved on each chunk as ``_score`` so that
+    downstream tools (answerer, search_documents) can surface it as a confidence
+    signal for source ranking.
+    """
     chunk_ids = [h["chunk_id"] for h in hits if h.get("chunk_id")]
     if not chunk_ids:
         return []
@@ -57,4 +61,13 @@ def _hydrate(hits: list[dict]) -> list[dict]:
     finally:
         pg.close()
     by_id = {str(r["chunk_id"]): r for r in rows}
-    return [by_id[cid] for cid in chunk_ids if cid in by_id]
+    # Re-attach the Qdrant score so it travels with the chunk through the pipeline.
+    score_map = {str(h["chunk_id"]): h.get("score", 0.0) for h in hits if h.get("chunk_id")}
+    result = []
+    for cid in chunk_ids:
+        if cid in by_id:
+            chunk = dict(by_id[cid])
+            chunk["_score"] = score_map.get(cid, 0.0)
+            result.append(chunk)
+    return result
+

@@ -15,7 +15,11 @@ langgraph
 langchain-mcp-adapters
 
 # ── Observability ─────────────────────────────────────────────────────────────
-langfuse
+# langfuse
+opentelemetry-api 
+opentelemetry-sdk 
+opentelemetry-exporter-otlp-proto-http 
+opentelemetry-instrumentation-langchain
 
 # ── PDF extraction ────────────────────────────────────────────────────────────
 pymupdf              # fitz — PDF rendering and text extraction

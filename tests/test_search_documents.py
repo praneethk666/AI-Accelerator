@@ -55,6 +55,7 @@ def test_search_documents_wraps_run_query_and_formats_sources():
                 "document_id": "doc-fixture-001",
                 "filename": "sample.pdf",
                 "page": 1,
+                "score": None,
                 "sheet": None,
                 "slide": None,
                 "summary": "Torque specification for the M6 assembly bolt.",

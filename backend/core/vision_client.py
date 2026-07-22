@@ -20,7 +20,7 @@ import os
 import random
 import re
 import time
-from contextlib import contextmanager
+from backend.core.tracing import traced_tool
 
 logger = logging.getLogger(__name__)
 
@@ -232,44 +232,9 @@ def _describe_ollama(image_bytes: bytes, prompt: str, model: str, config: dict) 
         t["output"] = result
     return result
 
-
-def _langfuse_enabled() -> bool:
-    """Langfuse is only "on" when both keys are set. Without this, langfuse v4's
-    get_client() still spins up an OTEL exporter against LANGFUSE_HOST (defaults
-    to localhost:3001) and retries forever — flooding the logs when no Langfuse
-    server is running."""
-    return bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
-
-
-@contextmanager
 def _trace(prompt: str, model: str):
-    """Best-effort Langfuse generation span for one vision call (langfuse v4).
-
-    Thread-safe (each call owns its observation — vision runs many in parallel)
-    and never logs the image bytes, only prompt+model+output. No-op when Langfuse
-    isn't configured.
-    """
-    box = {"output": None}
-    cm = obs = None
-    if not _langfuse_enabled():
-        yield box
-        return
-    try:
-        from langfuse import get_client
-        cm = get_client().start_as_current_observation(
-            as_type="generation", name="vision_describe_image",
-            model=model, input=prompt,
-        )
-        obs = cm.__enter__()
-    except Exception:
-        cm = None
-    try:
-        yield box
-    finally:
-        try:
-            if obs is not None and box["output"] is not None:
-                obs.update(output=box["output"])
-            if cm is not None:
-                cm.__exit__(None, None, None)
-        except Exception:
-            pass
+    """Span for one vision call (thread-safe — vision runs many in parallel).
+    Delegates to traced_tool, which is a no-op unless
+    OTEL_EXPORTER_OTLP_ENDPOINT is set. Never logs the image bytes, only
+    prompt+model+output, matching the old Langfuse version's privacy behavior."""
+    return traced_tool(f"vision:{model}", input=prompt)

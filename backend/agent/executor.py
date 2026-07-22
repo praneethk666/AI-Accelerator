@@ -30,19 +30,21 @@ from langgraph.graph.message import add_messages
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
 from backend.core.llm_client import get_llm, get_llm_for, clean_message_content
-from backend.core.tracing import traced_request, traced_tool
+from backend.core.tracing import traced_request, traced_tool, record_handled_error
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are a document intelligence assistant. Your job is to answer questions "
-    "by searching the ingested document corpus — not from your own knowledge.\n\n"
+    "by searching the ingested document corpus — NOT from your own knowledge.\n\n"
 
-    "## DEFAULT BEHAVIOR — ALWAYS SEARCH FIRST\n"
-    "For EVERY question, definition, factual query, or topic request, call "
-    "search_documents FIRST. Never answer from memory. The documents are the "
-    "source of truth. If the document has an answer, report it with citations. "
-    "If the document does not cover it, say so clearly and briefly.\n\n"
+    "## ABSOLUTE MANDATE — ALWAYS CALL search_documents FIRST\n"
+    "You are strictly prohibited from answering any question using internal memory or pre-training knowledge.\n"
+    "For EVERY question, numbered item, factual query, or section lookup, you MUST call "
+    "search_documents FIRST before returning any text answer. Never output an answer without calling search_documents.\n"
+    "If the document context contains the answer, report it with exact inline citations.\n"
+    "If the document context does not contain the answer, state plainly: "
+    "'I could not find this in the provided documents.'\n\n"
 
     "## TOOLS\n"
     "- search_documents(query, document_scope?, doc_type?, industry?): Search ingested docs. "
@@ -71,7 +73,7 @@ SYSTEM_PROMPT = (
     "Skip search_documents ONLY for:\n"
     "1. Pure greetings/sign-off (hello, thanks, bye) — reply naturally in plain text.\n"
     "2. Requests to list documents — call list_documents instead.\n"
-    "3. Requests to ingest a new file (with a path or attachment) — call ingest_document instead.\n\n"
+    "3. Requests to ingest a new file — call ingest_document instead.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
@@ -208,12 +210,30 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
     raise last_exc
 
 
-def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: set[str],
-                  clarify_tools: set[str], max_iterations: int):
+_GREETINGS = {"hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye", "good morning", "good evening"}
+
+
+def _is_greeting(text: str) -> bool:
+    clean = text.strip().lower().rstrip("!.,")
+    return clean in _GREETINGS
+
+
+def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
+                  clarify_tools: set[str], max_iterations: int, is_question: bool):
+    llm_auto = llm.bind_tools(tool_schemas)
+    try:
+        llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
+    except Exception:
+        llm_required = llm_auto
+
     def agent_node(state: AgentState) -> dict:
-        response = _invoke_with_retry(llm_with_tools, state["messages"])
+        iters = state.get("iterations", 0)
+        # On iteration 0 for non-greetings, FORCE the model to call a tool (tool_choice="required").
+        # On iteration 1+ (after a tool has returned its data), allow auto choice to synthesize text.
+        active_llm = llm_required if (iters == 0 and is_question) else llm_auto
+        response = _invoke_with_retry(active_llm, state["messages"])
         usage.record_from_message("agent", response)
-        return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
+        return {"messages": [response], "iterations": iters + 1}
 
     def tools_node(state: AgentState) -> dict:
         last = state["messages"][-1]
@@ -251,7 +271,7 @@ def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: se
             tool = registry.get(name)
             # Each tool dispatch gets its own child span under the request's root
             # trace (see traced_request in run_agent below) — this is what lets a
-            # single Langfuse trace show every tool the agent called for this
+            # single Grafana trace show every tool the agent called for this
             # request, not just isolated per-call traces.
             with traced_tool(f"tool:{name}", input=args) as span:
                 if tool is None:
@@ -262,6 +282,9 @@ def _build_graph(llm_with_tools, registry: dict[str, AgentTool], write_tools: se
                     except Exception as exc:  # a bad tool call must not kill the loop
                         logger.warning("agent tool %s failed: %s", name, exc)
                         result = {"error": str(exc)}
+                        record_handled_error(
+                            "tool_failure", str(exc), **{"tool.name": name}
+                        )
                 span["output"] = result
             tool_messages.append(ToolMessage(
                 content=json.dumps(result, default=str), tool_call_id=call_id,
@@ -346,11 +369,11 @@ def run_agent(
 
     The whole turn (agent tool-picking LLM calls, every dispatched tool, and any
     LLM calls those tools make internally — e.g. search_documents' query_planner /
-    retrieval / answerer) runs inside ONE Langfuse root span (`traced_request`,
-    no-op unless LANGFUSE_* env vars are set) and ONE token-usage sink, so a
-    single request shows up as a single trace_id in Langfuse with every tool as a
-    child span, and "tokens used" in the API response covers the whole turn, not
-    just the agent's own tool-picking calls.
+    retrieval / answerer) runs inside ONE OpenTelemetry root span (`traced_request`,
+    no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set) and ONE token-usage sink, so a
+    single request shows up as a single trace_id in Grafana Tempo with every tool
+    as a child span, and "tokens used" in the API response covers the whole turn,
+    not just the agent's own tool-picking calls
     """
     registry = registry if registry is not None else build_agent_registry()
     agent_cfg = (config.get("query") or {}).get("agent") or {}
@@ -367,13 +390,13 @@ def run_agent(
         llm = get_llm_for(config, agent_cfg)
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
-    llm_with_tools = llm.bind_tools(tool_schemas)
-
+    is_question = not _is_greeting(message)
     messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
     messages += conversation_history or []
     messages.append(HumanMessage(message))
 
-    graph = _build_graph(llm_with_tools, registry, write_tools, clarify_tools, max_iterations)
+    graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
+                          max_iterations, is_question)
 
     # ONE root span + ONE token-usage sink for the whole turn — every LLM call
     # and tool dispatch below (however deep, e.g. search_documents' internal

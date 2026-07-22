@@ -35,6 +35,7 @@ from backend.core.schemas import Chunk
 from backend.core import usage
 from backend.core.llm_client import get_llm_for, clean_message_content
 from backend.retrieval.pg_store import PGStore
+from backend.core.tracing import record_handled_error
 
 logger = logging.getLogger(__name__)
 
@@ -234,16 +235,17 @@ class AnswererTool:
                 ref = chunk.get("source_ref") or {}
                 tags = chunk.get("tags") or {}
                 citations.append({
+                    "filename":    ref.get("filename"),
+                    "page":        ref.get("page"),
                     "document_id": chunk.get("document_id"),
-                    "filename":   ref.get("filename"),
-                    "page":       ref.get("page"),
-                    "sheet":      ref.get("sheet"),
-                    "slide":      ref.get("slide"),
-                    "snippet":    (chunk.get("text") or "")[:200],
-                    "summary":    tags.get("summary"),
-                    "keywords":   tags.get("keywords"),
-                    "image_path": chunk.get("image_path"),
-                    "table_data": chunk.get("table_data"),
+                    "score":       chunk.get("_score"),
+                    "sheet":       ref.get("sheet"),
+                    "slide":       ref.get("slide"),
+                    "snippet":     (chunk.get("text") or "")[:200],
+                    "summary":     tags.get("summary"),
+                    "keywords":    tags.get("keywords"),
+                    "image_path":  chunk.get("image_path"),
+                    "table_data":  chunk.get("table_data"),
                 })
 
             # Don't attach a source list to a 'not found' answer — it drew on nothing.
@@ -262,6 +264,7 @@ class AnswererTool:
             state["errors"]    = errors
             state["answer"]    = "An error occurred while generating the answer."
             state["citations"] = []
+            record_handled_error("answerer_failure", str(exc), **{"query": query[:100]})
 
         return state
 

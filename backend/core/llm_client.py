@@ -29,8 +29,10 @@ Recipes (config/global.yaml):
   Local vLLM:  provider: openai  model: <served-name>  base_url: http://localhost:8000/v1
   Anthropic:   provider: anthropic  model: claude-haiku-4-5  api_key: ${ANTHROPIC_API_KEY}
 
-Langfuse tracing is wired automatically when LANGFUSE_* env vars are set; absent,
-calls still work (tracing silently skipped).
+LLM calls are auto-traced by opentelemetry-instrumentation-langchain (see
+backend/core/tracing.py), which patches LangChain's Runnable.invoke so every
+call becomes a child span of whatever OTEL span is currently active — no
+per-call wiring needed here.
 """
 from __future__ import annotations
 
@@ -60,9 +62,8 @@ def get_llm(config: dict, max_tokens: int | None = None,
     temperature = llm_cfg.get("temperature")
     if max_tokens is None:
         max_tokens = llm_cfg.get("max_tokens")
-    callbacks = _langfuse_callbacks()
 
-    common = {"callbacks": callbacks}
+    common = {}
     if temperature is not None:
         common["temperature"] = temperature
 
@@ -201,25 +202,6 @@ def _with_key(kwargs: dict, key_name: str, api_key) -> dict:
         kwargs = dict(kwargs)
         kwargs[key_name] = api_key
     return kwargs
-
-
-def _langfuse_callbacks() -> list:
-    # langfuse v3 -> v4 moved the handler to langfuse.langchain; try the new path
-    # first, fall back to the old one. Absent/misconfigured -> no callbacks (calls
-    # still work, just untraced).
-    # Only attach when both keys are set — otherwise langfuse v4 starts an OTEL
-    # exporter against LANGFUSE_HOST (default localhost:3001) and floods the logs.
-    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
-        return []
-    try:
-        from langfuse.langchain import CallbackHandler
-        return [CallbackHandler()]
-    except Exception:
-        try:
-            from langfuse.callback import CallbackHandler
-            return [CallbackHandler()]
-        except Exception:
-            return []
 
 
 def clean_message_content(content) -> str:

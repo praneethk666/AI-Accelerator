@@ -20,7 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState, Tool
-from backend.core.tracing import traced_tool
+from backend.core.tracing import traced_tool, record_handled_error
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,9 @@ def _make_node(tool: Tool, raw_config: dict):
     # wrap a Tool as a graph node: graceful failure + per-step metrics. config
     # bound in via closure.
     #
-    # Each step also gets its own Langfuse child span (traced_tool), nested under
+    # Each step also gets its own OTel child span (traced_tool), nested under
     # the single root span ingest_document() opens for the whole run (see
-    # backend/pipeline/ingest.py). That's what lets one Langfuse trace show every
+    # backend/pipeline/ingest.py). That's what lets one Grafana trace show every
     # ingestion step — categorize, extract, chunk, enrich, embed, index, ... — as
     # its own child, with any LLM/vision calls a step makes internally (they use
     # get_llm()/vision_client, which attach via the currently-active OTEL context)
@@ -56,6 +56,9 @@ def _make_node(tool: Tool, raw_config: dict):
                 status, error = "error", str(exc)
                 state["errors"].append(f"{tool.name}: {exc}")
                 result = state
+                record_handled_error(
+                    "step_failure", str(exc), **{"tool.name": tool.name}
+                )
 
             elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
             entry = {"step": tool.name, "ms": elapsed_ms, "status": status}

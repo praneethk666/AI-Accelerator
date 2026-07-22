@@ -192,25 +192,24 @@ def _build_sources(citations: list[dict]) -> list[dict[str, Any]]:
     seen: set[tuple[Any, ...]] = set()
     for citation in citations:
         source = {
+            "filename":    citation.get("filename"),
+            "page":        citation.get("page"),
             "document_id": citation.get("document_id"),
-            "filename": citation.get("filename"),
-            "page": citation.get("page"),
-            "sheet": citation.get("sheet"),
-            "slide": citation.get("slide"),
-            "summary": citation.get("summary"),
-            "snippet": citation.get("snippet"),
-            "image_path": citation.get("image_path"),
+            "score":       citation.get("score"),
+            "sheet":       citation.get("sheet"),
+            "slide":       citation.get("slide"),
+            "summary":     citation.get("summary"),
+            "snippet":     citation.get("snippet"),
+            "image_path":  citation.get("image_path"),
         }
         key = (
-            source["filename"],
+            source["document_id"],
             source["page"],
-            source["sheet"],
-            source["slide"],
-            source["image_path"],
-            source["snippet"],
         )
         if key in seen:
             continue
         seen.add(key)
         sources.append(source)
+    # Sort by score descending — highest-confidence source first.
+    sources.sort(key=lambda s: (s.get("score") or 0.0), reverse=True)
     return sources

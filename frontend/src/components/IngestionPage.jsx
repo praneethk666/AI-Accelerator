@@ -19,7 +19,7 @@ import {
 // ran for this file type / pdf kind.
 const PIPELINE_STAGES = [
   { label: 'Categorize', icon: '📂', match: ['categorize'] },
-  { label: 'Extract', icon: '📊', match: ['docling_pdf', 'pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'word_extraction', 'image_extraction', 'cad_extract'] },
+  { label: 'Extract', icon: '📊', match: ['pymupdf_pdf', 'docling_pdf', 'pdf_digital', 'scanned_pdf', 'mixed_pdf', 'excel_extraction', 'ppt_extraction', 'word_extraction', 'image_extraction', 'cad_extract'] },
   { label: 'Vision', icon: '👁️', match: ['vision_enrichment'] },
   { label: 'Chunk', icon: '✂️', match: ['chunk'] },
   { label: 'Enrich', icon: '🏷️', match: ['enrich_chunks'] },

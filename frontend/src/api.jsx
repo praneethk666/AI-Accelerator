@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Configure API base URL - change localhost:8000 to your backend server
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // A finite default timeout matters: /agent/chat is synchronous and can run an ingest
 // inline. With no timeout a hung backend never settles the promise, so the chat's

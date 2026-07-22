@@ -21,7 +21,7 @@ import os
 import uuid
 
 from backend.core.config import PipelineConfig, load_config
-from backend.core.tracing import traced_request
+from backend.core.tracing import traced_request, record_handled_error
 from backend.pipeline.default_registry import build_default_registry
 from backend.pipeline.graph import run_pipeline
 from backend.core.paths import display_filename
@@ -184,6 +184,9 @@ def ingest_document(
             except Exception as exc:
                 logger.exception("ingestion failed for %s", filename)
                 result, status = {"errors": [str(exc)]}, "failed"
+                record_handled_error(
+                    "ingest_pipeline_failure", str(exc), **{"document_id": document_id}
+                )
     trace_id = trace_info["trace_id"]
 
     metrics = result.get("metrics", []) or []

@@ -457,6 +457,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
     broken font encoding or scrambled reading order still gets SOME rescue rather
     than being kept as-is once the budget runs out."""
     from backend.extraction.page_router import profile_page, classify_page, should_tile
+    from backend.core.tool import check_cancelled
     cfg = (config.get("extraction") or {}).get("docling") or {}
     lf_enabled = ((config.get("extraction") or {}).get("large_format") or {}).get("enabled", True)
     cap = int(cfg.get("max_vlm_pages", 0) or 0)
@@ -478,6 +479,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
     rescued = paddle_used = digital_kept = 0
     try:
         for pg in range(1, len(doc) + 1):
+            check_cancelled(document_id)
             pblocks = by_page.get(pg, [])
             native = doc[pg - 1].get_text()
             prof = profile_page(doc[pg - 1])

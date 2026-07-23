@@ -47,3 +47,31 @@ class PipelineState(TypedDict, total=False):
 class Tool(Protocol):
     name: str
     def run(self, state: PipelineState, config: dict) -> PipelineState: ...
+
+
+class IngestionCancelledError(Exception):
+    """Raised when ingestion has been cancelled/deleted by the user."""
+    pass
+
+
+def check_cancelled(document_id: str | None) -> None:
+    """Check if the document ingestion has been cancelled by looking up the document in the DB.
+    If the document has been deleted, raise IngestionCancelledError.
+    """
+    if not document_id or document_id == "default":
+        return
+    from backend.storage.postgres_store import PostgresStore
+    try:
+        pg = PostgresStore()
+        try:
+            doc = pg.get_document(document_id)
+            if doc is None:
+                raise IngestionCancelledError(f"Ingestion cancelled: document {document_id} was deleted")
+        finally:
+            pg.close()
+    except IngestionCancelledError:
+        raise
+    except Exception:
+        # Ignore database connection/query failures during check to ensure robustness
+        pass
+

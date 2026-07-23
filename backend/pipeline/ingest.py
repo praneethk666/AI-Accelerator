@@ -182,7 +182,11 @@ def ingest_document(
                 step_failed = any(m.get("status") == "error" for m in result.get("metrics", []))
                 status = "failed" if step_failed else "ready"
             except Exception as exc:
-                logger.exception("ingestion failed for %s", filename)
+                from backend.core.tool import IngestionCancelledError
+                if isinstance(exc, IngestionCancelledError):
+                    logger.info("Ingestion cancelled for %s: document was deleted by user.", filename)
+                else:
+                    logger.exception("ingestion failed for %s", filename)
                 result, status = {"errors": [str(exc)]}, "failed"
                 record_handled_error(
                     "ingest_pipeline_failure", str(exc), **{"document_id": document_id}

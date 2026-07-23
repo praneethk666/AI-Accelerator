@@ -19,7 +19,7 @@ import time
 from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
-from backend.core.tool import PipelineState, Tool
+from backend.core.tool import PipelineState, Tool, IngestionCancelledError, check_cancelled
 from backend.core.tracing import traced_tool, record_handled_error
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,10 @@ def _make_node(tool: Tool, raw_config: dict):
         }
         with traced_tool(f"step:{tool.name}", input=trace_input) as span:
             try:
+                check_cancelled(state.get("document_id"))
                 result = tool.run(state, raw_config)
+            except IngestionCancelledError:
+                raise
             except Exception as exc:  # one tool must not kill the run
                 status, error = "error", str(exc)
                 state["errors"].append(f"{tool.name}: {exc}")

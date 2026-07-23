@@ -200,6 +200,11 @@ _SETTINGS_MAP = {
     "enrichment_summarize": ["enrichment", "summarize"],
     "enrichment_keyword_count": ["enrichment", "keyword_count"],
     "enrichment_prompt": ["enrichment", "prompt"],
+    # embeddings & reranking
+    "embeddings_dense_provider": ["embeddings", "dense_provider"],
+    "embeddings_dense_model": ["embeddings", "dense_model"],
+    "embeddings_reranker_provider": ["embeddings", "reranker_provider"],
+    "embeddings_reranker_model": ["embeddings", "reranker_model"],
 }
 
 # Optional model-override fields: a BLANK value means "inherit the global llm block",

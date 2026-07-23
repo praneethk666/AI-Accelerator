@@ -162,10 +162,12 @@ const ChatPage = () => {
     return () => window.removeEventListener('wheel', preventBrowserZoom);
   }, []);
 
-  // Automatically close sidebar when PDF Viewer opens
+  // Automatically close sidebar when PDF Viewer opens, and open it when PDF Viewer closes
   useEffect(() => {
     if (pageViewer) {
       setSidebarOpen(false);
+    } else {
+      setSidebarOpen(true);
     }
   }, [pageViewer]);
 
@@ -194,6 +196,8 @@ const ChatPage = () => {
     setMessages([]);
     setAttachedFile(null);
     setError(null);
+    setPageViewer(null);
+    setSidebarOpen(true);
     setSessions((prev) => {
       // Remove any existing empty placeholders to avoid cluttering the sidebar
       const filtered = prev.filter((s) => !s.isPlaceholder);

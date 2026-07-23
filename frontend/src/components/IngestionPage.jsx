@@ -43,6 +43,30 @@ const fmtDuration = (ms) => {
   return `${hr}h ${min}m`;
 };
 
+const getStepLabel = (stepName) => {
+  const stage = PIPELINE_STAGES.find((s) => s.match.includes(stepName));
+  if (stage) return stage.label;
+  // Fallback: capitalize words and replace underscores
+  return (stepName || '')
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+};
+
+const fmtLlmCallsSub = (tu) => {
+  if (!tu) return '0 calls';
+  const visionCalls = tu.by_kind?.vision?.calls || 0;
+  const total = tu.calls || 0;
+  const text = total - visionCalls;
+  if (text > 0 && visionCalls > 0) {
+    return `${text} text · ${visionCalls} vision calls`;
+  }
+  if (visionCalls > 0) {
+    return `${visionCalls} vision calls`;
+  }
+  return `${total} LLM calls`;
+};
+
 const IngestionPage = () => {
   const navigate = useNavigate();
   const [files, setFiles] = useState([]);
@@ -411,29 +435,44 @@ const IngestionPage = () => {
               </div>
             );
             return (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {totalMs > 0 && (
-                  <Stat label="Total time" value={fmtDuration(totalMs)}
-                        sub={`${(lastRun.metrics || []).length} steps`} />
+              <div className="mt-4 space-y-2">
+                {/* Row 1: Tokens */}
+                {(lastRun.tokenUsage || lastRun.indexedTokens != null) && (
+                  <div className="flex flex-wrap gap-2">
+                    {lastRun.tokenUsage && (
+                      <>
+                        <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
+                              sub={fmtLlmCallsSub(tu)} />
+                        <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                        <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                      </>
+                    )}
+                    {lastRun.indexedTokens != null && (
+                      <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
+                            sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
+                    )}
+                    {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
+                      Object.entries(tu.by_kind).map(([k, v]) => (
+                        <Stat key={k} label={k}
+                              value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
+                              sub="tokens" />
+                      ))}
+                  </div>
                 )}
-                {lastRun.tokenUsage && (
-                  <>
-                    <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
-                          sub={`${tu.calls || 0} LLM/vision calls`} />
-                    <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
-                    <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
-                  </>
+                
+                {/* Row 2: Time */}
+                {(totalMs > 0 || (lastRun.metrics && lastRun.metrics.length > 0)) && (
+                  <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
+                    {totalMs > 0 && (
+                      <Stat label="Total time" value={fmtDuration(totalMs)}
+                            sub={`${(lastRun.metrics || []).length} steps`} />
+                    )}
+                    {(lastRun.metrics || []).map((m, i) => (
+                      <Stat key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)}
+                            sub={m.status === 'error' ? 'failed' : 'ok'} />
+                    ))}
+                  </div>
                 )}
-                {lastRun.indexedTokens != null && (
-                  <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
-                        sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
-                )}
-                {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
-                  Object.entries(tu.by_kind).map(([k, v]) => (
-                    <Stat key={k} label={k}
-                          value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
-                          sub="tokens" />
-                  ))}
               </div>
             );
           })()}
@@ -494,50 +533,69 @@ const IngestionPage = () => {
                           );
 
                           return (
-                            <div className="mt-4 pt-3 border-t border-slate-700/30 flex flex-wrap gap-2">
-                              {totalMs > 0 && (
-                                <StatBlock
-                                  label="Total Time"
-                                  value={fmtDuration(totalMs)}
-                                  sub={`${(file.metrics || []).length} steps`}
-                                />
+                            <div className="mt-4 pt-3 border-t border-slate-700/30 space-y-2">
+                              {/* Row 1: Tokens */}
+                              {(file.token_usage || file.indexed_tokens != null) && (
+                                <div className="flex flex-wrap gap-2">
+                                  {file.token_usage && (
+                                    <>
+                                      <StatBlock
+                                        label="Total Tokens"
+                                        value={(tu.total_tokens || 0).toLocaleString()}
+                                        sub={fmtLlmCallsSub(tu)}
+                                      />
+                                      <StatBlock
+                                        label="Input Tokens"
+                                        value={(tu.input_tokens || 0).toLocaleString()}
+                                      />
+                                      <StatBlock
+                                        label="Output Tokens"
+                                        value={(tu.output_tokens || 0).toLocaleString()}
+                                      />
+                                    </>
+                                  )}
+                                  {file.indexed_tokens != null && (
+                                    <StatBlock
+                                      label="Indexed"
+                                      value={(file.indexed_tokens || 0).toLocaleString()}
+                                      sub={`tokens · ${file.chunk_count || 0} chunks`}
+                                    />
+                                  )}
+                                  {tu.by_kind && Object.entries(tu.by_kind).map(([kind, data]) => {
+                                    const kindTotal = (data.input_tokens || 0) + (data.output_tokens || 0);
+                                    if (kindTotal === 0) return null;
+                                    return (
+                                      <StatBlock
+                                        key={kind}
+                                        label={`${kind}`}
+                                        value={kindTotal.toLocaleString()}
+                                        sub="tokens"
+                                      />
+                                    );
+                                  })}
+                                </div>
                               )}
-                              {file.token_usage && (
-                                <>
-                                  <StatBlock
-                                    label="Total Tokens"
-                                    value={(tu.total_tokens || 0).toLocaleString()}
-                                    sub={`${tu.calls || 0} LLM calls`}
-                                  />
-                                  <StatBlock
-                                    label="Input Tokens"
-                                    value={(tu.input_tokens || 0).toLocaleString()}
-                                  />
-                                  <StatBlock
-                                    label="Output Tokens"
-                                    value={(tu.output_tokens || 0).toLocaleString()}
-                                  />
-                                </>
+
+                              {/* Row 2: Time */}
+                              {(totalMs > 0 || (file.metrics && file.metrics.length > 0)) && (
+                                <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
+                                  {totalMs > 0 && (
+                                    <StatBlock
+                                      label="Total Time"
+                                      value={fmtDuration(totalMs)}
+                                      sub={`${(file.metrics || []).length} steps`}
+                                    />
+                                  )}
+                                  {(file.metrics || []).map((m, i) => (
+                                    <StatBlock
+                                      key={i}
+                                      label={getStepLabel(m.step)}
+                                      value={fmtDuration(m.ms)}
+                                      sub={m.status === 'error' ? 'failed' : 'ok'}
+                                    />
+                                  ))}
+                                </div>
                               )}
-                              {file.indexed_tokens != null && (
-                                <StatBlock
-                                  label="Indexed"
-                                  value={(file.indexed_tokens || 0).toLocaleString()}
-                                  sub={`tokens · ${file.chunk_count || 0} chunks`}
-                                />
-                              )}
-                              {tu.by_kind && Object.entries(tu.by_kind).map(([kind, data]) => {
-                                const kindTotal = (data.input_tokens || 0) + (data.output_tokens || 0);
-                                if (kindTotal === 0) return null;
-                                return (
-                                  <StatBlock
-                                    key={kind}
-                                    label={`${kind}`}
-                                    value={kindTotal.toLocaleString()}
-                                    sub="tokens"
-                                  />
-                                );
-                              })}
                             </div>
                           );
                         })()}

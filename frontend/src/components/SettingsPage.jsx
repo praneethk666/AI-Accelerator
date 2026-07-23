@@ -359,6 +359,53 @@ const SettingsPage = () => {
               </section>
             </div>
 
+            {/* Embeddings & Reranking */}
+            <section className="mt-8 pt-6 border-t border-slate-700/60">
+              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Embeddings & Reranking</h2>
+              <div className="grid md:grid-cols-2 gap-x-8">
+                <div>
+                  <Field label="Embedding Provider" hint="local = BAAI/bge-m3 (local CPU/GPU). jina = jina-embeddings-v3 (Hosted API).">
+                    <Select 
+                      value={s.embeddings_dense_provider || 'local'} 
+                      onChange={(v) => {
+                        set('embeddings_dense_provider', v);
+                        if (v === 'jina') set('embeddings_dense_model', 'jina-embeddings-v3');
+                        else set('embeddings_dense_model', 'BAAI/bge-m3');
+                      }} 
+                      options={['local', 'jina']} 
+                    />
+                  </Field>
+                  <Field label="Embedding Model">
+                    <input 
+                      className={inputCls} 
+                      value={s.embeddings_dense_model ?? ''} 
+                      onChange={(e) => set('embeddings_dense_model', e.target.value)} 
+                    />
+                  </Field>
+                </div>
+                <div>
+                  <Field label="Reranker Provider" hint="local = BAAI/bge-reranker-v2-m3 (local CPU/GPU). jina = jina-reranker-v2-base-multilingual (Hosted API).">
+                    <Select 
+                      value={s.embeddings_reranker_provider || 'local'} 
+                      onChange={(v) => {
+                        set('embeddings_reranker_provider', v);
+                        if (v === 'jina') set('embeddings_reranker_model', 'jina-reranker-v2-base-multilingual');
+                        else set('embeddings_reranker_model', 'BAAI/bge-reranker-v2-m3');
+                      }} 
+                      options={['local', 'jina']} 
+                    />
+                  </Field>
+                  <Field label="Reranker Model">
+                    <input 
+                      className={inputCls} 
+                      value={s.embeddings_reranker_model ?? ''} 
+                      onChange={(e) => set('embeddings_reranker_model', e.target.value)} 
+                    />
+                  </Field>
+                </div>
+              </div>
+            </section>
+
             {/* Vision prompts — one per route/industry, fully editable */}
             <section className="mt-2">
               <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-1">Vision prompts</h2>

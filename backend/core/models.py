@@ -100,21 +100,78 @@ def warm_up(config: dict | None = None) -> None:
     _try("reranker", get_reranker, 120)
 
 
-def get_dense_model(config: dict):
-    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim).
+class JinaEmbeddingsAPIClient:
+    """API client that calls Jina AI's hosted Embeddings API instead of running SentenceTransformers locally."""
 
-    trust_remote_code=True is kept so instruction-tuned models distributed with
-    custom code (e.g. nomic) still load if swapped in via config. See
-    get_dense_document_prefix / get_dense_query_prefix for the model-specific
-    instruction prefixes (empty for bge-m3).
-    """
+    def __init__(self, model_name: str, api_key: str | None = None) -> None:
+        self.model_name = model_name
+        self.api_key = api_key
+        self.url = "https://api.jina.ai/v1/embeddings"
+
+    def encode(
+        self,
+        sentences: str | list[str],
+        normalize_embeddings: bool = True,
+        batch_size: int = 16,
+    ):
+        """Replicates SentenceTransformer's encode method signature."""
+        if not self.api_key:
+            raise ValueError(
+                "Jina API Key is missing. Please set JINA_API_KEY in your environment or global.yaml."
+            )
+
+        is_single = isinstance(sentences, str)
+        input_list = [sentences] if is_single else list(sentences)
+
+        if not input_list:
+            import numpy as np
+            return np.array([])
+
+        import requests
+        import numpy as np
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        all_embeddings = []
+        for i in range(0, len(input_list), batch_size):
+            chunk = input_list[i : i + batch_size]
+            data = {
+                "model": self.model_name,
+                "input": chunk,
+            }
+            response = requests.post(self.url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
+            res_json = response.json()
+
+            # Ensure correct ordering based on response indices
+            sorted_data = sorted(res_json["data"], key=lambda x: x["index"])
+            all_embeddings.extend([item["embedding"] for item in sorted_data])
+
+        result = np.array(all_embeddings)
+        return result[0] if is_single else result
+
+
+def get_dense_model(config: dict):
+    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim)
+    or the JinaEmbeddingsAPIClient."""
     global _dense_model
     if _dense_model is None:
         with _model_lock:
             if _dense_model is None:
-                from sentence_transformers import SentenceTransformer
-                model_name = config["embeddings"]["dense_model"]
-                _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
+                embed_cfg = config.get("embeddings") or {}
+                provider = embed_cfg.get("dense_provider", "local")
+                model_name = embed_cfg.get("dense_model", DEFAULT_DENSE_MODEL)
+
+                if provider == "jina":
+                    import os
+                    api_key = embed_cfg.get("dense_api_key") or os.environ.get("JINA_API_KEY")
+                    _dense_model = JinaEmbeddingsAPIClient(model_name, api_key)
+                else:
+                    from sentence_transformers import SentenceTransformer
+                    _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
     return _dense_model
 
 
@@ -130,13 +187,69 @@ def get_sparse_model(config: dict):
     return _sparse_model
 
 
+class JinaRerankerAPIClient:
+    """Reranker client that calls Jina AI's cloud Reranker API instead of running it locally."""
+
+    def __init__(self, model_name: str, api_key: str | None = None) -> None:
+        self.model_name = model_name
+        self.api_key = api_key
+        self.url = "https://api.jina.ai/v1/rerank"
+
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        if not pairs:
+            return []
+        if not self.api_key:
+            raise ValueError(
+                "JINA_API_KEY is not set. Please configure it in your environment or .env file "
+                "to use the Jina AI Reranker API."
+            )
+
+        # All pairs in a single predict call share the same query
+        query = pairs[0][0]
+        documents = [p[1] for p in pairs]
+
+        import requests
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": self.model_name,
+            "query": query,
+            "documents": documents,
+        }
+
+        response = requests.post(self.url, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+        res_json = response.json()
+
+        # Jina returns a list of results sorted by score: [{"index": idx, "relevance_score": score}, ...]
+        # We must map them back to the original order of documents to match input pairs
+        scores = [0.0] * len(pairs)
+        for item in res_json.get("results", []):
+            idx = item["index"]
+            scores[idx] = item["relevance_score"]
+
+        return scores
+
+
 def get_reranker(config: dict):
-    """Return the shared CrossEncoder reranker (default BAAI/bge-reranker-v2-m3, multilingual)."""
+    """Return the shared CrossEncoder reranker (default BAAI/bge-reranker-v2-m3, multilingual)
+    or the JinaRerankerAPIClient."""
     global _reranker
     if _reranker is None:
         with _model_lock:
             if _reranker is None:
-                from sentence_transformers import CrossEncoder
-                model_name = config["embeddings"]["reranker_model"]
-                _reranker = CrossEncoder(model_name)
+                embed_cfg = config.get("embeddings") or {}
+                provider = embed_cfg.get("reranker_provider", "local")
+                model_name = embed_cfg.get("reranker_model", "BAAI/bge-reranker-v2-m3")
+
+                if provider == "jina":
+                    import os
+                    api_key = embed_cfg.get("reranker_api_key") or os.environ.get("JINA_API_KEY")
+                    _reranker = JinaRerankerAPIClient(model_name, api_key)
+                else:
+                    from sentence_transformers import CrossEncoder
+                    _reranker = CrossEncoder(model_name)
     return _reranker

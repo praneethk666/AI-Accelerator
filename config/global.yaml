@@ -318,34 +318,35 @@ extraction:
                               # huge 1000+ page schematic sets to bound cost/time.
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
+# Configured dense embeddings and reranking settings.
+# Provider can be "local" (uses SentenceTransformers locally) or "jina" (API cloud model).
+# Models swap automatically when provider settings are changed via Settings UI.
+# 
+# BAAI/bge-m3: MULTILINGUAL (100+ langs incl. Japanese) dense embedder — chosen for the
+# bilingual JP/EN Toyota corpus and its alphanumeric part numbers. Native dense+sparse+
+# ColBERT, 8192-token context, 1024-dim. Heavier than nomic (~568M, ~2.3GB) so slower on
+# CPU; uses Apple-Silicon MPS / GPU when available. Reranker upgraded to the matching
+# multilingual bge-reranker-v2-m3.
+# PREFIXES: bge-m3 takes NO instruction prefix — keep dense_*_prefix EMPTY. (nomic needs
+# "search_document: " / "search_query: "; a wrong prefix silently degrades recall.)
+# Alt (English-only, lighter/faster on CPU): dense_model nomic-ai/nomic-embed-text-v1.5,
+#   dense_dim 768, dense_document_prefix "search_document: ", dense_query_prefix "search_query: ",
+#   reranker_model BAAI/bge-reranker-large.
 embeddings:
-  # BAAI/bge-m3: MULTILINGUAL (100+ langs incl. Japanese) dense embedder — chosen for the
-  # bilingual JP/EN Toyota corpus and its alphanumeric part numbers. Native dense+sparse+
-  # ColBERT, 8192-token context, 1024-dim. Heavier than nomic (~568M, ~2.3GB) so slower on
-  # CPU; uses Apple-Silicon MPS / GPU when available. Reranker upgraded to the matching
-  # multilingual bge-reranker-v2-m3.
-  # PREFIXES: bge-m3 takes NO instruction prefix — keep dense_*_prefix EMPTY. (nomic needs
-  # "search_document: " / "search_query: "; a wrong prefix silently degrades recall.)
-  # Alt (English-only, lighter/faster on CPU): dense_model nomic-ai/nomic-embed-text-v1.5,
-  #   dense_dim 768, dense_document_prefix "search_document: ", dense_query_prefix "search_query: ",
-  #   reranker_model BAAI/bge-reranker-large.
-  dense_model: BAAI/bge-m3
+  dense_provider: local                 # local | jina
+  dense_model: BAAI/bge-m3              # BAAI/bge-m3 (local) or jina-embeddings-v3 (cloud)
+  dense_api_key: ${JINA_API_KEY}
   dense_dim: 1024
   dense_document_prefix: ""             # bge-m3: none. nomic: "search_document: "
   dense_query_prefix: ""                # bge-m3: none. nomic: "search_query: "
   dense_batch_size: 16                  # caps peak MPS/GPU memory per encode() sub-batch.
-                                         # Validated live (21-Jul): a 640-chunk document hit
-                                         # "MPS backend out of memory" at the default
-                                         # (unbatched) call — docling/YOLO/OCR/chunking
-                                         # models loaded earlier in the same process had
-                                         # already consumed most of Apple's MPS ceiling.
                                          # Lower (e.g. 8) on a memory-constrained Mac;
                                          # raise on a real GPU box with headroom.
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
-  reranker_model: BAAI/bge-reranker-v2-m3   # multilingual reranker matching bge-m3
-  # SemanticChunker uses this lightweight model to decide split boundaries only —
-  # potion-base-32M (32M params) avoids loading the full dense model twice.
-  chunking_model: minishlab/potion-base-32M
+  reranker_provider: local              # local | jina
+  reranker_model: BAAI/bge-reranker-v2-m3 # BAAI/bge-reranker-v2-m3 (local) or jina-reranker-v2-base-multilingual (cloud)
+  reranker_api_key: ${JINA_API_KEY}
+  chunking_model: minishlab/potion-base-32M  # SemanticChunker split bounds model
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 chunking:

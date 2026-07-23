@@ -231,7 +231,11 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         # On iteration 0 for non-greetings, FORCE the model to call a tool (tool_choice="required").
         # On iteration 1+ (after a tool has returned its data), allow auto choice to synthesize text.
         active_llm = llm_required if (iters == 0 and is_question) else llm_auto
-        response = _invoke_with_retry(active_llm, state["messages"])
+        
+        # Prune verbose tool messages to save input context tokens for the agent LLM
+        pruned_messages = _prune_messages_for_llm(state["messages"])
+        response = _invoke_with_retry(active_llm, pruned_messages)
+        
         usage.record_from_message("agent", response)
         return {"messages": [response], "iterations": iters + 1}
 
@@ -322,6 +326,49 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
     sg.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
     sg.add_conditional_edges("tools", route_after_tools, {"agent": "agent", END: END})
     return sg.compile()
+
+
+def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Prunes verbose JSON payloads from ToolMessages to minimize input context tokens
+    for the Agent LLM while keeping critical filename maps for inline citation resolution."""
+    import json
+
+    pruned = []
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            try:
+                data = json.loads(m.content)
+                if isinstance(data, dict) and "answer" in data:
+                    answer = data.get("answer") or ""
+                    citations = data.get("citations") or []
+                    
+                    # Construct a lightweight filename lookup map for the LLM
+                    source_lines = []
+                    for idx, c in enumerate(citations):
+                        fname = c.get("filename")
+                        page = c.get("page")
+                        doc_id = c.get("document_id")
+                        if fname:
+                            # 1-based index to match inline document citation indices
+                            page_suffix = f" (page {page})" if page is not None else ""
+                            id_suffix = f" [id: {doc_id}]" if doc_id else ""
+                            source_lines.append(f"  [{idx + 1}] = {fname}{page_suffix}{id_suffix}")
+                    
+                    # Reconstruct a lightweight text payload
+                    pruned_content = f"Search Answer: {answer}\n"
+                    if source_lines:
+                        pruned_content += "Source Map:\n" + "\n".join(source_lines)
+                        
+                    pruned.append(ToolMessage(
+                        content=pruned_content,
+                        tool_call_id=m.tool_call_id,
+                        name=m.name
+                    ))
+                    continue
+            except Exception:
+                pass
+        pruned.append(m)
+    return pruned
 
 
 def _extract_tool_calls(messages: list[BaseMessage]) -> list[dict]:

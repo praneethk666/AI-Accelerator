@@ -179,3 +179,53 @@ def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
 
     assert len(llm.invocations) == 3  # stopped at the cap, not exhausted the script
     assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
+
+
+def test_prune_messages_for_llm_reconstructs_search_output():
+    from langchain_core.messages import ToolMessage, HumanMessage
+    from backend.agent.executor import _prune_messages_for_llm
+    import json
+
+    full_payload = {
+        "answer": "Factor 3 is Motor failure [1, p.2].",
+        "citations": [
+            {"filename": "motor_manual.pdf", "page": 2, "document_id": "doc-123"}
+        ],
+        "sources": [{"filename": "motor_manual.pdf"}]
+    }
+    
+    messages = [
+        HumanMessage("What is Factor 3?"),
+        ToolMessage(
+            content=json.dumps(full_payload),
+            tool_call_id="call_123",
+            name="search_documents"
+        )
+    ]
+    
+    pruned = _prune_messages_for_llm(messages)
+    
+    assert len(pruned) == 2
+    assert isinstance(pruned[0], HumanMessage)
+    assert pruned[0].content == "What is Factor 3?"
+    
+    assert isinstance(pruned[1], ToolMessage)
+    assert "Search Answer: Factor 3 is Motor failure [1, p.2]." in pruned[1].content
+    assert "Source Map:" in pruned[1].content
+    assert "[1] = motor_manual.pdf (page 2) [id: doc-123]" in pruned[1].content
+    # Crucially, snippets and sources should be pruned
+    assert "citations" not in pruned[1].content
+    assert "sources" not in pruned[1].content
+
+
+def test_prune_messages_for_llm_ignores_non_json_messages():
+    from langchain_core.messages import ToolMessage
+    from backend.agent.executor import _prune_messages_for_llm
+
+    messages = [
+        ToolMessage(content="some raw error string", tool_call_id="call_456", name="sql_read")
+    ]
+    pruned = _prune_messages_for_llm(messages)
+    assert len(pruned) == 1
+    assert pruned[0].content == "some raw error string"
+

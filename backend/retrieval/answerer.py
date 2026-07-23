@@ -33,7 +33,7 @@ import logging
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core import usage
-from backend.core.llm_client import get_llm_for, clean_message_content
+from backend.core.llm_client import get_llm_for, resolve_model_provider, clean_message_content
 from backend.retrieval.pg_store import PGStore
 from backend.core.tracing import record_handled_error
 
@@ -218,13 +218,16 @@ class AnswererTool:
 
             # answering is reasoning-heavy. Resolution: query.answerer.model ->
             # llm.answer_model -> global llm.model.
-            llm      = get_llm_for(config, config.get("query", {}).get("answerer"),
-                                   default_model=config["llm"].get("answer_model"))
+            answerer_cfg  = config.get("query", {}).get("answerer") or {}
+            model_name, provider_name = resolve_model_provider(
+                config, answerer_cfg, default_model=config["llm"].get("answer_model")
+            )
+            llm      = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
             response = llm.invoke([
                 {"role": "system", "content": _ANSWER_SYSTEM},
                 {"role": "user",   "content": user_msg},
             ])
-            usage.record_from_message("answer", response)
+            usage.record_from_message("answer", response, model=model_name, provider=provider_name)
             answer_text = clean_message_content(response.content).strip()
 
             # Build citations — image_path and table_data are top-level chunk fields.

@@ -36,7 +36,7 @@ import contextvars
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-
+from backend.core.tracing import record_llm_usage
 _SINK: ContextVar = ContextVar("token_usage_sink", default=None)
 
 
@@ -119,6 +119,7 @@ def record(kind: str, input_tokens=0, output_tokens=0,
     if sink is not None:
         sink.add(kind, input_tokens, output_tokens, reasoning_tokens, context_tokens,
                  prompt=prompt, raw_response=raw_response, provider=provider, model=model)
+    record_llm_usage(kind, input_tokens, output_tokens, model=model, provider=provider)
 
 
 def record_from_message(kind: str, message, *, prompt=None, provider=None, model=None) -> None:

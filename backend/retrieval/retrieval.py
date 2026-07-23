@@ -214,7 +214,7 @@ def _hyde(query, cfg, full_config, filters):
         "Write a short factual paragraph directly answering this question. "
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     )
-    usage.record_from_message("hyde", response)
+    usage.record_from_message("hyde", response, model=full_config["llm"]["model"], provider=full_config["llm"]["provider"],)
     hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp, full_config)

@@ -187,6 +187,19 @@ def get_llm_for(config: dict, section: dict | None = None, *,
 
     return get_llm({**config, "llm": llm_cfg}, max_tokens=max_tokens)
 
+def resolve_model_provider(config: dict, section: dict | None = None,
+                            default_model: str | None = None) -> tuple[str, str]:
+    """Same model/provider precedence get_llm_for() applies internally, exposed
+    so callers can log the ACTUAL model/provider a call used (e.g. for
+    usage.record_from_message's model=/provider= kwargs) without duplicating
+    get_llm_for's resolution order and risking the two drifting apart. Keep
+    this in sync with get_llm_for()'s resolution comment if that ever changes.
+    """
+    section = section or {}
+    global_llm = config.get("llm", {}) or {}
+    model = section.get("model") or default_model or global_llm.get("model")
+    provider = section.get("provider") or global_llm.get("provider")
+    return model, provider
 
 def _clean(value):
     """Treat blank or unresolved ${VAR} placeholders as 'not set'."""

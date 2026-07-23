@@ -22,7 +22,7 @@ import json
 import logging
 
 from backend.core import usage
-from backend.core.llm_client import get_llm_for, clean_message_content
+from backend.core.llm_client import get_llm_for, clean_message_content, resolve_model_provider
 from backend.core.tool import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,11 @@ def _plan(query: str, history: list, config: dict, max_subs: int) -> dict:
         history=_format_history(history), query=query, max_subs=max_subs
     )
     response = llm.invoke(prompt)
-    usage.record_from_message("query_planner", response)
+    model_name, provider_name = resolve_model_provider(
+        config, config.get("query", {}).get("planner"),
+        default_model=config["llm"].get("answer_model"),
+    )
+    usage.record_from_message("query_planner", response, model=model_name, provider=provider_name)
     return json.loads(_extract_json(clean_message_content(response.content)))
 
 

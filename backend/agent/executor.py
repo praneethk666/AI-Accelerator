@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
-from backend.core.llm_client import get_llm, get_llm_for, clean_message_content
+from backend.core.llm_client import get_llm, get_llm_for, clean_message_content, resolve_model_provider
 from backend.core.tracing import traced_request, traced_tool, record_handled_error
 
 logger = logging.getLogger(__name__)
@@ -219,7 +219,8 @@ def _is_greeting(text: str) -> bool:
 
 
 def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
-                  clarify_tools: set[str], max_iterations: int, is_question: bool):
+                  clarify_tools: set[str], max_iterations: int, is_question: bool,
+                  config: dict, agent_cfg: dict):
     llm_auto = llm.bind_tools(tool_schemas)
     try:
         llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
@@ -235,8 +236,9 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         # Prune verbose tool messages to save input context tokens for the agent LLM
         pruned_messages = _prune_messages_for_llm(state["messages"])
         response = _invoke_with_retry(active_llm, pruned_messages)
-        
-        usage.record_from_message("agent", response)
+
+        model_name, provider_name = resolve_model_provider(config, agent_cfg)
+        usage.record_from_message("agent", response, model=model_name, provider=provider_name)
         return {"messages": [response], "iterations": iters + 1}
 
     def tools_node(state: AgentState) -> dict:
@@ -443,7 +445,7 @@ def run_agent(
     messages.append(HumanMessage(message))
 
     graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
-                          max_iterations, is_question)
+                          max_iterations, is_question, config, agent_cfg)
 
     # ONE root span + ONE token-usage sink for the whole turn — every LLM call
     # and tool dispatch below (however deep, e.g. search_documents' internal

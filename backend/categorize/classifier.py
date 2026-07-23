@@ -33,7 +33,7 @@ import fitz
 
 from .text_extractor import extract_text, extract_toc_text
 from backend.core.vision_client import describe_image
-from backend.core.llm_client import get_llm_for
+from backend.core.llm_client import get_llm_for, resolve_model_provider
 
 
 def detect_file_type(file_path: str) -> str:
@@ -250,9 +250,9 @@ Respond with ONLY the JSON object, no other text, no markdown."""
     response_text = (getattr(response, "content", None) or str(response)).strip()
     try:
         from backend.core import usage
-        llm_cfg = {**config.get("llm", {}), **(config.get("categorization") or {})}
+        model_name, provider_name = resolve_model_provider(config, config.get("categorization"))
         usage.record_from_message("categorize", response, prompt=prompt,
-                                  provider=llm_cfg.get("provider"), model=llm_cfg.get("model"))
+                                  provider=provider_name, model=model_name)
     except Exception:
         pass
 

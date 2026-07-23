@@ -371,14 +371,21 @@ def _bbox_topleft_pts(bbox, page_height):
 
 def _page_height(doc, page_no):
     try:
-        return float(doc.pages[page_no].size.height)
+        if page_no in doc.pages:
+            return float(doc.pages[page_no].size.height)
+        first_page = next(iter(doc.pages.values()))
+        return float(first_page.size.height)
     except Exception:
         return None
 
 
 def _page_area(doc, page_no) -> float:
     try:
-        sz = doc.pages[page_no].size
+        if page_no in doc.pages:
+            sz = doc.pages[page_no].size
+            return float(sz.width) * float(sz.height)
+        first_page = next(iter(doc.pages.values()))
+        sz = first_page.size
         return float(sz.width) * float(sz.height)
     except Exception:
         return 0.0
@@ -512,9 +519,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     filename = display_filename(pdf_path)
     blocks: list[dict] = []
 
-    conv = _converter(dcfg)
-    res = conv.convert(pdf_path)
-    doc = res.document
+    from backend.core.tool import check_cancelled
+    check_cancelled(document_id)
 
     # Opened lazily only when a table_source that can use it is active; closed at the
     # end. _pymupdf_cache memoizes find_tables() per page across a page's tables.
@@ -527,85 +533,181 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         except Exception as e:
             logger.warning("pymupdf: could not open %s for table extraction (%s)", pdf_path, e)
 
+    # Count pages via fitz to run page-by-page conversion (which avoids memory issues on large files)
+    total_pages = 0
+    try:
+        import fitz
+        fdoc_temp = fitz.open(pdf_path)
+        total_pages = len(fdoc_temp)
+        if fdoc is None and table_source in ("pymupdf", "auto"):
+            fdoc = fdoc_temp
+        else:
+            if fdoc is not fdoc_temp:
+                fdoc_temp.close()
+    except Exception as e:
+        logger.warning("Failed to open PDF to count pages: %s", e)
+
     # accumulate page text so each figure is captioned WITH its page context
     page_text: dict = {}
     pic_jobs: list[tuple] = []   # defer figure crop/caption until page text is gathered
     dfigs: dict = defaultdict(list)    # docling figure boxes per page (for the YOLO union)
     dtables: dict = defaultdict(list)  # docling table boxes per page (excluded from figures)
 
-    for item, _level in doc.iterate_items():
-        if isinstance(item, TextItem):
-            label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
-            text = (item.text or "").strip()
-            if not text or label in _DROP_LABELS:
-                continue
-            page_no, bbox = _prov(item)
-            bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-            btype = "heading" if label in _HEADING_LABELS else "text"
-            blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
-            page_text.setdefault(page_no, []).append(text)
+    conv = _converter(dcfg)
 
-        elif isinstance(item, TableItem):
-            page_no, bbox = _prov(item)
-            bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-            # A single-column "table" is a list / table-of-contents, not a table — emit
-            # it as text (avoids junk 1-col table blocks with placeholder "0" headers).
-            # Guard: ONLY when num_cols is known to be exactly 1. A missing/0 count means
-            # "unknown" — keep it as a table so we never flatten a real multi-col table.
-            ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
-            if ncols == 1:
-                txt = _table_as_text(item, doc)
-                if txt:
-                    blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
-                    page_text.setdefault(page_no, []).append(txt)
+    if total_pages > 0:
+        if report is not None:
+            report["pages"]["total"] = total_pages
+
+        for pg_num in range(1, total_pages + 1):
+            from backend.core.tool import check_cancelled
+            check_cancelled(document_id)
+            try:
+                res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
+                doc = res.document
+            except Exception as e:
+                logger.warning("docling: failed to convert page %d of %s: %s", pg_num, filename, e)
                 continue
-            # 'pymupdf'/'auto' try ruled-line geometry first (free, best for merged-cell
-            # tables); 'vlm' = always VLM; 'auto' falls back to VLM only when pymupdf
-            # found nothing there; anything else stays on free TableFormer.
-            complex_ = _table_is_complex(item)
-            pmd_td = None
-            if fdoc is not None and bb and (table_source == "pymupdf" or
-                                             (table_source == "auto" and complex_)):
-                pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
-            use_pymupdf = pmd_td is not None
-            use_vlm = (not use_pymupdf) and bb and (
-                table_source == "vlm" or (table_source == "auto" and complex_))
-            source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
-            if use_pymupdf:
-                td = pmd_td
-                md = _render_table_markdown(td)
-            elif use_vlm:
-                try:
-                    md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                    td = None                       # VLM returns markdown, not a grid
-                except Exception as e:
-                    logger.warning("docling: VLM table failed (page %s): %s; "
-                                   "using TableFormer", page_no, e)
-                    source = "tableformer"
+
+            for item, _level in doc.iterate_items():
+                if isinstance(item, TextItem):
+                    label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
+                    text = (item.text or "").strip()
+                    if not text or label in _DROP_LABELS:
+                        continue
+                    _, bbox = _prov(item)
+                    page_no = pg_num
+                    bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                    btype = "heading" if label in _HEADING_LABELS else "text"
+                    blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
+                    page_text.setdefault(page_no, []).append(text)
+
+                elif isinstance(item, TableItem):
+                    _, bbox = _prov(item)
+                    page_no = pg_num
+                    bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                    ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
+                    if ncols == 1:
+                        txt = _table_as_text(item, doc)
+                        if txt:
+                            blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
+                            page_text.setdefault(page_no, []).append(txt)
+                        continue
+
+                    complex_ = _table_is_complex(item)
+                    pmd_td = None
+                    if fdoc is not None and bb and (table_source == "pymupdf" or
+                                                     (table_source == "auto" and complex_)):
+                        pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                    use_pymupdf = pmd_td is not None
+                    use_vlm = (not use_pymupdf) and bb and (
+                        table_source == "vlm" or (table_source == "auto" and complex_))
+                    source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
+                    if use_pymupdf:
+                        td = pmd_td
+                        md = _render_table_markdown(td)
+                    elif use_vlm:
+                        try:
+                            md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                            td = None
+                        except Exception as e:
+                            logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                            source = "tableformer"
+                            md, td = _table_markdown(item, doc), _table_data(item, doc)
+                    else:
+                        md, td = _table_markdown(item, doc), _table_data(item, doc)
+                    if td is None:
+                        td = _markdown_table_data(md)
+                    if report is not None:
+                        report["tables"]["total"] += 1
+                        report["tables"][source] = report["tables"].get(source, 0) + 1
+                        rec = _pp(report, page_no)
+                        if rec:
+                            rec["tables"][source] = rec["tables"].get(source, 0) + 1
+                    if bb and isinstance(page_no, int):
+                        dtables[page_no].append(bb)
+                    blocks.append(_block(document_id, page_no, filename, "table",
+                                         md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
+
+                elif isinstance(item, PictureItem):
+                    _, bbox = _prov(item)
+                    page_no = pg_num
+                    bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                    if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
+                        idx = len(blocks)
+                        blocks.append(None)
+                        pic_jobs.append((idx, page_no, bb))
+                        dfigs[int(page_no)].append(bb)
+    else:
+        # Fallback to full conversion if page count could not be retrieved
+        res = conv.convert(pdf_path)
+        doc = res.document
+        for item, _level in doc.iterate_items():
+            if isinstance(item, TextItem):
+                label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
+                text = (item.text or "").strip()
+                if not text or label in _DROP_LABELS:
+                    continue
+                page_no, bbox = _prov(item)
+                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                btype = "heading" if label in _HEADING_LABELS else "text"
+                blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
+                page_text.setdefault(page_no, []).append(text)
+
+            elif isinstance(item, TableItem):
+                page_no, bbox = _prov(item)
+                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
+                if ncols == 1:
+                    txt = _table_as_text(item, doc)
+                    if txt:
+                        blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
+                        page_text.setdefault(page_no, []).append(txt)
+                    continue
+
+                complex_ = _table_is_complex(item)
+                pmd_td = None
+                if fdoc is not None and bb and (table_source == "pymupdf" or
+                                                 (table_source == "auto" and complex_)):
+                    pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                use_pymupdf = pmd_td is not None
+                use_vlm = (not use_pymupdf) and bb and (
+                    table_source == "vlm" or (table_source == "auto" and complex_))
+                source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
+                if use_pymupdf:
+                    td = pmd_td
+                    md = _render_table_markdown(td)
+                elif use_vlm:
+                    try:
+                        md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                        td = None
+                    except Exception as e:
+                        logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                        source = "tableformer"
+                        md, td = _table_markdown(item, doc), _table_data(item, doc)
+                else:
                     md, td = _table_markdown(item, doc), _table_data(item, doc)
-            else:
-                md, td = _table_markdown(item, doc), _table_data(item, doc)
-            if td is None:
-                td = _markdown_table_data(md)
-            if report is not None:
-                report["tables"]["total"] += 1
-                report["tables"][source] = report["tables"].get(source, 0) + 1
-                rec = _pp(report, page_no)
-                if rec:
-                    rec["tables"][source] = rec["tables"].get(source, 0) + 1
-            if bb and isinstance(page_no, int):
-                dtables[page_no].append(bb)   # so the YOLO union won't crop it as a figure
-            blocks.append(_block(document_id, page_no, filename, "table",
-                                 md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
+                if td is None:
+                    td = _markdown_table_data(md)
+                if report is not None:
+                    report["tables"]["total"] += 1
+                    report["tables"][source] = report["tables"].get(source, 0) + 1
+                    rec = _pp(report, page_no)
+                    if rec:
+                        rec["tables"][source] = rec["tables"].get(source, 0) + 1
+                if bb and isinstance(page_no, int):
+                    dtables[page_no].append(bb)
+                blocks.append(_block(document_id, page_no, filename, "table",
+                                     md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
 
-        elif isinstance(item, PictureItem):
-            page_no, bbox = _prov(item)
-            bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-            if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
-                idx = len(blocks)
-                blocks.append(None)  # placeholder, filled after captioning
-                pic_jobs.append((idx, page_no, bb))
-                dfigs[int(page_no)].append(bb)
+            elif isinstance(item, PictureItem):
+                page_no, bbox = _prov(item)
+                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
+                    idx = len(blocks)
+                    blocks.append(None)
+                    pic_jobs.append((idx, page_no, bb))
+                    dfigs[int(page_no)].append(bb)
 
     if fdoc is not None:
         fdoc.close()
@@ -636,6 +738,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     workers = max(1, int((config.get("vision") or {}).get("max_concurrency", 1) or 1))
 
     def _cap(idx, page_no, bb):
+        from backend.core.tool import check_cancelled
+        check_cancelled(document_id)
         return idx, _figure_block(pdf_path, document_id, page_no, filename, bb,
                                   page_text.get(page_no, []), config)
 
@@ -646,10 +750,14 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
             futs = [ex.submit(_usage.copy_ctx().run, _cap, idx, pg, bb)
                     for idx, pg, bb in pic_jobs]
             for f in futs:
+                from backend.core.tool import check_cancelled
+                check_cancelled(document_id)
                 idx, blk = f.result()
                 blocks[idx] = blk
     else:
         for idx, page_no, bb in pic_jobs:
+            from backend.core.tool import check_cancelled
+            check_cancelled(document_id)
             blocks[idx] = _cap(idx, page_no, bb)[1]
     blocks = [b for b in blocks if b is not None]
 

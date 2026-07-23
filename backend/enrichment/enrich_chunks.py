@@ -92,6 +92,8 @@ class EnrichChunksTool:
             ]
             eligible_indices = {i for i, _ in eligible}
             for start in range(0, len(eligible), batch_size):
+                from backend.core.tool import check_cancelled
+                check_cancelled(state.get("document_id"))
                 _enrich_group(llm, instruction,
                               eligible[start:start + batch_size], usage, results)
 

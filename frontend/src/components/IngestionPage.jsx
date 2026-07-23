@@ -135,13 +135,13 @@ const IngestionPage = () => {
         const res = await uploadFile(file);
         const doc = res.data;
         setFiles((prev) => [doc, ...prev]);
-        setLastRun({ name: file.name, status: doc.status, metrics: [] });
+        setLastRun({ id: doc.document_id || doc.id, name: file.name, status: doc.status, metrics: [] });
         setUploadProgress((prev) => {
           const newProgress = { ...prev };
           delete newProgress[file.name];
           return newProgress;
         });
-        pollProgress(doc.document_id, file.name);
+        pollProgress(doc.document_id || doc.id, file.name);
       } catch (err) {
         console.error('Upload failed:', err);
         setError(`Upload failed for ${file.name}: ${err.message}`);
@@ -168,6 +168,7 @@ const IngestionPage = () => {
       try {
         const { data } = await getProgress(docId);
         setLastRun({
+          id: docId,
           name,
           status: data.status,
           metrics: data.metrics || [],
@@ -190,6 +191,10 @@ const IngestionPage = () => {
           loadFiles(); // final refresh from the DB
         }
       } catch (e) {
+        if (e.message === 'Resource not found') {
+          delete activePolls.current[docId];
+          return;
+        }
         if (attempts < 800) {
           setTimeout(tick, 1500); // transient — keep trying
         } else {
@@ -225,6 +230,13 @@ const IngestionPage = () => {
         await deleteFile(fileId);
         setFiles((prev) => prev.filter((f) => f.id !== fileId));
         setError(null);
+        delete activePolls.current[fileId];
+        setLastRun((prev) => {
+          if (prev && (prev.id === fileId || prev.name === filename)) {
+            return null;
+          }
+          return prev;
+        });
       } catch (err) {
         setError(`Failed to delete file: ${err.message}`);
       }

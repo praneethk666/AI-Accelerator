@@ -29,6 +29,7 @@ Logs Q&A turn to PostgreSQL conversations table (scripts/init_db.sql):
 from __future__ import annotations
 
 import logging
+import re
 
 from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
@@ -49,12 +50,16 @@ _ANSWER_SYSTEM = (
     "if several support it, cite the most specific.\n"
     "- Copy exact values VERBATIM — part numbers, model names, measurements, torque "
     "specs, fault codes. Never paraphrase or round a number.\n"
+    "- Do NOT add your own derivations, reformulations, or 'equivalent forms' of formulas "
+    "unless that exact form appears verbatim in the source. If you present multiple forms, "
+    "every one must be cited from a specific passage.\n"
     "- If a relevant table or figure caption is in the context, use it and cite it.\n"
     "- If the context only partially answers, answer what it supports and state plainly "
     "what is missing.\n"
     "- If the answer is not in the context, reply EXACTLY: "
     "'I could not find this in the provided documents.'\n"
-    "- Be direct: lead with the answer, don't restate the question, no filler."
+    "- Be direct: lead with the answer, don't restate the question, no filler.\n"
+    "- For mathematical formulas, use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never use single brackets '[ ... ]' for math blocks."
 )
 
 
@@ -78,34 +83,45 @@ def _looks_like_refusal(answer: str) -> bool:
 # signal we don't have to invent (headings, bare labels like "Alarm code:
 # 11H"). token_count is a fallback for the rare case summary is absent for
 # another reason (summarize: false in config).
-_THIN_TOKEN_FLOOR = 20
+_THIN_TOKEN_FLOOR = 120
 
 
 def _is_thin(chunk: dict) -> bool:
     tags = chunk.get("tags") or {}
     if not (tags.get("summary") or "").strip():
         return True
+    if tags.get("chunk_type") in ("table", "list", "header"):
+        return True
     return int(chunk.get("token_count") or 0) < _THIN_TOKEN_FLOOR
 
 
 def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
-    """Auto-Merging Retrieval: a chunk too thin to be a useful standalone answer
-    source (see _is_thin) is replaced with its FULL PAGE content from
+    """Auto-Merging Retrieval: a chunk too thin or fragmented to be a useful standalone answer
+    source (see _is_thin, or multiple chunks from the same page) is replaced with its FULL PAGE content from
     document_blocks — same escape hatch the get_page_context agent tool offers,
     but applied automatically rather than depending on an LLM to notice a
     citation looks fragmented and decide to ask for it.
 
-    Validated live, 21-Jul: an agent had get_page_context available and a
-    citation for the fuller page sitting right in front of it, and answered
-    from a shallower source instead — pure LLM judgment about "is this result
-    good enough" isn't reliable enough on its own. This makes the expansion
-    unconditional for thin chunks instead of optional.
-
     Caps how many DISTINCT pages get fetched (max_pages) to bound DB round
     trips when many candidate chunks happen to be thin, and dedupes by
-    (document_id, page) since several thin chunks often share one page (e.g.
-    a bare heading AND a bare label both orphaned on the same alarm-code page)."""
-    thin_ids = {c["chunk_id"] for c in chunks if _is_thin(c)}
+    (document_id, page) since several thin chunks often share one page."""
+    # Count how many retrieved chunks come from each page to detect fragmented pages
+    page_counts: dict[tuple, int] = {}
+    for c in chunks:
+        ref = c.get("source_ref") or {}
+        doc_id, page = c.get("document_id"), ref.get("page")
+        if doc_id and page is not None:
+            key = (str(doc_id), page)
+            page_counts[key] = page_counts.get(key, 0) + 1
+
+    thin_ids = set()
+    for c in chunks:
+        ref = c.get("source_ref") or {}
+        doc_id, page = c.get("document_id"), ref.get("page")
+        key = (str(doc_id), page) if doc_id and page is not None else None
+        if _is_thin(c) or (key and page_counts.get(key, 0) > 1):
+            thin_ids.add(c["chunk_id"])
+
     if not thin_ids:
         return chunks
 
@@ -238,13 +254,13 @@ class AnswererTool:
                 ref = chunk.get("source_ref") or {}
                 tags = chunk.get("tags") or {}
                 citations.append({
-                    "filename":    ref.get("filename"),
+                    "filename":    _clean_filename(ref.get("filename") or "") or ref.get("filename"),
                     "page":        ref.get("page"),
                     "document_id": chunk.get("document_id"),
                     "score":       chunk.get("_score"),
                     "sheet":       ref.get("sheet"),
                     "slide":       ref.get("slide"),
-                    "snippet":     (chunk.get("text") or "")[:600],
+                    "snippet":     (chunk.get("text") or ""),
                     "summary":     tags.get("summary"),
                     "keywords":    tags.get("keywords"),
                     "image_path":  chunk.get("image_path"),
@@ -274,10 +290,21 @@ class AnswererTool:
         return state
 
 
+_UUID_PREFIX_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_',
+    re.IGNORECASE,
+)
+
+
+def _clean_filename(name: str) -> str:
+    """Strip leading UUID prefix (e.g. 'abc123..._report.pdf' -> 'report.pdf')."""
+    return _UUID_PREFIX_RE.sub('', name or '') or name
+
+
 def _locator(ref: dict) -> str:
     """Human-readable source label that works for any file type:
     'report.pdf, p.3' / 'sheet.xlsx, Sheet1' / 'deck.pptx, slide 4'."""
-    name = ref.get("filename") or "source"
+    name = _clean_filename(ref.get("filename") or "source")
     if ref.get("page") is not None:
         return f"{name}, p.{ref['page']}"
     if ref.get("sheet"):

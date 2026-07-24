@@ -16,10 +16,17 @@ Run standalone on a NormalizedBlock JSON (e.g. an extractor's output):
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import uuid
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from backend.core.llm_client import get_llm_for
 from backend.core.tool import PipelineState
+
+logger = logging.getLogger(__name__)
 
 CONTENT_TYPES = {"text", "heading", "table", "image_caption"}
 ATOMIC_TYPES = {"table", "image_caption"}  # one chunk each, never split
@@ -677,6 +684,273 @@ def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_f
     return col_chunks if col_chunks else None
 
 
+_FULLWIDTH_MAP = str.maketrans(
+    "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+)
+
+
+def _normalize_fullwidth(text: str) -> str:
+    """Japanese manuals often mix fullwidth digits/letters into alarm codes etc.
+    (e.g. '１１Ｈ' for '11H') — normalize so context-anchor matching isn't fooled
+    by a fullwidth/halfwidth mismatch between a heading and its table."""
+    return (text or "").translate(_FULLWIDTH_MAP)
+
+
+def _has_header_anomaly(headers: list) -> bool:
+    non_empty = [str(h).strip() for h in headers if str(h).strip()]
+    has_dupes = len(non_empty) != len(set(non_empty))
+    has_blanks = any(not str(h).strip() for h in headers)
+    return has_dupes or has_blanks
+
+
+def _has_ragged_rows(rows: list[list]) -> bool:
+    col_counts = {len(r) for r in rows}
+    return len(col_counts) > 1
+
+
+def _is_orphan_table(rows: list[list]) -> bool:
+    return len(rows) <= 2
+
+
+def _lacks_context_anchor(headers: list, rows: list[list], section_lead: str, preceding_text: str) -> bool:
+    """A table whose surrounding text names a specific code (e.g. 'Alarm code 11H')
+    that the table's OWN cells never repeat is the exact fragmentation failure mode
+    this repair step exists for — a chunk built from the table alone would answer a
+    question about the wrong alarm code's row just as readily as the right one."""
+    combined = _normalize_fullwidth(" ".join(
+        [str(h) for h in headers] + [str(c) for r in rows for c in r]
+    )).lower()
+    context = _normalize_fullwidth(f"{preceding_text} {section_lead}")
+    candidates = re.findall(r"\b\d+[a-zA-Z]\b", context)
+    if not candidates:
+        return False
+    return not any(c.lower() in combined for c in candidates)
+
+
+def _classify_table_for_repair(block: dict, section_lead: str, preceding_text: str) -> dict:
+    """Decide whether a table is 'hard' enough to warrant an LLM repair pass instead
+    of the cheap deterministic extractors below. Cheap, well-formed tables (the
+    common case) should never pay for an LLM call — only route tables here that are
+    structurally broken OR that strip away context (like an alarm code) their own
+    cells never mention."""
+    td = block.get("table_data") or {}
+    headers = td.get("headers") or []
+    rows = td.get("rows") or []
+    if not headers or not rows:
+        return {"needs_llm": False, "reasons": []}
+
+    reasons = []
+    if _has_header_anomaly(headers):
+        reasons.append("header_anomaly")
+    if _has_ragged_rows(rows):
+        reasons.append("ragged_rows")
+    if _is_orphan_table(rows):
+        reasons.append("orphan_table")
+    if _lacks_context_anchor(headers, rows, section_lead, preceding_text):
+        reasons.append("missing_context_anchor")
+    return {"needs_llm": len(reasons) > 0, "reasons": reasons}
+
+
+def _disambiguate_headers(headers: list) -> list[str]:
+    """Real extracted tables sometimes have a genuinely duplicated header (e.g. a
+    merged/colspan header split wrong upstream produces 'Factor 1' twice). Renaming
+    duplicates BEFORE building the LLM prompt or the structured dict matters for two
+    reasons: (1) two JSON object keys named 'Factor 1' silently collide — json.loads
+    keeps only the last one, quietly losing a whole column's data; (2) without a
+    disambiguated label the LLM has no way to tell the two columns apart either, so
+    it tends to just repeat the same value/label for both instead of resolving them."""
+    from collections import Counter
+    counts = Counter(str(h).strip() or "column" for h in headers)
+    seen: dict[str, int] = {}
+    out = []
+    for h in headers:
+        key = str(h).strip() or "column"
+        if counts[key] > 1:
+            seen[key] = seen.get(key, 0) + 1
+            out.append(f"{key} ({seen[key]})")
+        else:
+            out.append(key)
+    return out
+
+
+_REPAIR_STOPWORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as",
+    "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
+    "could", "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further",
+    "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "itself", "lets", "me", "more", "most", "my",
+    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our",
+    "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so", "some", "such", "than",
+    "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this",
+    "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were", "what",
+    "when", "where", "which", "while", "who", "whom", "why", "with", "would", "you", "your", "yours",
+    "yourself", "yourselves",
+    "blank", "none", "empty", "na", "null", "nil", "yes", "no", "true", "false",
+}
+
+
+def _row_traceability_error(chunk_text: str, row_cells: list, context: str) -> str | None:
+    """Every content word in a repaired row's text must trace back to THAT row's own
+    cells or the surrounding context — checked per-row (not against the whole
+    table), so words that are real elsewhere in the table but don't belong to THIS
+    row (e.g. another row's cause/action) still fail. Catches misattribution, not
+    just outright invention — a bag-of-words check against the whole table can't
+    tell 'used the right words' from 'used the right words from the wrong row'."""
+    norm_text = _normalize_fullwidth(chunk_text).lower()
+    out_words = re.findall(r"\w+", norm_text)
+    allowed = set(re.findall(r"\w+", _normalize_fullwidth(" ".join(str(c) for c in row_cells) + " " + context).lower()))
+    untraceable = [w for w in out_words if w not in allowed and w not in _REPAIR_STOPWORDS and not w.isdigit()]
+    # Proportional, not a flat count: a single ROW's own text is short, so a flat
+    # allowance (e.g. "3") is a huge fraction of a ~7-word sentence — validated live,
+    # a misattributed row (right words, wrong row — e.g. row 0's text actually
+    # describing row 2's cause/action) produced exactly 3 untraceable words and a
+    # flat threshold of 3 let it straight through. Small connective/grammar slack
+    # only, scaled to how much content the row actually has.
+    max_untraceable = max(1, len(out_words) // 8)
+    if len(untraceable) > max_untraceable:
+        return f"untraceable words not present in this row or its context: {untraceable}"
+    return None
+
+
+def _validate_repaired_rows(
+    parsed: list[dict], headers: list, rows: list[list], section_lead: str, preceding_text: str,
+) -> tuple[list[dict], str] | tuple[None, str]:
+    """Validate + reorder the LLM's repaired rows against the ORIGINAL rows by an
+    explicit row_index anchor (not just count/order), so a misordered or
+    misattributed response fails validation instead of silently shipping a row's
+    text under the wrong row_index. Returns (ordered_items, None) on success or
+    (None, error) on failure — caller discards the whole repair on any failure and
+    falls back to the deterministic chunkers (fail closed, never ship a table that's
+    half-repaired and half-wrong)."""
+    if len(parsed) != len(rows):
+        return None, f"row count mismatch: LLM returned {len(parsed)}, expected {len(rows)}"
+
+    by_index: dict[int, dict] = {}
+    for item in parsed:
+        idx = item.get("row_index")
+        if not isinstance(idx, int) or idx in by_index or not (0 <= idx < len(rows)):
+            return None, f"invalid or duplicate row_index: {item.get('row_index')!r}"
+        by_index[idx] = item
+
+    if set(by_index) != set(range(len(rows))):
+        return None, f"row_index values don't cover every original row: got {sorted(by_index)}"
+
+    context = f"{preceding_text} {section_lead}"
+    ordered = []
+    for idx in range(len(rows)):
+        item = by_index[idx]
+        chunk_text = (item.get("chunk_text") or "").strip()
+        if not chunk_text:
+            return None, f"row {idx}: chunk_text is empty"
+        err = _row_traceability_error(chunk_text, rows[idx], context)
+        if err:
+            return None, f"row {idx}: {err}"
+        ordered.append(item)
+    return ordered, ""
+
+
+def _repair_table_with_llm(block: dict, config: dict, section_lead: str, preceding_text: str, ref_fn) -> list[dict] | None:
+    """Rewrite a 'hard' table (see _classify_table_for_repair) into one self-contained,
+    context-enriched chunk per row via an LLM, so a row that only makes sense next to
+    its alarm code / parent section still does when retrieved on its own. Fails
+    closed: any parse or validation failure discards the repair and returns None,
+    letting the caller fall through to the normal deterministic table chunkers —
+    this must never be the only path that can turn a table into chunks."""
+    block_id = block.get("block_id", "unknown")
+    td = block.get("table_data") or {}
+    raw_headers = td.get("headers") or []
+    rows = td.get("rows") or []
+    if not raw_headers or not rows:
+        return None
+
+    headers = _disambiguate_headers(raw_headers)
+    document_id = block.get("document_id")
+    source_ref = ref_fn(block.get("source_ref"))
+    filename = (source_ref or {}).get("filename") or "document"
+
+    system_prompt = (
+        "You are an expert document parser. Correct a poorly-extracted PDF table and "
+        "generate context-enriched row-level chunks in strict JSON.\n\n"
+        "Guidelines:\n"
+        "1. Combine the surrounding context and section path into EACH row's chunk_text "
+        "so it is self-contained for vector search (inject any alarm code, parent "
+        "section, or component name directly into the text).\n"
+        "2. Column headers already disambiguated with a suffix like '(1)'/'(2)' mark two "
+        "DIFFERENT original columns that share one label upstream (a merged/split-header "
+        "extraction artifact) — treat them as distinct columns, never merge their values.\n"
+        "3. Return EXACTLY one JSON object per row, in any order, each containing:\n"
+        "   - 'row_index': the row's 0-based position in the 'Raw Table Rows' list below "
+        "(REQUIRED, must be an integer, must be unique per row — this is how your output "
+        "is matched back to the source row, so get it right).\n"
+        "   - 'chunk_text': a complete, self-contained sentence describing ONLY this row.\n"
+        "   - 'structured': a dict of column-label -> cell-value for ONLY this row.\n"
+        "4. Never state a value under the wrong row_index, and never invent a value not "
+        "present in that row or the given context.\n"
+        "5. Return ONLY a raw JSON array matching: "
+        '[{"row_index": 0, "chunk_text": "...", "structured": {"...": "..."}}]. '
+        "No markdown code fences, no explanation text."
+    )
+    user_prompt = (
+        f"Document Filename: {filename}\n"
+        f"Parent Section/Context Path: {section_lead}\n"
+        f"Preceding Context: {preceding_text}\n\n"
+        f"Table Headers:\n{json.dumps(headers)}\n\n"
+        f"Raw Table Rows:\n{json.dumps(rows)}\n\n"
+        "Return the JSON array now:"
+    )
+
+    try:
+        llm = get_llm_for(config, config.get("chunking"))
+        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        res_text = (response.content or "").strip()
+        if res_text.startswith("```"):
+            lines = res_text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            res_text = "\n".join(lines).strip()
+
+        parsed = json.loads(res_text)
+        if not isinstance(parsed, list):
+            logger.warning("table %s: LLM repair response is not a JSON list — discarding", block_id)
+            return None
+
+        ordered, err = _validate_repaired_rows(parsed, headers, rows, section_lead, preceding_text)
+        if ordered is None:
+            logger.warning("table %s: LLM repair failed validation (%s) — discarding, "
+                            "falling back to deterministic chunking", block_id, err)
+            return None
+    except Exception as exc:
+        logger.warning("table %s: LLM repair call failed (%s) — falling back to "
+                        "deterministic chunking", block_id, exc)
+        return None
+
+    chunks = []
+    for item in ordered:
+        chunk_text = item["chunk_text"].strip()
+        chunks.append({
+            "chunk_id": str(uuid.uuid4()),
+            "document_id": document_id,
+            "text": chunk_text,
+            "token_count": _ntok(chunk_text),
+            "table_data": item.get("structured"),
+            "source_ref": {**(source_ref or {}), "section": section_lead},
+            "tags": {
+                "document_type": "manual",
+                "chunk_type": "llm_repaired_table_row",
+                "repaired": True,
+                # Reuse the repair sentence as the summary — it's already a precise,
+                # context-enriched description of the row, and it stops
+                # answerer._is_thin() from treating a missing summary as "too thin"
+                # and blowing this careful repair away in favor of the raw full page.
+                "summary": chunk_text,
+            },
+        })
+    return chunks
+
+
 def chunk_blocks(
     blocks: list[dict],
     size: int = DEFAULT_SIZE,
@@ -686,6 +960,8 @@ def chunk_blocks(
     semantic_model: str = "minishlab/potion-base-32M",
     section_aware: bool = True,
     split_large_tables: bool = True,
+    repair_hard_tables: bool = False,
+    config: dict | None = None,
 ) -> list[dict]:
     """Turn NormalizedBlock dicts into Chunk dicts.
 
@@ -796,6 +1072,7 @@ def chunk_blocks(
 
         if btype in ATOMIC_TYPES:  # table / image_caption -> atomic, breaks the stream
             heading_lead = pending_lead_text()
+            preceding_text = "\n".join(buf_parts[-2:]).strip()  # real paragraph text, if any, before flush() clears it
             flush()
             # an image still pending vision was never described — its placeholder
             # text isn't content; vision_enrichment writes the real caption.
@@ -805,6 +1082,24 @@ def chunk_blocks(
                 continue
 
             if btype == "table":
+                # -1. Hard table (broken headers/rows, orphaned, or missing a context
+                # anchor like an alarm code the surrounding text names) -> LLM repair.
+                # Gated off by default (repair_hard_tables) since it's an LLM call per
+                # hard table; tried BEFORE the cheap deterministic extractors below
+                # specifically because a well-formed table with a missing context
+                # anchor would otherwise sail through them looking "fine" while still
+                # losing the one thing (e.g. the alarm code) that made it answerable.
+                if repair_hard_tables and config is not None:
+                    section_lead = current_section or ""
+                    classification = _classify_table_for_repair(block, section_lead, preceding_text)
+                    if classification["needs_llm"]:
+                        repaired = _repair_table_with_llm(block, config, section_lead, preceding_text, _ref)
+                        if repaired:
+                            chunks.extend(repaired)
+                            continue
+                        # else: fall through to the deterministic extractors below —
+                        # repair failing closed must never mean the table gets dropped.
+
                 # 0. Check if table represents a Troubleshooting Cause & Action list
                 trouble_chunks = _try_extract_troubleshooting_table_chunks(block, document_id, _ref)
                 if trouble_chunks:
@@ -900,6 +1195,8 @@ class ChunkTool:
                 "chunking_model", "minishlab/potion-base-32M"),
             section_aware=cfg.get("section_aware", True),
             split_large_tables=cfg.get("split_large_tables", True),
+            repair_hard_tables=cfg.get("repair_hard_tables", False),
+            config=config,
         )
         state.setdefault("chunks", []).extend(chunks)
         return state

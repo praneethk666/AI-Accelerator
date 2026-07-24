@@ -9,11 +9,22 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from backend.core.config import PipelineConfig
 from backend.core.registry import ToolRegistry
 from backend.core.tool import PipelineState
 from backend.pipeline.graph import build_pipeline
 from tests.stub_tools import STUB_NAMES
+
+
+@pytest.fixture(autouse=True)
+def _no_cancellation_db_check(monkeypatch):
+    # Each node now calls check_cancelled(document_id), which looks the document
+    # row up in Postgres — these are hermetic orchestration tests with a fake
+    # document_id ("d1") that was never inserted, so without this they'd all
+    # raise IngestionCancelledError as if the (nonexistent) doc had been deleted.
+    monkeypatch.setattr("backend.pipeline.graph.check_cancelled", lambda document_id: None)
 
 ALL_STEPS = [
     "categorize",

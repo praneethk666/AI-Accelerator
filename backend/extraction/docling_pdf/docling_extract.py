@@ -760,6 +760,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
             check_cancelled(document_id)
             blocks[idx] = _cap(idx, page_no, bb)[1]
     blocks = [b for b in blocks if b is not None]
+    blocks = _merge_small_repeated_icons(blocks)
 
     # Figure totals reflect what the semantic gate KEPT (proposed - furniture dropped).
     if report is not None:
@@ -785,6 +786,46 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     logger.info("docling: %d blocks from %d pages (%d tables, %d pictures)",
                 len(blocks), len(doc.pages), len(doc.tables), len(doc.pictures))
     return blocks
+
+
+def _merge_small_repeated_icons(blocks: list[dict], icon_pt: float = 40.0, min_group: int = 3) -> list[dict]:
+    """Small warning/legend icons are real, correctly-classified figures (the VLM gate
+    already keeps them, not page furniture) — but a safety-warnings page can carry 6-9
+    of them (validated live on a real Toyota manual: diamond/triangle hazard symbols,
+    each ~25-32pt), and indexing each as its own near-duplicate image_caption chunk
+    fragments retrieval without adding distinct value — a query about 'fire hazard
+    warning' would get several nearly-identical hits instead of one useful one.
+
+    When a page has >= min_group image_caption blocks that are ALL under icon_pt in
+    both dimensions, merge them into ONE combined block for that page (keeping every
+    caption's content, just as one chunk) instead of dropping any of them — this is
+    about de-fragmenting redundant real content, not filtering false positives."""
+    by_page: dict[int, list[int]] = defaultdict(list)
+    for i, b in enumerate(blocks):
+        if b.get("type") != "image_caption":
+            continue
+        ref = b.get("source_ref") or {}
+        bbox = ref.get("bbox") or []
+        if len(bbox) == 4 and (bbox[2] - bbox[0]) <= icon_pt and (bbox[3] - bbox[1]) <= icon_pt:
+            by_page[ref.get("page")].append(i)
+
+    drop: set[int] = set()
+    for page, idxs in by_page.items():
+        if len(idxs) < min_group:
+            continue
+        captions = [(blocks[i].get("text") or "").strip() for i in idxs]
+        merged_text = (
+            f"This page has {len(idxs)} small warning/legend icons: "
+            + " | ".join(c for c in captions if c)
+        )
+        merged = dict(blocks[idxs[0]])
+        merged["text"] = merged_text
+        merged["metadata"] = dict(merged.get("metadata") or {})
+        merged["metadata"]["merged_icon_count"] = len(idxs)
+        blocks[idxs[0]] = merged
+        drop.update(idxs[1:])
+        logger.info("docling: merged %d small icons on page %s into one chunk", len(idxs), page)
+    return [b for i, b in enumerate(blocks) if i not in drop]
 
 
 def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config):

@@ -22,7 +22,7 @@ from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core.models import get_dense_query_prefix, get_dense_model, get_reranker
 from backend.core import usage
-from backend.core.llm_client import get_llm, clean_message_content
+from backend.core.llm_client import get_llm, resolve_model_provider, clean_message_content
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
 
@@ -214,7 +214,8 @@ def _hyde(query, cfg, full_config, filters):
         "Write a short factual paragraph directly answering this question. "
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     )
-    usage.record_from_message("hyde", response, model=full_config["llm"]["model"], provider=full_config["llm"]["provider"],)
+    model_name, provider_name = resolve_model_provider(full_config)
+    usage.record_from_message("hyde", response, model=model_name, provider=provider_name)
     hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp, full_config)

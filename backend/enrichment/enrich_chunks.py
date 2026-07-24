@@ -85,10 +85,16 @@ class EnrichChunksTool:
         eligible_indices: set[int] = set()
         if llm is not None:
             from backend.core import usage
+            # Chunks chunk_tool.py already LLM-repaired (backend.chunking.chunk_tool.
+            # _repair_table_with_llm) carry tags.summary + tags.repaired=True and skip
+            # this step entirely — spending a second LLM call to re-summarize text an
+            # LLM JUST wrote would be pure waste. They still get local keywords below,
+            # same as any other chunk that isn't sent to the LLM.
             eligible = [
                 (i, (c.get("text") or "").strip())
                 for i, c in enumerate(chunks)
                 if len((c.get("text") or "").strip()) >= 20
+                and not (c.get("tags") or {}).get("repaired")
             ]
             eligible_indices = {i for i, _ in eligible}
             for start in range(0, len(eligible), batch_size):
@@ -106,6 +112,7 @@ class EnrichChunksTool:
         # every one was a legitimately-short heading. Only llm_failed is an error.
         too_short = 0
         llm_failed = 0
+        already_enriched = 0
         for i, chunk in enumerate(chunks):
             tags = chunk.setdefault("tags", {})
             if industry is not None:
@@ -125,7 +132,9 @@ class EnrichChunksTool:
             else:
                 tags["keywords"] = _keywords(chunk.get("text") or "", top_k)
                 if llm is not None:
-                    if i in eligible_indices:
+                    if tags.get("repaired"):
+                        already_enriched += 1
+                    elif i in eligible_indices:
                         llm_failed += 1
                     else:
                         too_short += 1
@@ -134,6 +143,10 @@ class EnrichChunksTool:
             logger.info("enrich: %d/%d chunks too short for LLM summarization "
                         "(used frequency keywords instead — expected, not an error)",
                         too_short, len(chunks))
+        if already_enriched:
+            logger.info("enrich: %d/%d chunks already LLM-repaired at chunking time "
+                        "— skipped re-summarization, used local keywords",
+                        already_enriched, len(chunks))
         if llm is not None and llm_failed:
             state.setdefault("errors", []).append(
                 f"enrich: {llm_failed}/{len(chunks)} chunks used fallback keywords "

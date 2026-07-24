@@ -21,43 +21,38 @@
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash (PAID) — back to this after a same-day
-  # detour through z.ai GLM (free) proved unreliable under REAL ingestion load: the
-  # servo manual's table-stitch arbitration hit 429s 3x, and enrich_chunks (a few dozen
-  # batched calls) took 26.2 MINUTES. Real cost data from that run (Postgres
-  # documents.token_usage, 21-Jul): 213 enrichment calls, 258,546 tokens, $0 (z.ai
-  # free) — so z.ai's problem was never cost, it was throughput. Gemini 2.5-flash paid
-  # tier gets 150-300+ RPM (Tier 1, checked live) vs the restrictive per-model quotas
-  # we hit on both z.ai and Gemma-4-31b — worth the modest real spend to stop losing
-  # engineering time to free/cheap-tier throughput ceilings. ONE key (GOOGLE_API_KEY)
-  # powers llm + vision + vision_ocr; agent stays on NVIDIA (separate credit pool, no
-  # issues observed there, low call volume).
-  provider: google
-  model: gemini-2.5-flash
-  answer_model: gemini-2.5-flash
-  api_key: ${GOOGLE_API_KEY}
+  # ACTIVE (24-Jul, v3): z.ai GLM-4.7-flash (FREE) — Gemini 2.5-flash (the 21-Jul v2
+  # choice below) got RETIRED by Google: every call now 404s with "no longer
+  # available to new users" (confirmed live, not a transient outage — same for
+  # vision/vision_ocr, which shared this key). z.ai's known weakness is BULK
+  # ingestion throughput (26.2-min enrich step, 429s under load — see the v2 note
+  # below, still accurate) — accepted for now since there's no other zero-setup
+  # option; re-benchmark against Cerebras+Gemma4 (real vision support, ~1M
+  # tok/day free — see vision: block) once that key exists, and NVIDIA as a
+  # faster paid-credit alternative if z.ai's throughput becomes the bottleneck
+  # again. agent stays on NVIDIA (unaffected by any of this).
+  provider: openai
+  model: glm-4.7-flash
+  answer_model: glm-4.7-flash
+  base_url: https://api.z.ai/api/paas/v4/
+  api_key: ${ZAI_API_KEY}
   temperature: 0.2
-  thinking_budget: 0        # REQUIRED, not optional — Gemini 2.5-flash has reasoning
-                             # ON by default. Validated live (21-Jul): without this, a
-                             # ONE-SENTENCE summary request burned 424 of 443 output
-                             # tokens on hidden reasoning (96% waste) — silently
-                             # inflates cost AND latency on every categorize/enrichment
-                             # call. thinking_budget=0 fixed it (443 -> 20 tokens).
-                             # NOTE: this is the Gemini 2.5 family's parameter name;
-                             # Gemma models use thinking_level instead (see vision:
-                             # block, which tries both — get_llm() here does not,
-                             # since it can't try-then-fall-back at call time; if you
-                             # swap llm.model to a Gemma model, change this key too).
+  extra_body: { thinking: { type: disabled } }  # REQUIRED, not optional — GLM
+                             # returns EMPTY content with thinking left on default.
   # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
-  # z.ai GLM (FREE, used until 21-Jul, unreliable under batch load): provider: openai
-  #           model: glm-4.7-flash  base_url: https://api.z.ai/api/paas/v4/
-  #           api_key: ${ZAI_API_KEY}  extra_body: { thinking: { type: disabled } }
-  #           (GLM needs thinking disabled or it returns EMPTY content — required if
-  #           you ever switch back, not optional)
+  # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul, then Google retired the model
+  #           for this key — 404 "no longer available to new users"): provider: google
+  #           model: gemini-2.5-flash  api_key: ${GOOGLE_API_KEY}  thinking_budget: 0
+  #           If you revive Gemini, use gemini-flash-latest (an alias Google keeps
+  #           repointed at their current model) instead of a pinned version, or this
+  #           exact failure recurs. thinking_budget: 0 is still REQUIRED for the
+  #           Gemini 2.5 family (Gemma models use thinking_level instead) — validated
+  #           21-Jul: without it a ONE-SENTENCE summary burned 424/443 output tokens
+  #           on hidden reasoning (96% waste).
   # OpenAI (PAID):  provider: openai  model: gpt-4o-mini  answer_model: gpt-4o-mini  api_key: ${OPENAI_API_KEY}
-  # DeepSeek (cheap paid, ~$0.87/M out — fallback if the GLM free tier proves too
-  #           rate-limited): provider: openai  model: deepseek-chat
+  # DeepSeek (cheap paid, ~$0.87/M out — never validated for quality in this
+  #           project, fallback only): provider: openai  model: deepseek-chat
   #           base_url: https://api.deepseek.com/v1  api_key: ${DEEPSEEK_API_KEY}
   # Groq (free):    provider: groq    model: llama-3.1-8b-instant  answer_model: llama-3.3-70b-versatile  api_key: ${GROQ_API_KEY}
   #                 NOTE: Groq free tier caps EACH model at ~100K tokens/day (per-model bucket) — hit this 15-Jul.
@@ -83,39 +78,45 @@ categorization:
 vision:
   # ONE vision model for ALL vision tasks (categorize + figure captioning), matching
   # vision_ocr so cropping/grounding/transcription all use the same model.
-  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash (PAID) — replaces the SAME-DAY Gemma
-  # 4-31b-it detour once we learned Gemma has its OWN restrictive per-model quota (30
-  # RPM / 16K input-tokens-min) that billing does NOT lift — it caused a 429 storm and
-  # a 22.7-MINUTE extract step on a 105-page manual. Gemini 2.5-flash's paid tier gets
-  # 150-300+ RPM (Tier 1, checked live 21-Jul) — a real, much higher ceiling, not an
-  # assumption this time. Also a live head-to-head on the same wiring-diagram image
-  # showed Gemini 2.5-flash's caption was noticeably more specific/accurate than
-  # Gemma's (correctly separated the two amplifier units, named exact connectors) —
-  # it's the flagship model, Gemma is the smaller efficiency-optimized sibling.
-  # Real measured cost for the ONE document that fully ingested on Gemma (Postgres
-  # documents.token_usage, 21-Jul): 259 vision calls, 183,942 tokens, $0.0223 total —
-  # confirms vision cost is negligible regardless of which of these two models is used,
-  # so there's no real tradeoff left once Gemini also wins on quality AND throughput.
-  # Gemini has a reasoning mode too, but it's suppressed natively in _describe_google()
-  # (thinking_level=MINIMAL) — no extra_body needed here, unlike the openai provider.
-  # IMPORTANT FINDING (provider-independent): on the Toyota GL32Mi-63 spec-table page,
-  # GENERAL VLM table transcription (the VLM-escalation path below,
+  # ACTIVE (24-Jul, v3): z.ai GLM-4.6V-Flash (FREE) — Gemini 2.5-flash (v2, below) got
+  # RETIRED by Google (404 "no longer available to new users", confirmed live — not
+  # a transient outage). Re-validated live 24-Jul on the SAME real manual's safety-
+  # warning icons: classification was accurate (correctly called small hazard icons
+  # real figures, not page furniture, with specific detail — "diamond with lightning
+  # bolt" = electrical hazard, "triangle with flame" = fire hazard). Known weakness
+  # is throughput under bulk load (429 "temporarily overloaded" needing retries on
+  # ~20 sequential calls, 24-Jul) — same pattern as the v2 note below. NVIDIA's
+  # nemotron-nano-12b-v2-vl was also tested 24-Jul: faster, but MISCLASSIFIED a real
+  # warning icon as page furniture in that same test — a real accuracy miss, not
+  # just a speed tradeoff, so it's not a clear upgrade despite being faster.
+  # Cerebras+Gemma4 (real vision support, ~1M tok/day free per Cerebras's own docs)
+  # is a promising untested option once a CEREBRAS_API_KEY exists — benchmark real
+  # RPM and accuracy before trusting it, same as every other provider claim here.
+  # IMPORTANT FINDING (provider-independent, still true): on the Toyota GL32Mi-63
+  # spec-table page, GENERAL VLM table transcription (the VLM-escalation path below,
   # extraction.by_kind.*.table_source) is structurally worse than pymupdf's ruled-line
   # extraction — confirmed on THREE different vision models (raw TableFormer,
   # GLM-4.6V-Flash, NVIDIA nemotron-nano-12b-v2-vl). Don't rely on any VLM for table
   # structure regardless of provider; general figure/photo captioning (this block's
   # actual job) is a different, lower-precision task.
-  provider: google
-  model: gemini-2.5-flash
-  api_key: ${GOOGLE_API_KEY}
+  provider: openai
+  model: glm-4.6v-flash
+  base_url: https://api.z.ai/api/paas/v4/
+  api_key: ${ZAI_API_KEY}
+  extra_body: { thinking: { type: disabled } }
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
-  # Gemma-4-31b-it (cheaper but 30 RPM/16K-TPM hard quota, not worth it — see above):
+  # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul, then Google retired the model —
+  #           see above): provider: google  model: gemini-2.5-flash (or
+  #           gemini-flash-latest, an alias that won't suffer this exact failure
+  #           again)  api_key: ${GOOGLE_API_KEY}
+  # Gemma-4-31b-it on Google AI Studio (cheaper but 30 RPM/16K-TPM hard quota):
   #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
-  # z.ai GLM (FREE, unreliable under batch load — see llm: block): provider: openai
-  #           model: glm-4.6v-flash  base_url: https://api.z.ai/api/paas/v4/
-  #           api_key: ${ZAI_API_KEY}  extra_body: { thinking: { type: disabled } }
-  # NVIDIA Build API (free credits): provider: openai  model: meta/llama-3.2-11b-vision-instruct
-  #                                  base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # NVIDIA Build API (fast, but see the 24-Jul accuracy miss above — verify before
+  #           trusting): provider: openai  model: nvidia/nemotron-nano-12b-v2-vl
+  #                      base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # Cerebras + Gemma4 (untested — needs CEREBRAS_API_KEY, benchmark before trusting):
+  #           provider: openai  model: gemma-4-31b  base_url: https://api.cerebras.ai/v1
+  #           api_key: ${CEREBRAS_API_KEY}
   # Self-hosted Qwen3-VL (private):  provider: openai  model: qwen3-vl
   #                                  base_url: http://<your-gpu-host>:8000/v1  api_key: ${VLLM_API_KEY}
   enabled: true
@@ -159,26 +160,26 @@ vision_ocr:
   enabled: true
   mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on
                             # hard pages) | always (VLM-ONLY: skips Paddle/pymupdf entirely)
-                            # Back to always (21-Jul, v2, Gemini 2.5-flash): every
-                            # scanned/mixed page gets proper VLM transcription instead
-                            # of the weaker free Paddle fallback. Was "complex" for a
-                            # few hours today while on Gemma's restrictive 30 RPM
-                            # quota; Gemini's 150-300+ RPM tier removes that constraint
-                            # — this restores the original pre-session behavior.
-  # ACTIVE (21-Jul, v2): Google Gemini 2.5-flash — matches the vision: block above
-  # (same rationale: real per-call cost is negligible, much higher rate ceiling than
-  # Gemma, and measurably better caption quality — see there). Shares GOOGLE_API_KEY.
-  provider: google
-  model: gemini-2.5-flash
-  api_key: ${GOOGLE_API_KEY}
+                            # NOTE: z.ai's throughput ceiling (see llm:/vision: blocks)
+                            # applies here too — if scanned-page ingestion gets too
+                            # slow, drop this to "complex" so only flagged pages pay
+                            # for a VLM call instead of every page.
+  # ACTIVE (24-Jul, v3): z.ai GLM-4.6V-Flash — matches the vision: block above (same
+  # provider swap, same reason: Gemini 2.5-flash got retired by Google, see there).
+  provider: openai
+  model: glm-4.6v-flash
+  base_url: https://api.z.ai/api/paas/v4/
+  api_key: ${ZAI_API_KEY}
+  extra_body: { thinking: { type: disabled } }
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
+  # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul — see vision: block above for why
+  #           it stopped working): provider: google  model: gemini-2.5-flash (or
+  #           gemini-flash-latest)  api_key: ${GOOGLE_API_KEY}
   # Gemma-4-31b-it (cheaper but 30 RPM/16K-TPM hard quota, not worth it):
   #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
-  # z.ai GLM (FREE, unreliable under batch load): provider: openai  model: glm-4.6v-flash
-  #           base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
-  #           extra_body: { thinking: { type: disabled } }
-  # NVIDIA Build API:      provider: openai  model: meta/llama-3.2-11b-vision-instruct
-  #                        base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # NVIDIA Build API (fast, unverified accuracy — see vision: block above):
+  #           provider: openai  model: nvidia/nemotron-nano-12b-v2-vl
+  #           base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
   # Self-hosted Qwen3-VL:  provider: openai  model: qwen3-vl
   #                        base_url: http://<your-gpu-host>:8000/v1  api_key: ${VLLM_API_KEY}
   dpi: 150
@@ -363,6 +364,19 @@ chunking:
                             # spindle power") retrieves the whole table; row-grouped, it
                             # retrieves the 3-4 rows that matter. false = old behavior
                             # (always one chunk per table, however large).
+  repair_hard_tables: true # a table with broken headers/rows, <=2 rows, or that
+                            # strips away a context anchor its surrounding text names
+                            # (e.g. 'Alarm code 11H' never repeated in the table's own
+                            # cells) gets ONE LLM call (backend.chunking.chunk_tool.
+                            # _repair_table_with_llm) to rewrite it into self-contained,
+                            # context-enriched row chunks. Uses the section's own
+                            # LLM settings below (no separate `chunking:` provider/model
+                            # set here -> falls back to global `llm.*`, i.e. Gemini
+                            # 2.5-flash, already paid+validated — not the unvalidated
+                            # DeepSeek originally proposed). Fails closed: any parse/
+                            # validation failure discards the repair and falls through
+                            # to the normal deterministic table chunkers, so a bad LLM
+                            # response can never mean the table gets dropped.
 
 # ── Enrichment ────────────────────────────────────────────────────────────────
 # enrich_chunks stamps tags + (when summarize) an LLM one-line summary + semantic

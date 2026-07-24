@@ -31,3 +31,21 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #334155 transparent;
 }
+
+/* ── KaTeX math rendering ───────────────────────────────────────────────────
+   katex.renderToString() (displayMode:true) generates a .katex-display span.
+   Tailwind Preflight globally resets border-width to 0, breaking .frac-line.
+   ─────────────────────────────────────────────────────────────────────────── */
+.katex .frac-line {
+  border-bottom-style: solid !important;
+  border-bottom-width: 0.04em !important;
+}
+
+/* Display math: full-width centered block with breathing room */
+.katex-display {
+  display: block !important;
+  text-align: center;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}

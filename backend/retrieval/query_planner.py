@@ -94,7 +94,7 @@ def _format_history(history: list) -> str:
     if not history:
         return "(none)"
     lines = []
-    for turn in history[-6:]:  # last few turns are enough for context
+    for turn in history[-10:]:  # last 5 QA turns (10 messages total) for context
         role = turn.get("role", "user")
         content = turn.get("content", "")
         lines.append(f"{role}: {content}")

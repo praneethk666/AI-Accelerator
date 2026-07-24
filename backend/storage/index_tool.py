@@ -32,6 +32,10 @@ class IndexTool:
         # try that owns pg.close() so a Qdrant outage can't leak the Postgres connection.
         pg = PostgresStore()
         try:
+            if not pg.document_exists(state.get("document_id")):
+                logger.warning("Document %s was deleted mid-ingestion; aborting index step.", state.get("document_id"))
+                return state
+                
             vectors = QdrantStore(dim, collection)
             try:
                 for chunk in chunks:

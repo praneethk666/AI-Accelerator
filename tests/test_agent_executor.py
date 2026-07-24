@@ -177,7 +177,11 @@ def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
         llm=llm,
     )
 
-    assert len(llm.invocations) == 3  # stopped at the cap, not exhausted the script
+    # 3 loop iterations (the cap) + 1 extra fallback-synthesis call executor.py makes
+    # when the cap is hit with no answer yet, asking the LLM to explain what it did
+    # find instead of returning a bare canned message — not the loop continuing.
+    assert len(llm.invocations) == 4
+    assert result["status"] == "done"
     assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
 
 

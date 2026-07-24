@@ -60,6 +60,7 @@ FIGURE_CLASSIFY_CAPTION = (
     'flowchart, map, screenshot, illustration, table, logo, banner, header_footer, '
     'decoration, rule_line, text, blank>", '
     '"keep": <true|false>, '
+    '"reasoning": "<explain keep/discard decision here>", '
     '"caption": "<description, see rules>"}\n\n'
     "Rules:\n"
     "- keep=false (and caption=\"\") when kind is logo, banner, header_footer, "
@@ -70,6 +71,8 @@ FIGURE_CLASSIFY_CAPTION = (
     "numbers, callouts and components. For schematic/circuit/cad_drawing, also list "
     "the key components with their reference designators/values and the connections "
     "you can read. For chart, state the chart type, axes and the trend/key values.\n"
+    "- Do not include keep/discard reasons, keep=true/false justifications, or other internal "
+    "reasoning inside the caption field. All keep/discard commentary must be put strictly in the reasoning field.\n"
     f"- {_VERBATIM}\n"
     "Describe ONLY what the image shows; use page context only to identify it. No text "
     "outside the JSON."

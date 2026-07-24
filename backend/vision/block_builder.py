@@ -89,11 +89,49 @@ def _extract_json(text):
     reasoning as the caption. Now: strip fences + direct parse for clean replies,
     else scan for balanced {...} objects and return the LAST that parses (the
     model's final answer)."""
-    t = _strip_fences(text)
+    import re
+    t = _strip_fences(text or "").strip()
     try:
         return json.loads(t)
     except Exception:
         pass
+        
+    # Regex fallback for Markdown key-value list formats
+    if t and ("**" in t or "caption:" in t.lower() or "keep:" in t.lower()):
+        try:
+            kind_m = re.search(r"(?:kind|\*\*kind\*\*):\s*[\*`_-]*([a-zA-Z_]+)[\*`_-]*", t, re.I)
+            keep_m = re.search(r"(?:keep|\*\*keep\*\*):\s*[\*`_-]*(true|false)[\*`_-]*", t, re.I)
+            reason_m = re.search(r"(?:reasoning|\*\*reasoning\*\*):\s*(.*?)(?=\s*(?:caption|\*\*caption\*\*):|$)", t, re.I | re.S)
+            caption_m = re.search(r"(?:caption|\*\*caption\*\*):\s*(.*)", t, re.I | re.S)
+            
+            if kind_m or keep_m or caption_m:
+                res = {}
+                if kind_m:
+                    res["kind"] = kind_m.group(1).strip().lower()
+                if keep_m:
+                    res["keep"] = keep_m.group(1).strip().lower() == "true"
+                if reason_m:
+                    res["reasoning"] = reason_m.group(1).strip()
+                if caption_m:
+                    res["caption"] = caption_m.group(1).strip()
+                    
+                import logging
+                logging.getLogger(__name__).warning("JSON caption parser fell back to regex Markdown parsing for reply: %s", text)
+                return res
+        except Exception:
+            pass
+            
+    # Brace-wrapping fallback for when the VLM returns key-value list but forgets outer braces
+    if t and not t.startswith("{") and not t.endswith("}") and ":" in t:
+        try:
+            res = json.loads("{" + t + "}")
+            # Import logger locally if needed
+            import logging
+            logging.getLogger(__name__).warning("JSON caption parser fell back to brace-wrapping extraction for reply: %s", text)
+            return res
+        except Exception:
+            pass
+            
     for obj in reversed(_balanced_objects(text or "")):
         try:
             return json.loads(obj)

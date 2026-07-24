@@ -28,6 +28,8 @@ from backend.core.tool import PipelineState
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 CONTENT_TYPES = {"text", "heading", "table", "image_caption"}
 ATOMIC_TYPES = {"table", "image_caption"}  # one chunk each, never split
 
@@ -903,6 +905,8 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
     try:
         llm = get_llm_for(config, config.get("chunking"))
         response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        from backend.core import usage
+        usage.record_from_message("chunking", response)
         res_text = (response.content or "").strip()
         if res_text.startswith("```"):
             lines = res_text.splitlines()
@@ -949,6 +953,71 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
             },
         })
     return chunks
+
+
+def _get_heading_level(text: str, bbox: list[float] | None) -> int:
+    """Infer heading level dynamically using regex numbering or visual bbox characteristics."""
+    num_match = re.match(r"^(\d+(?:\.\d+)*)\b", text.strip())
+    if num_match:
+        dots = num_match.group(1).count(".")
+        return dots + 1  # 5 -> level 1, 5.3 -> level 2, 5.3.1 -> level 3
+    if bbox and len(bbox) == 4:
+        height = bbox[3] - bbox[1]
+        indent = bbox[0]
+        if height >= 12.0:
+            return 1
+        if indent >= 75.0:
+            return 3
+        return 2
+    return 2  # default level
+
+
+def _validate_spatial_conflation(block: dict, blocks: list[dict], caption_text: str) -> bool:
+    """Check if any referenced alphanumeric tokens/codes in the caption are only present in distant page blocks."""
+    norm_caption = _normalize_fullwidth(caption_text)
+    tokens = re.findall(r"\b\d+[a-zA-Z]\b", norm_caption)
+    if not tokens:
+        return False
+
+    ref = block.get("source_ref") or {}
+    page = ref.get("page")
+    bbox = ref.get("bbox") or []
+    if not page or len(bbox) != 4:
+        return False
+
+    # Exclude page-level summary diagrams
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    if width > 300.0 or height > 300.0:
+        logger.info("Diagram block %s: Spans page summary region (%.1fx%.1f) - skipping conflation validator", block.get("block_id"), width, height)
+        return False
+
+    for token in tokens:
+        token_lower = token.lower()
+        occurrences = []
+        for b in blocks:
+            bref = b.get("source_ref") or {}
+            if bref.get("page") == page:
+                b_text = _normalize_fullwidth(b.get("text") or "").lower()
+                if token_lower in b_text:
+                    b_bbox = bref.get("bbox") or []
+                    if len(b_bbox) == 4:
+                        occurrences.append(b_bbox)
+
+        if occurrences:
+            min_dist = float("inf")
+            for obbox in occurrences:
+                dx = max(0, bbox[0] - obbox[2], obbox[0] - bbox[2])
+                dy = max(0, bbox[1] - obbox[3], obbox[1] - bbox[3])
+                dist = (dx**2 + dy**2) ** 0.5
+                if dist < min_dist:
+                    min_dist = dist
+            logger.info("Diagram block %s: Token '%s' found at minimum distance of %.1f pt from figure bbox", block.get("block_id"), token, min_dist)
+            if min_dist > 150.0:
+                return True
+
+    return False
+
 
 
 def chunk_blocks(
@@ -1005,20 +1074,25 @@ def chunk_blocks(
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
     buf_page = None               # page number of the first buffered block (cite start)
-    current_section = None        # active heading -> tags the section's chunks
-    buf_heading_only = True       # True until real (non-heading) text is appended;
-                                  # a heading-only buffer is carried forward, not emitted
+    heading_stack: list[str] = [] # active headings path stack
+    buf_heading_only = True       # True until real (non-heading) text is appended
+
+    # Keep a rolling queue of the last 5 text/heading blocks to supply local preceding context
+    preceding_blocks: list[str] = []
 
     def _block_page(block):
         ref = block.get("source_ref") or {}
         return ref.get("page") if isinstance(ref, dict) else None
 
+    def _get_active_section() -> str:
+        return " > ".join(heading_stack)
+
     def _ref(ref):
-        # attach the active section without clobbering one an extractor already set
-        if not section_aware or not current_section:
+        sec = _get_active_section()
+        if not section_aware or not sec:
             return ref
         r = dict(ref or {})
-        r.setdefault("section", current_section)
+        r.setdefault("section", sec)
         return r
 
     def pending_lead_text() -> str:
@@ -1039,6 +1113,7 @@ def chunk_blocks(
             continue
         text = (block.get("text") or "").strip()
         pg = _block_page(block)
+        ref = block.get("source_ref") or {}
 
         # 0. CAD Title Block & Component Specification Handlers
         cad_title = _try_extract_cad_title_chunk(block, document_id, _ref)
@@ -1055,27 +1130,36 @@ def chunk_blocks(
 
         if buf_page is not None and pg is not None and pg != buf_page:
             if buf_heading_only:
-                buf_page = pg  # orphaned heading carries across the page break
+                buf_page = pg
             else:
-                flush()  # page break flushes real content; next block starts fresh
+                flush()
 
         if section_aware and btype == "heading" and text:
             if not buf_heading_only:
-                flush()                              # close the previous section
-            current_section = text
+                flush()
+            
+            # Update heading stack based on inferred level
+            level = _get_heading_level(text, ref.get("bbox"))
+            # Keep stack truncated up to parent level (level - 1)
+            heading_stack = heading_stack[:level - 1]
+            heading_stack.append(text)
+            
             if buf_ref is None:
                 buf_ref = block.get("source_ref")
             buf_page = pg
-            buf_parts.append(text)                   # lead the section with its title
+            buf_parts.append(text)
             buf_heading_only = True
+            
+            # Add to preceding queue
+            preceding_blocks.append(text)
+            if len(preceding_blocks) > 5:
+                preceding_blocks.pop(0)
             continue
 
-        if btype in ATOMIC_TYPES:  # table / image_caption -> atomic, breaks the stream
+        if btype in ATOMIC_TYPES:
             heading_lead = pending_lead_text()
-            preceding_text = "\n".join(buf_parts[-2:]).strip()  # real paragraph text, if any, before flush() clears it
             flush()
-            # an image still pending vision was never described — its placeholder
-            # text isn't content; vision_enrichment writes the real caption.
+
             if btype == "image_caption" and (block.get("metadata") or {}).get(
                 "pending_vision"
             ):
@@ -1090,9 +1174,12 @@ def chunk_blocks(
                 # anchor would otherwise sail through them looking "fine" while still
                 # losing the one thing (e.g. the alarm code) that made it answerable.
                 if repair_hard_tables and config is not None:
-                    section_lead = current_section or ""
+                    section_lead = _get_active_section()
+                    preceding_text = " ".join(preceding_blocks)
                     classification = _classify_table_for_repair(block, section_lead, preceding_text)
                     if classification["needs_llm"]:
+                        logger.info("table %s needs LLM repair (reasons: %s)",
+                                    block.get("block_id"), classification["reasons"])
                         repaired = _repair_table_with_llm(block, config, section_lead, preceding_text, _ref)
                         if repaired:
                             chunks.extend(repaired)
@@ -1106,13 +1193,11 @@ def chunk_blocks(
                     chunks.extend(trouble_chunks)
                     continue
 
-                # 1. Check if table represents an Alarm/Error list
                 alarm_chunks = _try_extract_alarm_table_chunks(block, document_id, _ref)
                 if alarm_chunks:
                     chunks.extend(alarm_chunks)
                     continue
 
-                # 2. Check if table is a safety warning callout
                 warning_chunks = _try_extract_warning_chunk(block, document_id, _ref)
                 if warning_chunks:
                     if isinstance(warning_chunks, list):
@@ -1121,16 +1206,46 @@ def chunk_blocks(
                         chunks.append(warning_chunks)
                     continue
 
-                # Large-table splitting (row-group pagination with repeated header) is
-                # handled below by _split_table_block, gated on split_large_tables and
-                # the token `size` threshold — not here, to avoid two competing
-                # large-table splitters with different thresholds firing on the same table.
-
-                # 3. Check if table is a multi-column model specification matrix
                 model_chunks = _try_extract_model_column_chunks(block, document_id, _ref)
                 if model_chunks:
                     chunks.extend(model_chunks)
                     continue
+
+            if btype == "image_caption":
+                # Compute dynamic confidence rating
+                base_score = 1.0
+                metadata = block.get("metadata") or {}
+                fig_kind = metadata.get("figure_kind")
+                if fig_kind == "unknown":
+                    base_score -= 0.3
+                if fig_kind in {"text", "blank", "decoration"}:
+                    base_score -= 0.1
+                    
+                # Conflation check
+                conflated = _validate_spatial_conflation(block, blocks, text)
+                if conflated:
+                    logger.warning("Caption block %s: Spatial conflation detected - flagging for exclusion", block.get("block_id"))
+                    base_score -= 0.3
+                    
+                # Clamp score
+                confidence_score = max(0.0, base_score)
+                
+                exclude = False
+                if confidence_score < 0.7 or fig_kind in {"logo", "banner", "header_footer"}:
+                    exclude = True
+                    logger.info("Caption block %s: Excluded from index (Confidence: %.2f, Kind: %s)", block.get("block_id"), confidence_score, fig_kind)
+                    
+                b = dict(block)
+                b["source_ref"] = _ref(block.get("source_ref"))
+                lead_text = f"{heading_lead}\n{text}".strip() if heading_lead else text
+                
+                c = _make_chunk(b, lead_text, document_id)
+                c.setdefault("tags", {})
+                c["tags"]["exclude_from_index"] = exclude
+                c["tags"]["confidence"] = confidence_score
+                c["tags"]["figure_kind"] = fig_kind
+                chunks.append(c)
+                continue
 
             if text or block.get("table_data"):
                 b = dict(block)
@@ -1142,21 +1257,16 @@ def chunk_blocks(
                     chunks.append(_make_chunk(b, lead_text, document_id))
             continue
 
-        # text (and headings when not section_aware) -> accumulate into the stream
         if text:
             if buf_ref is None:
                 buf_ref = block.get("source_ref")
             buf_parts.append(text)
             buf_heading_only = False
+            preceding_blocks.append(text)
+            if len(preceding_blocks) > 5:
+                preceding_blocks.pop(0)
 
     flush()
-    # Deduplicate exact repeat chunks (scoped per page — a manual's running headers/
-    # footers legitimately repeat the same text on every page, and each occurrence is
-    # a distinct, real citation source; only collapse a true duplicate on the SAME page)
-    # & filter near-empty noise (<5 tokens). A chunk carrying table_data or an
-    # image_path is never noise regardless of how short its rendered text is — e.g. a
-    # 1-row table's `text` field can be a few characters while table_data holds the
-    # real content; dropping it here would silently delete it from the corpus.
     seen_texts: set[tuple] = set()
     deduped_chunks = []
     for c in chunks:
@@ -1164,7 +1274,6 @@ def chunk_blocks(
         tok_count = c.get("token_count", _ntok(t_raw))
         has_structured_data = bool(c.get("table_data") or c.get("image_path"))
 
-        # Filter near-empty noise chunks (<5 tokens matching page/section numbers or stray fragments)
         if tok_count < 5 and not has_structured_data:
             if re.match(r"^\d+(-\d+)?$", t_raw) or re.match(r"^[iIvVxXlLcCdDmM]+$", t_raw) or len(t_raw) <= 3:
                 continue

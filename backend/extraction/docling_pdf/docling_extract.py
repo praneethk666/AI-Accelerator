@@ -834,9 +834,69 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
     (logo/banner/header/text/blank), so we never crop+index a non-figure. Keeps any
     real content incl. wide schematics/CAD that geometry filters would have dropped."""
     from backend.vision.pdf_cropper import PDFCropper
+    import fitz
+    
+    # 1. Compute collision-aware padded bounding box
+    padded_bbox = list(bbox)
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc[page_no - 1]
+        page_rect = page.rect
+        
+        # Get all text block rects on the page
+        rects = []
+        for block in page.get_text("blocks"):
+            if block[6] == 0:  # Text block type
+                rects.append(fitz.Rect(block[0], block[1], block[2], block[3]))
+                
+        x0, y0, x1, y1 = bbox
+        pad = 10.0
+        
+        # Left edge check
+        px0 = max(page_rect.x0, x0 - pad)
+        left_pad_rect = fitz.Rect(px0, y0, x0, y1)
+        left_collision = any((left_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        
+        # Right edge check
+        px1 = min(page_rect.x1, x1 + pad)
+        right_pad_rect = fitz.Rect(x1, y0, px1, y1)
+        right_collision = any((right_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        
+        # Top edge check
+        py0 = max(page_rect.y0, y0 - pad)
+        top_pad_rect = fitz.Rect(x0, py0, x1, y0)
+        top_collision = any((top_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        
+        # Bottom edge check
+        py1 = min(page_rect.x1, y1 + pad)
+        bottom_pad_rect = fitz.Rect(x0, y1, x1, py1)
+        bottom_collision = any((bottom_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        
+        final_pad_left = 0.0 if left_collision else pad
+        final_pad_right = 0.0 if right_collision else pad
+        final_pad_top = 0.0 if top_collision else pad
+        final_pad_bottom = 0.0 if bottom_collision else pad
+        
+        if left_collision or right_collision or top_collision or bottom_collision:
+            logger.info(
+                "Page %s figure bbox collision detected. Capped padding (Left: %s, Right: %s, Top: %s, Bottom: %s)",
+                page_no, final_pad_left, final_pad_right, final_pad_top, final_pad_bottom
+            )
+            
+        padded_bbox = [
+            max(page_rect.x0, x0 - final_pad_left),
+            max(page_rect.y0, y0 - final_pad_top),
+            min(page_rect.x1, x1 + final_pad_right),
+            min(page_rect.y1, y1 + final_pad_bottom)
+        ]
+        doc.close()
+    except Exception as e:
+        logger.warning("docling: pad calculation failed (page %s): %s", page_no, e)
+        padded_bbox = list(bbox)
+
     b = _block(document_id, page_no, filename, "image_caption", "[figure]", bbox=bbox)
     try:
-        png = PDFCropper().crop_region(pdf_path, page_no, bbox)
+        png = PDFCropper().crop_region(pdf_path, page_no, padded_bbox)
     except Exception as e:
         logger.warning("docling: crop failed (page %s): %s", page_no, e)
         b["metadata"]["pending_vision"] = True

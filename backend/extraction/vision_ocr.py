@@ -373,6 +373,9 @@ def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict) -> 
         keep = kind not in _DROP_KINDS
     keep = bool(keep) and kind not in _DROP_KINDS
     caption = (data.get("caption") or "").strip()
+    reasoning = (data.get("reasoning") or "").strip()
+    if reasoning:
+        logger.info("Figure classification reason: %s", reasoning)
     return {"keep": keep, "kind": kind or "unknown", "caption": caption}
 
 

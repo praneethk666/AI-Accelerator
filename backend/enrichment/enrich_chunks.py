@@ -82,13 +82,26 @@ class EnrichChunksTool:
                 llm = None
 
         results: dict[int, tuple] = {}
+        # Pre-populate repaired chunks from table_data/chunk_text (Refinement to skip LLM calls)
+        for i, chunk in enumerate(chunks):
+            ctags = chunk.get("tags") or {}
+            if ctags.get("repaired"):
+                table_data = chunk.get("table_data") or {}
+                kws = set()
+                for k, v in table_data.items():
+                    kws.update(re.findall(r"\w+", str(k).lower()))
+                    kws.update(re.findall(r"\w+", str(v).lower()))
+                kws_list = [w for w in kws if w not in _STOPWORDS and len(w) > 2]
+                summary = (chunk.get("text") or "").strip()
+                results[i] = (summary, kws_list[:top_k] if kws_list else None)
+
         eligible_indices: set[int] = set()
         if llm is not None:
             from backend.core import usage
             eligible = [
                 (i, (c.get("text") or "").strip())
                 for i, c in enumerate(chunks)
-                if len((c.get("text") or "").strip()) >= 20
+                if len((c.get("text") or "").strip()) >= 20 and i not in results
             ]
             eligible_indices = {i for i, _ in eligible}
             for start in range(0, len(eligible), batch_size):

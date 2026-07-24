@@ -389,6 +389,14 @@ class PostgresStore:
             "DELETE FROM documents WHERE document_id::text = %s", (document_id,)
         )
 
+    def document_exists(self, document_id: str) -> bool:
+        if not document_id:
+            return False
+        row = self.conn.execute(
+            "SELECT 1 FROM documents WHERE document_id::text = %s", (document_id,)
+        ).fetchone()
+        return bool(row)
+
     def close(self) -> None:
         self.conn.close()
 

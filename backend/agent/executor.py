@@ -332,8 +332,18 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 
 def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Prunes verbose JSON payloads from ToolMessages to minimize input context tokens
-    for the Agent LLM while keeping critical filename maps for inline citation resolution."""
+    for the Agent LLM while keeping critical filename maps for inline citation resolution,
+    along with compact relevance-sorted snippets within a token character budget."""
     import json
+
+    def truncate_on_word(text: str, max_chars: int) -> str:
+        text_strip = text.strip()
+        if len(text_strip) <= max_chars:
+            return text_strip
+        truncated = text_strip[:max_chars]
+        if ' ' in truncated:
+            return truncated.rsplit(' ', 1)[0].rstrip(".,| ") + "..."
+        return truncated + "..."
 
     pruned = []
     for m in messages:
@@ -344,17 +354,45 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
                     answer = data.get("answer") or ""
                     citations = data.get("citations") or []
                     
+                    # Sort citations explicitly by score descending (highest-relevance first)
+                    # to ensure our character budget is allocated to the most useful sources.
+                    def get_score(cit):
+                        try:
+                            return float(cit.get("score") or 0.0)
+                        except Exception:
+                            return 0.0
+                    
+                    sorted_citations = sorted(citations, key=get_score, reverse=True)
+                    
                     # Construct a lightweight filename lookup map for the LLM
                     source_lines = []
-                    for idx, c in enumerate(citations):
+                    total_snippet_chars = 0
+                    max_total_snippet_chars = 3000
+                    
+                    for idx, c in enumerate(sorted_citations):
                         fname = c.get("filename")
                         page = c.get("page")
                         doc_id = c.get("document_id")
+                        snippet = c.get("snippet") or ""
+                        chunk_type = c.get("chunk_type")
+                        
                         if fname:
                             # 1-based index to match inline document citation indices
                             page_suffix = f" (page {page})" if page is not None else ""
                             id_suffix = f" [id: {doc_id}]" if doc_id else ""
-                            source_lines.append(f"  [{idx + 1}] = {fname}{page_suffix}{id_suffix}")
+                            
+                            snippet_suffix = ""
+                            if snippet:
+                                # Determine dynamic allowance limit based on chunk type
+                                is_special = chunk_type in ("warning", "alarm", "troubleshooting_row")
+                                max_len = 450 if is_special else 200
+                                
+                                truncated_snippet = truncate_on_word(snippet, max_len)
+                                if truncated_snippet and total_snippet_chars + len(truncated_snippet) <= max_total_snippet_chars:
+                                    snippet_suffix = f" | Snippet: {truncated_snippet}"
+                                    total_snippet_chars += len(truncated_snippet)
+                                    
+                            source_lines.append(f"  [{idx + 1}] = {fname}{page_suffix}{id_suffix}{snippet_suffix}")
                     
                     # Reconstruct a lightweight text payload
                     pruned_content = f"Search Answer: {answer}\n"
@@ -494,11 +532,37 @@ def run_agent(
     answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
     if not answer.strip():
         # Hit the iteration cap still wanting a tool (or ended on a ToolMessage): never
-        # surface a blank 'done' answer — tell the user instead of a silent empty reply.
-        answer = (
-            "I couldn't finish answering within my step budget. Please narrow the "
-            "question (e.g. name the document or be more specific) and try again."
-        )
+        # surface a blank 'done' answer.
+        # Fallback: invoke the LLM one final time WITHOUT tools, instructing it to synthesize
+        # an explanation based on the messages history explaining that the search came up empty.
+        try:
+            fallback_prompt = (
+                "\n[System Note: You have reached the maximum search step limit. "
+                "Based on the tool results above, you could not find the requested information in the ingested documents. "
+                "Please respond to the user explaining that you searched but could not find the requested information, "
+                "citing which documents you had access to from the tool results.]"
+            )
+            fallback_messages = list(final_state["messages"])
+            # If the last message has tool calls, they must be followed by tool messages responding to them.
+            if isinstance(last, AIMessage) and last.tool_calls:
+                for call in last.tool_calls:
+                    fallback_messages.append(ToolMessage(
+                        content="error: maximum search step limit reached",
+                        tool_call_id=call["id"],
+                        name=call.get("name")
+                    ))
+            messages_for_fallback = fallback_messages + [SystemMessage(content=fallback_prompt)]
+            fallback_response = llm.invoke(messages_for_fallback)
+            answer = clean_message_content(fallback_response.content)
+            usage.record_from_message("agent_fallback", fallback_response)
+        except Exception as exc:
+            logger.warning("Agent fallback LLM invocation failed: %s", exc)
+
+        if not answer.strip():
+            answer = (
+                "I couldn't finish answering within my step budget. Please narrow the "
+                "question (e.g. name the document or be more specific) and try again."
+            )
     return {
         "status": "done",
         "answer": answer,

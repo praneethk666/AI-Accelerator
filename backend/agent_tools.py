@@ -32,11 +32,13 @@ def build_agent_registry() -> dict[str, AgentTool]:
     from backend.retrieval.get_page_context import GetPageContextTool
     from backend.retrieval.list_documents import ListDocumentsTool
     from backend.retrieval.search_documents import SearchDocumentsTool
+    from backend.retrieval.view_page_image import ViewPageImageTool
 
     tools: list[AgentTool] = [
         IngestDocumentTool(),
         SearchDocumentsTool(),
         GetPageContextTool(),
+        ViewPageImageTool(),
         ListDocumentsTool(),
         SQLReadTool(),
         RequestClarificationTool(),

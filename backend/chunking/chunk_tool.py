@@ -1220,28 +1220,58 @@ def chunk_blocks(
                     base_score -= 0.3
                 if fig_kind in {"text", "blank", "decoration"}:
                     base_score -= 0.1
-                    
+
                 # Conflation check
                 conflated = _validate_spatial_conflation(block, blocks, text)
                 if conflated:
                     logger.warning("Caption block %s: Spatial conflation detected - flagging for exclusion", block.get("block_id"))
                     base_score -= 0.3
-                    
+
                 # Clamp score
                 confidence_score = max(0.0, base_score)
-                
+
+                # Small crops (logos, warning/hazard icons, bullet glyphs) are only worth
+                # indexing if the VLM confidently named a real-content kind. Validated live
+                # on a real manual: every logo/icon crop found had a SHORTER bbox side
+                # under ~32pt (warning icons ~25-32pt square, a repeated page-header logo
+                # 78x27pt), while a real content diagram on the same pages (two-amplifier
+                # "11H" indication figure) was 76x43pt — 35pt sits between the two with
+                # margin on both sides. This also covers the failure case where the vision
+                # call itself errors or gets rate-limited: docling_extract.py fails OPEN on
+                # a vision error (keeps the crop as kind="unknown" rather than losing a
+                # possibly-real figure) — for a SMALL crop that's the wrong default (most
+                # small "unknown" crops are furniture, not content), so treat small+
+                # uncertain as exclude, not keep. A LARGE crop stays even if classification
+                # failed, so a real diagram never gets dropped just because a rate-limited
+                # VLM call couldn't confirm it. Only 2 real data points behind this number
+                # so far — worth re-checking against more figures once the 105-page run
+                # produces a bigger sample.
+                ref_bbox = (block.get("source_ref") or {}).get("bbox") or []
+                is_icon_sized = (
+                    len(ref_bbox) == 4
+                    and min(ref_bbox[2] - ref_bbox[0], ref_bbox[3] - ref_bbox[1]) < 35.0
+                )
+                _KNOWN_CONTENT_KINDS = {"photo", "diagram", "schematic", "circuit", "cad_drawing", "chart"}
+
                 exclude = False
-                if confidence_score < 0.7 or fig_kind in {"logo", "banner", "header_footer"}:
+                if fig_kind in {"logo", "banner", "header_footer", "rule_line"}:
                     exclude = True
-                    logger.info("Caption block %s: Excluded from index (Confidence: %.2f, Kind: %s)", block.get("block_id"), confidence_score, fig_kind)
-                    
+                elif is_icon_sized and fig_kind not in _KNOWN_CONTENT_KINDS:
+                    exclude = True
+                elif confidence_score < 0.7:
+                    exclude = True
+                if exclude:
+                    logger.info("Caption block %s: Excluded from index (Confidence: %.2f, Kind: %s, Icon-sized: %s)",
+                                block.get("block_id"), confidence_score, fig_kind, is_icon_sized)
+                    continue  # don't emit a chunk at all — a tag nobody downstream
+                              # reads doesn't stop it from being embedded and indexed
+
                 b = dict(block)
                 b["source_ref"] = _ref(block.get("source_ref"))
                 lead_text = f"{heading_lead}\n{text}".strip() if heading_lead else text
-                
+
                 c = _make_chunk(b, lead_text, document_id)
                 c.setdefault("tags", {})
-                c["tags"]["exclude_from_index"] = exclude
                 c["tags"]["confidence"] = confidence_score
                 c["tags"]["figure_kind"] = fig_kind
                 chunks.append(c)

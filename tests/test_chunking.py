@@ -65,6 +65,48 @@ def test_image_caption_atomic_with_image_path():
     assert chunks[0]["image_path"] == "uploads/x.jpg"
 
 
+def _image_block(bbox, figure_kind, text="a figure"):
+    return {
+        "type": "image_caption",
+        "text": text,
+        "document_id": "d1",
+        "metadata": {"image_path": "uploads/x.jpg", "figure_kind": figure_kind},
+        "source_ref": {"filename": "manual.pdf", "page": 1, "bbox": bbox},
+    }
+
+
+def test_logo_excluded_regardless_of_size():
+    chunks = chunk_blocks([_image_block([0, 0, 400, 300], "logo")])
+    assert chunks == []
+
+
+def test_small_icon_with_uncertain_kind_excluded():
+    # validated live: warning/hazard icons and a page-header logo were all under
+    # 35pt in their shorter side and classified "illustration" or "unknown"
+    chunks = chunk_blocks([_image_block([0, 0, 30, 28], "illustration")])
+    assert chunks == []
+
+
+def test_small_crop_with_known_content_kind_kept():
+    # a small crop the VLM confidently called a real content kind survives —
+    # only UNCERTAIN small crops are excluded, not all small crops
+    chunks = chunk_blocks([_image_block([0, 0, 30, 28], "photo")])
+    assert len(chunks) == 1
+
+
+def test_large_illustration_kept():
+    # the real "11H" alarm indication diagram: 76x43pt, classified "illustration"
+    chunks = chunk_blocks([_image_block([0, 0, 76, 43], "illustration")])
+    assert len(chunks) == 1
+
+
+def test_large_unknown_kept_fail_safe():
+    # classification failed/rate-limited (kind=unknown) but the crop is large —
+    # don't drop a possibly-real diagram just because the VLM call didn't confirm it
+    chunks = chunk_blocks([_image_block([0, 0, 200, 200], "unknown")])
+    assert len(chunks) == 1
+
+
 def _big_table_block(n_rows=40):
     headers = ["Item", "Unit", "Value"]
     rows = [[f"spec_{i}", "mm", f"{i * 10}"] for i in range(n_rows)]

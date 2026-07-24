@@ -101,7 +101,9 @@ SYSTEM_PROMPT = (
     "- Never say 'I don't have access to files' or 'please provide a file path' "
     "— documents are already ingested and searchable.\n"
     "- Never output raw function calls or XML/markdown tags like <function=...> in your text content. Always use the native tool calling feature.\n"
-    "- Never call ingest_document just because a filename is mentioned; only call it if the user explicitly attaches a new file or provides a local file path."
+    "- Never call ingest_document just because a filename is mentioned; only call it if the user explicitly attaches a new file or provides a local file path.\n"
+    "- Do NOT add your own derivations, reformulations, or 'equivalent forms' of formulas or facts unless that exact form appears verbatim in the retrieved source. Every statement you make must be traceable to a specific cited passage.\n"
+    "- For mathematical formulas, ALWAYS use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never output bracket delimiters like '[ ... ]' or '\\[ ... \\]' for math equations."
 )
 
 class AgentState(TypedDict):
@@ -330,84 +332,39 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
     return sg.compile()
 
 
+# Max characters to keep in each ToolMessage payload sent back to the agent LLM.
+# search_documents returns full citation JSON with snippets (~3-8 KB per call);
+# after 3+ searches the raw payloads alone can exceed 30 KB, which:
+#   (a) costs input tokens on every subsequent agent turn, and
+#   (b) causes DeepSeek / other models to truncate their own completion, producing
+#       content="" which the blank-answer fallback misreads as "nothing found".
+# 2000 chars ≈ 500 tokens — enough to retain answer + top citations, trim the rest.
+_TOOL_MSG_MAX_CHARS = 2000
+
+
 def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """Prunes verbose JSON payloads from ToolMessages to minimize input context tokens
-    for the Agent LLM while keeping critical filename maps for inline citation resolution,
-    along with compact relevance-sorted snippets within a token character budget."""
-    import json
+    """Cap large ToolMessage payloads to _TOOL_MSG_MAX_CHARS to prevent context bloat.
 
-    def truncate_on_word(text: str, max_chars: int) -> str:
-        text_strip = text.strip()
-        if len(text_strip) <= max_chars:
-            return text_strip
-        truncated = text_strip[:max_chars]
-        if ' ' in truncated:
-            return truncated.rsplit(' ', 1)[0].rstrip(".,| ") + "..."
-        return truncated + "..."
-
+    Keeps SystemMessage / HumanMessage / AIMessage intact (they're small).
+    Only trims ToolMessages that carry large JSON search results — the agent
+    only needs the answer + a citation summary, not every raw snippet field.
+    """
     pruned = []
-    for m in messages:
-        if isinstance(m, ToolMessage):
-            try:
-                data = json.loads(m.content)
-                if isinstance(data, dict) and "answer" in data:
-                    answer = data.get("answer") or ""
-                    citations = data.get("citations") or []
-                    
-                    # Sort citations explicitly by score descending (highest-relevance first)
-                    # to ensure our character budget is allocated to the most useful sources.
-                    def get_score(cit):
-                        try:
-                            return float(cit.get("score") or 0.0)
-                        except Exception:
-                            return 0.0
-                    
-                    sorted_citations = sorted(citations, key=get_score, reverse=True)
-                    
-                    # Construct a lightweight filename lookup map for the LLM
-                    source_lines = []
-                    total_snippet_chars = 0
-                    max_total_snippet_chars = 3000
-                    
-                    for idx, c in enumerate(sorted_citations):
-                        fname = c.get("filename")
-                        page = c.get("page")
-                        doc_id = c.get("document_id")
-                        snippet = c.get("snippet") or ""
-                        chunk_type = c.get("chunk_type")
-                        
-                        if fname:
-                            # 1-based index to match inline document citation indices
-                            page_suffix = f" (page {page})" if page is not None else ""
-                            id_suffix = f" [id: {doc_id}]" if doc_id else ""
-                            
-                            snippet_suffix = ""
-                            if snippet:
-                                # Determine dynamic allowance limit based on chunk type
-                                is_special = chunk_type in ("warning", "alarm", "troubleshooting_row")
-                                max_len = 450 if is_special else 200
-                                
-                                truncated_snippet = truncate_on_word(snippet, max_len)
-                                if truncated_snippet and total_snippet_chars + len(truncated_snippet) <= max_total_snippet_chars:
-                                    snippet_suffix = f" | Snippet: {truncated_snippet}"
-                                    total_snippet_chars += len(truncated_snippet)
-                                    
-                            source_lines.append(f"  [{idx + 1}] = {fname}{page_suffix}{id_suffix}{snippet_suffix}")
-                    
-                    # Reconstruct a lightweight text payload
-                    pruned_content = f"Search Answer: {answer}\n"
-                    if source_lines:
-                        pruned_content += "Source Map:\n" + "\n".join(source_lines)
-                        
-                    pruned.append(ToolMessage(
-                        content=pruned_content,
-                        tool_call_id=m.tool_call_id,
-                        name=m.name
-                    ))
-                    continue
-            except Exception:
-                pass
-        pruned.append(m)
+    for msg in messages:
+        if isinstance(msg, ToolMessage) and len(msg.content) > _TOOL_MSG_MAX_CHARS:
+            truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
+            # Try to keep valid JSON by finding the last complete top-level value
+            last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
+            if last_brace > 0:
+                truncated = truncated[: last_brace + 1]
+            truncated += "\n...[truncated for context efficiency]"
+            # ToolMessage is immutable — create a copy with the shorter content
+            msg = ToolMessage(
+                content=truncated,
+                tool_call_id=msg.tool_call_id,
+                name=getattr(msg, "name", None),
+            )
+        pruned.append(msg)
     return pruned
 
 
@@ -529,39 +486,72 @@ def run_agent(
         }
 
     last = final_state["messages"][-1]
-    answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
+    has_tool_calls = bool(getattr(last, "tool_calls", None))
+    # If the last message has tool calls, its content is intermediate monologue/narration
+    # (e.g. "Now I have all the data. Let me check..."), NOT a final answer.
+    answer = clean_message_content(last.content) if (isinstance(last, AIMessage) and not has_tool_calls) else ""
     if not answer.strip():
-        # Hit the iteration cap still wanting a tool (or ended on a ToolMessage): never
-        # surface a blank 'done' answer.
-        # Fallback: invoke the LLM one final time WITHOUT tools, instructing it to synthesize
-        # an explanation based on the messages history explaining that the search came up empty.
-        try:
-            fallback_prompt = (
-                "\n[System Note: You have reached the maximum search step limit. "
-                "Based on the tool results above, you could not find the requested information in the ingested documents. "
-                "Please respond to the user explaining that you searched but could not find the requested information, "
-                "citing which documents you had access to from the tool results.]"
+        # Diagnostic: log WHY the answer is blank so this is traceable in logs.
+        if isinstance(last, AIMessage):
+            logger.warning(
+                "Agent produced blank answer (content=%r, tool_calls=%s, iters=%d) — "
+                "triggering fallback synthesis",
+                last.content,
+                bool(getattr(last, "tool_calls", None)),
+                final_state.get("iterations", 0),
             )
-            fallback_messages = list(final_state["messages"])
-            # If the last message has tool calls, they must be followed by tool messages responding to them.
-            if isinstance(last, AIMessage) and last.tool_calls:
-                for call in last.tool_calls:
-                    fallback_messages.append(ToolMessage(
-                        content="error: maximum search step limit reached",
-                        tool_call_id=call["id"],
-                        name=call.get("name")
-                    ))
-            messages_for_fallback = fallback_messages + [SystemMessage(content=fallback_prompt)]
-            fallback_response = llm.invoke(messages_for_fallback)
-            answer = clean_message_content(fallback_response.content)
-            usage.record_from_message("agent_fallback", fallback_response)
-        except Exception as exc:
-            logger.warning("Agent fallback LLM invocation failed: %s", exc)
+        else:
+            logger.warning(
+                "Agent ended on a %s (not AIMessage, iters=%d) — triggering fallback",
+                type(last).__name__,
+                final_state.get("iterations", 0),
+            )
+
+        # Fast path: if any prior search_documents tool message already contains an
+        # answer field, use it directly instead of making another LLM call.
+        # This handles the common case where DeepSeek returns content="" on the
+        # synthesis turn after the tool already returned a complete answer.
+        for msg in reversed(final_state["messages"]):
+            if isinstance(msg, ToolMessage):
+                try:
+                    tool_result = json.loads(msg.content)
+                    if isinstance(tool_result, dict) and tool_result.get("answer", "").strip():
+                        answer = tool_result["answer"]
+                        logger.info("Recovered answer from prior tool result (fast-path fallback)")
+                        break
+                except Exception:
+                    pass
+
+        # Slow path: ask the LLM to synthesize from history without tools.
+        if not answer.strip():
+            try:
+                fallback_prompt = (
+                    "\n[System Note: You have reached the maximum search step limit. "
+                    "Based on the tool results above, synthesize a final answer for the user. "
+                    "If the documents contained the answer, report it with inline citations. "
+                    "If not, state plainly that you could not find it in the provided documents.]"
+                )
+                fallback_messages = list(final_state["messages"])
+                # If the last message has tool calls they must be answered before sending.
+                if isinstance(last, AIMessage) and last.tool_calls:
+                    for call in last.tool_calls:
+                        fallback_messages.append(ToolMessage(
+                            content="error: maximum search step limit reached",
+                            tool_call_id=call["id"],
+                            name=call.get("name")
+                        ))
+                messages_for_fallback = fallback_messages + [SystemMessage(content=fallback_prompt)]
+                fallback_response = llm.invoke(messages_for_fallback)
+                answer = clean_message_content(fallback_response.content)
+                usage.record_from_message("agent_fallback", fallback_response)
+            except Exception as exc:
+                logger.warning("Agent fallback LLM invocation failed: %s", exc)
 
         if not answer.strip():
             answer = (
-                "I couldn't finish answering within my step budget. Please narrow the "
-                "question (e.g. name the document or be more specific) and try again."
+                "I searched the documents but couldn't produce a complete answer within "
+                "the available steps. Please try rephrasing your question or naming the "
+                "specific document you want to search."
             )
     return {
         "status": "done",

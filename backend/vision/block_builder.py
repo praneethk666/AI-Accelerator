@@ -18,9 +18,9 @@ def parse_caption(caption_json_str):
     confidence = 0.0
     data = _extract_json(caption_json_str)
     if data is not None:
-        description = (data.get("description") or "").strip()
+        description = (data.get("description") or data.get("caption") or "").strip()
         entities = data.get("entities") or []
-        vision_type = data.get("type", "other")
+        vision_type = data.get("type") or data.get("kind") or "other"
         try:
             confidence = float(data.get("confidence", 0.95))
         except (TypeError, ValueError):
@@ -97,12 +97,12 @@ def _extract_json(text):
         pass
         
     # Regex fallback for Markdown key-value list formats
-    if t and ("**" in t or "caption:" in t.lower() or "keep:" in t.lower()):
+    if t and ("**" in t or "caption:" in t.lower() or "keep:" in t.lower() or "description:" in t.lower()):
         try:
-            kind_m = re.search(r"(?:kind|\*\*kind\*\*):\s*[\*`_-]*([a-zA-Z_]+)[\*`_-]*", t, re.I)
-            keep_m = re.search(r"(?:keep|\*\*keep\*\*):\s*[\*`_-]*(true|false)[\*`_-]*", t, re.I)
-            reason_m = re.search(r"(?:reasoning|\*\*reasoning\*\*):\s*(.*?)(?=\s*(?:caption|\*\*caption\*\*):|$)", t, re.I | re.S)
-            caption_m = re.search(r"(?:caption|\*\*caption\*\*):\s*(.*)", t, re.I | re.S)
+            kind_m = re.search(r"(?:kind|\*\*kind\*\*|type|\*\*type\*\*):?\s*[\*`_-]*([a-zA-Z_]+)[\*`_-]*", t, re.I)
+            keep_m = re.search(r"(?:keep|\*\*keep\*\*):?\s*[\*`_-]*(true|false)[\*`_-]*", t, re.I)
+            reason_m = re.search(r"(?:reasoning|\*\*reasoning\*\*):?\s*(.*?)(?=\s*(?:caption|\*\*caption\*\*|description|\*\*description\*\*):?|$)", t, re.I | re.S)
+            caption_m = re.search(r"(?:caption|\*\*caption\*\*|description|\*\*description\*\*):?\s*(.*?)(?=\s*(?:reasoning|\*\*reasoning\*\*):?|$)", t, re.I | re.S)
             
             if kind_m or keep_m or caption_m:
                 res = {}
@@ -116,7 +116,7 @@ def _extract_json(text):
                     res["caption"] = caption_m.group(1).strip()
                     
                 import logging
-                logging.getLogger(__name__).warning("JSON caption parser fell back to regex Markdown parsing for reply: %s", text)
+                logging.getLogger(__name__).debug("JSON caption parser fell back to regex Markdown parsing for reply: %s", text)
                 return res
         except Exception:
             pass
@@ -127,7 +127,7 @@ def _extract_json(text):
             res = json.loads("{" + t + "}")
             # Import logger locally if needed
             import logging
-            logging.getLogger(__name__).warning("JSON caption parser fell back to brace-wrapping extraction for reply: %s", text)
+            logging.getLogger(__name__).debug("JSON caption parser fell back to brace-wrapping extraction for reply: %s", text)
             return res
         except Exception:
             pass

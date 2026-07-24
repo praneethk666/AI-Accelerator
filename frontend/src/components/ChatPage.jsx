@@ -2,6 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
   patchAgentSession, stageFile, getFile, API_BASE_URL,
@@ -46,6 +49,40 @@ const relativeTime = (iso) => {
 
 const newSessionId = () =>
   crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+/**
+ * Pre-render $$..$$ (display) and $..$  (inline) math with KaTeX before the
+ * markdown parser sees the text. This avoids remark-math's paragraph-boundary
+ * ambiguity and ensures fonts/metrics are always correct.
+ */
+const renderMathInMarkdown = (text) => {
+  if (!text) return text;
+  // Display math first ($$...$$) — must come before inline to avoid double-parsing
+  let result = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, latex) => {
+    try {
+      return katex.renderToString(latex.trim(), {
+        displayMode: true,
+        throwOnError: false,
+        output: 'html',
+      });
+    } catch {
+      return `$$${latex}$$`;
+    }
+  });
+  // Inline math ($...$) — skip if preceded/followed by another $
+  result = result.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, latex) => {
+    try {
+      return katex.renderToString(latex.trim(), {
+        displayMode: false,
+        throwOnError: false,
+        output: 'html',
+      });
+    } catch {
+      return `$${latex}$`;
+    }
+  });
+  return result;
+};
 
 const PinIcon = ({ className }) => (
   <svg
@@ -1235,6 +1272,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                 >
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw]}
                     components={{
                       code({ node, inline, className, children, ...props }) {
                         const match = /language-(\w+)/.exec(className || '');
@@ -1249,7 +1287,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                       }
                     }}
                   >
-                    {msg.content}
+                    {renderMathInMarkdown(msg.content)}
                   </ReactMarkdown>
                 </div>
               )}

@@ -359,7 +359,7 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
         # API-only tail: full-page images for the PDF pages that produced chunks —
         # for visual grounding ("pull up the page"). Only content pages; skip on
         # failure or if the DB is down.
-        if pg is None or file_type != "pdf" or result.get("status") == "failed":
+        if pg is None or not pg.document_exists(document_id) or file_type != "pdf" or result.get("status") in ("failed", "deleted"):
             return
         try:
             chunks = result.get("chunks", []) or []

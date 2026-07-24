@@ -244,11 +244,13 @@ class AnswererTool:
                     "score":       chunk.get("_score"),
                     "sheet":       ref.get("sheet"),
                     "slide":       ref.get("slide"),
-                    "snippet":     (chunk.get("text") or "")[:200],
+                    "snippet":     (chunk.get("text") or "")[:600],
                     "summary":     tags.get("summary"),
                     "keywords":    tags.get("keywords"),
                     "image_path":  chunk.get("image_path"),
                     "table_data":  chunk.get("table_data"),
+                    "chunk_type":  tags.get("chunk_type"),
+                    "section":     tags.get("section") or ref.get("section"),
                 })
 
             # Don't attach a source list to a 'not found' answer — it drew on nothing.

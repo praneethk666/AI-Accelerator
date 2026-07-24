@@ -213,6 +213,11 @@ def ingest_document(
     try:
         pg = PostgresStore()
         try:
+            if not pg.document_exists(document_id):
+                logger.warning("Document %s was deleted mid-ingestion; aborting database finalization.", document_id)
+                return {"document_id": document_id, "status": "deleted",
+                        "metrics": metrics, "errors": errors, "trace_id": trace_id}
+                
             pg.finalize_document(
                 document_id,
                 document_type=result.get("document_type"),

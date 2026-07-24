@@ -16,10 +16,19 @@ Run standalone on a NormalizedBlock JSON (e.g. an extractor's output):
 
 from __future__ import annotations
 
+import os
+import sys
 import re
 import uuid
+import json
+import logging
+from typing import Any
 
 from backend.core.tool import PipelineState
+from backend.core.llm_client import get_llm_for
+from langchain_core.messages import SystemMessage, HumanMessage
+
+logger = logging.getLogger(__name__)
 
 CONTENT_TYPES = {"text", "heading", "table", "image_caption"}
 ATOMIC_TYPES = {"table", "image_caption"}  # one chunk each, never split
@@ -677,6 +686,296 @@ def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_f
     return col_chunks if col_chunks else None
 
 
+def normalize_text(text: str) -> str:
+    # Convert fullwidth unicode alphanumeric characters to normal ASCII
+    return text.translate(str.maketrans(
+        "０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    ))
+
+# Programmatic table check helpers
+def has_header_anomaly(headers: list[str]) -> bool:
+    non_empty = [h for h in headers if h.strip()]
+    has_dupes = len(non_empty) != len(set(non_empty))
+    has_blanks = any(h.strip() == "" for h in headers)
+    return has_dupes or has_blanks
+
+def has_ragged_rows(rows: list[list[str]]) -> bool:
+    col_counts = {len(r) for r in rows}
+    return len(col_counts) > 1
+
+def is_orphan_table(rows: list[list[str]]) -> bool:
+    return len(rows) <= 2
+
+def lacks_context_anchor(table_data: dict, section_lead: str, preceding_text: str) -> bool:
+    headers = table_data.get("headers") or []
+    rows = table_data.get("rows") or []
+    combined_text = normalize_text(" ".join(
+        [str(h) for h in headers] + [str(c) for r in rows for c in r]
+    )).lower()
+    
+    # Normalize context and extract candidates
+    context = normalize_text(preceding_text + " " + section_lead)
+    candidates = re.findall(r"\b\d+[a-zA-Z]\b", context)
+    if not candidates:
+        return False
+    return not any(c.lower() in combined_text for c in candidates)
+
+def classify_table(table_block: dict, section_lead: str, preceding_text: str) -> dict:
+    td = table_block.get("table_data") or {}
+    headers = td.get("headers") or []
+    rows = td.get("rows") or []
+    
+    reasons = []
+    if has_header_anomaly(headers):
+        reasons.append("header_anomaly")
+    if has_ragged_rows(rows):
+        reasons.append("ragged_rows")
+    if is_orphan_table(rows):
+        reasons.append("orphan_table")
+    if lacks_context_anchor(td, section_lead, preceding_text):
+        reasons.append("missing_context_anchor")
+        
+    return {"needs_llm": len(reasons) > 0, "reasons": reasons}
+
+def get_heading_level(text: str, bbox: list[float] | None) -> int:
+    """Infer heading level dynamically using regex numbering or visual bbox characteristics."""
+    # 1. Check for standard numbering pattern (e.g. 5.2, 5.3.1)
+    num_match = re.match(r"^(\d+(?:\.\d+)*)\b", text.strip())
+    if num_match:
+        dots = num_match.group(1).count(".")
+        return dots + 1  # 5 -> level 1, 5.3 -> level 2, 5.3.1 -> level 3
+        
+    # 2. Bounding box fallback
+    if bbox and len(bbox) == 4:
+        height = bbox[3] - bbox[1]
+        indent = bbox[0]
+        # Larger font height -> higher level
+        if height >= 12.0:
+            return 1
+        # Smaller headers: separate by indentation
+        if indent >= 75.0:
+            return 3
+        return 2
+        
+    return 2  # default level
+
+def validate_repaired_chunks(parsed_chunks: list[dict], original_rows: list[list[str]], headers: list[str], section_lead: str, preceding_text: str) -> str | None:
+    """Validate repaired chunks for row count matching and content traceability. Returns error string if invalid."""
+    # 1. Row count validation
+    if len(parsed_chunks) != len(original_rows):
+        return f"Row count mismatch: LLM returned {len(parsed_chunks)} rows, expected {len(original_rows)}"
+        
+    # Normalize inputs
+    norm_rows = [[normalize_text(c).lower().strip() for c in r] for r in original_rows]
+    norm_section_lead = normalize_text(section_lead).lower()
+    norm_preceding_text = normalize_text(preceding_text).lower()
+    
+    # 2. Content traceability validation
+    source_words = set(re.findall(r"\w+", " ".join(" ".join(r) for r in norm_rows)))
+    context_words = set(re.findall(r"\w+", norm_section_lead + " " + norm_preceding_text))
+    allowed_words = source_words | context_words
+    
+    original_cell_texts = [c for r in norm_rows for c in r if c]
+    
+    # Comprehensive stop words
+    stops = {
+        "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "arent", 
+        "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", 
+        "cant", "cannot", "could", "couldnt", "did", "didnt", "do", "does", "doesnt", "doing", "dont", 
+        "down", "during", "each", "few", "for", "from", "further", "had", "hadnt", "has", "hasnt", "have", 
+        "havent", "having", "he", "hed", "hell", "hes", "her", "here", "heres", "hers", "herself", "him", 
+        "himself", "his", "how", "hows", "i", "id", "ill", "im", "ive", "if", "in", "into", "is", "isnt", 
+        "it", "its", "itself", "lets", "me", "more", "most", "mustnt", "my", "myself", "no", "nor", "not", 
+        "of", "off", "on", "once", "only", "or", "other", "ought", "our", "ours", "ourselves", "out", "over", 
+        "own", "same", "shant", "she", "shed", "shell", "shes", "should", "shouldnt", "so", "some", "such", 
+        "than", "that", "thats", "the", "their", "theirs", "them", "themselves", "then", "there", "theres", 
+        "these", "they", "theyd", "theyll", "theyre", "theyve", "this", "those", "through", "to", "too", 
+        "under", "until", "up", "very", "was", "wasnt", "we", "wed", "well", "were", "weve", "werent", 
+        "what", "whats", "when", "whens", "where", "wheres", "which", "while", "who", "whos", "whom", 
+        "why", "whys", "with", "wont", "would", "wouldnt", "you", "youd", "youll", "youre", "youve", 
+        "your", "yours", "yourself", "yourselves",
+        # Document/Table domain stops
+        "warning", "voltage", "current", "factor", "alarm", "code", "replace", "check", "state", 
+        "occurred", "cause", "action", "failure", "device", "circuit", "unit", "fault",
+        # Filler/Null representations
+        "blank", "none", "empty", "na", "null", "nil", "n/a", "yes", "no", "true", "false"
+    }
+
+    for idx, item in enumerate(parsed_chunks):
+        chunk_text = normalize_text(item.get("chunk_text") or "").strip()
+        if not chunk_text:
+            return f"Row {idx} chunk_text is empty"
+            
+        # Verify no hallucinated facts in text: check if output words are traceable
+        out_words = re.findall(r"\w+", chunk_text.lower())
+        new_words = [w for w in out_words if w not in allowed_words and w not in stops and not w.isdigit()]
+        if len(new_words) > 3: # Allow small grammar/connection words
+            return f"Row {idx} failed traceability validation. Untraceable words: {new_words}"
+            
+        # Verify individual structured values
+        structured = item.get("structured") or {}
+        for k, v in structured.items():
+            v_clean = normalize_text(str(v)).lower().strip()
+            if not v_clean:
+                continue
+            # Check if value matches any original cell or context words
+            if not any(c in v_clean or v_clean in c for c in original_cell_texts):
+                val_words = [w for w in re.findall(r"\w+", v_clean) if w not in stops and not w.isdigit()]
+                untraceable_val_words = [w for w in val_words if w not in allowed_words]
+                if untraceable_val_words:
+                    return f"Row {idx} value {repr(v)} for key {repr(k)} has untraceable words: {untraceable_val_words}"
+            
+    return None
+
+def repair_table_with_llm(block: dict, config: dict, section_lead: str, preceding_text: str) -> list[dict] | None:
+    block_id = block.get("block_id", "unknown")
+    try:
+        # Build LLM client for chunking step
+        llm = get_llm_for(config, config.get("chunking"))
+        
+        td = block.get("table_data") or {}
+        headers = td.get("headers") or []
+        rows = td.get("rows") or []
+        raw_markdown = block.get("text") or ""
+        document_id = block.get("document_id")
+        source_ref = block.get("source_ref") or {}
+        filename = source_ref.get("filename") or "document"
+        
+        system_prompt = (
+            "You are an expert document parser. Your task is to correct errors in a poorly extracted "
+            "PDF table and generate context-enriched row-level chunks in strict JSON format.\n\n"
+            "Guidelines:\n"
+            "1. Combine surrounding context and section path into EACH row-level chunk so it is self-contained "
+            "for vector search (e.g. inject the alarm code, parent headers, and component name directly into the text).\n"
+            "2. Resolve merged columns/cells (e.g. if 'Factor 1 Servo unit failure' is combined in one cell, split them "
+            "logically based on column headers).\n"
+            "3. Return exactly one JSON object per row containing:\n"
+            "   - 'chunk_text': A complete, self-contained description of the row integrating context.\n"
+            "   - 'structured': A dictionary of key-value pairs matching headers to cell values.\n"
+            "4. Return ONLY a raw JSON array matching this schema: `[{\"chunk_text\": \"...\", \"structured\": {\"...\": \"...\"}}]`. "
+            "Do not return any markdown code block fences (like ```json) or explanation text."
+        )
+        
+        user_prompt = (
+            f"Document Filename: {filename}\n"
+            f"Parent Section/Context Path: {section_lead}\n"
+            f"Preceding Context: {preceding_text}\n\n"
+            f"Raw Table Headers:\n{json.dumps(headers)}\n\n"
+            f"Raw Table Rows:\n{json.dumps(rows)}\n\n"
+            f"Raw Markdown Representation:\n{raw_markdown}\n\n"
+            "Please return the JSON array now:"
+        )
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+        
+        response = llm.invoke(messages)
+        from backend.core import usage
+        usage.record_from_message("chunking", response)
+        res_text = response.content.strip()
+        
+        # Strip code block fences if returned by the LLM
+        if res_text.startswith("```"):
+            lines = res_text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            res_text = "\n".join(lines).strip()
+            
+        parsed_chunks = json.loads(res_text)
+        if not isinstance(parsed_chunks, list):
+            logger.info("Table %s: LLM response is not a JSON list: %s", block_id, res_text)
+            return None
+            
+        # Run validations
+        err = validate_repaired_chunks(parsed_chunks, rows, headers, section_lead, preceding_text)
+        if err:
+            logger.info("Table %s: Validation failed: %s — discarding LLM repair", block_id, err)
+            return None
+            
+        # Convert parsed JSON objects to our standard Chunk schema
+        chunks = []
+        for item in parsed_chunks:
+            chunk_text = item.get("chunk_text")
+            if not chunk_text:
+                continue
+            
+            chunk = {
+                "chunk_id": str(uuid.uuid4()),
+                "document_id": document_id,
+                "text": chunk_text,
+                "token_count": _ntok(chunk_text),
+                "table_data": item.get("structured"),
+                "source_ref": {**source_ref, "section": section_lead},
+                "tags": {
+                    "document_type": "manual",
+                    "chunk_type": "llm_repaired_table_row",
+                    "repaired": True,
+                }
+            }
+            chunks.append(chunk)
+            
+        return chunks
+    except Exception as exc:
+        logger.info("Table %s: LLM repair failed: %s — discarding LLM repair", block_id, exc)
+        return None
+
+def validate_spatial_conflation(block: dict, blocks: list[dict], caption_text: str) -> bool:
+    """Check if any referenced alphanumeric tokens/codes in the caption are only present in distant page blocks."""
+    norm_caption = normalize_text(caption_text)
+    tokens = re.findall(r"\b\d+[a-zA-Z]\b", norm_caption)
+    if not tokens:
+        return False
+        
+    ref = block.get("source_ref") or {}
+    page = ref.get("page")
+    bbox = ref.get("bbox") or []
+    if not page or len(bbox) != 4:
+        return False
+        
+    # Exclude page-level summary diagrams (Refinement #4)
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    if width > 300.0 or height > 300.0:
+        logger.info("Diagram block %s: Spans page summary region (%.1fx%.1f) - skipping conflation validator", block.get("block_id"), width, height)
+        return False
+        
+    # Analyze blocks on the same page
+    for token in tokens:
+        token_lower = token.lower()
+        occurrences = []
+        for b in blocks:
+            bref = b.get("source_ref") or {}
+            if bref.get("page") == page:
+                b_text = normalize_text(b.get("text") or "").lower()
+                if token_lower in b_text:
+                    b_bbox = bref.get("bbox") or []
+                    if len(b_bbox) == 4:
+                        occurrences.append(b_bbox)
+                        
+        if occurrences:
+            min_dist = float("inf")
+            for obbox in occurrences:
+                dx = max(0, bbox[0] - obbox[2], obbox[0] - bbox[2])
+                dy = max(0, bbox[1] - obbox[3], obbox[1] - bbox[3])
+                dist = (dx**2 + dy**2)**0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    
+            # Log spatial distance (Refinement #1)
+            logger.info("Diagram block %s: Token '%s' found at minimum distance of %.1f pt from figure bbox", block.get("block_id"), token, min_dist)
+            
+            # Distance threshold check (>150pt indicates distant conflation/reference hallucination)
+            if min_dist > 150.0:
+                return True
+                
+    return False
+
+
 def chunk_blocks(
     blocks: list[dict],
     size: int = DEFAULT_SIZE,
@@ -686,6 +985,7 @@ def chunk_blocks(
     semantic_model: str = "minishlab/potion-base-32M",
     section_aware: bool = True,
     split_large_tables: bool = True,
+    config: dict | None = None,
 ) -> list[dict]:
     """Turn NormalizedBlock dicts into Chunk dicts.
 
@@ -729,20 +1029,25 @@ def chunk_blocks(
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
     buf_page = None               # page number of the first buffered block (cite start)
-    current_section = None        # active heading -> tags the section's chunks
-    buf_heading_only = True       # True until real (non-heading) text is appended;
-                                  # a heading-only buffer is carried forward, not emitted
+    heading_stack: list[str] = [] # active headings path stack
+    buf_heading_only = True       # True until real (non-heading) text is appended
+
+    # Keep a rolling queue of the last 5 text/heading blocks to supply local preceding context
+    preceding_blocks: list[str] = []
 
     def _block_page(block):
         ref = block.get("source_ref") or {}
         return ref.get("page") if isinstance(ref, dict) else None
 
+    def _get_active_section() -> str:
+        return " > ".join(heading_stack)
+
     def _ref(ref):
-        # attach the active section without clobbering one an extractor already set
-        if not section_aware or not current_section:
+        sec = _get_active_section()
+        if not section_aware or not sec:
             return ref
         r = dict(ref or {})
-        r.setdefault("section", current_section)
+        r.setdefault("section", sec)
         return r
 
     def pending_lead_text() -> str:
@@ -763,6 +1068,7 @@ def chunk_blocks(
             continue
         text = (block.get("text") or "").strip()
         pg = _block_page(block)
+        ref = block.get("source_ref") or {}
 
         # 0. CAD Title Block & Component Specification Handlers
         cad_title = _try_extract_cad_title_chunk(block, document_id, _ref)
@@ -779,45 +1085,66 @@ def chunk_blocks(
 
         if buf_page is not None and pg is not None and pg != buf_page:
             if buf_heading_only:
-                buf_page = pg  # orphaned heading carries across the page break
+                buf_page = pg
             else:
-                flush()  # page break flushes real content; next block starts fresh
+                flush()
 
         if section_aware and btype == "heading" and text:
             if not buf_heading_only:
-                flush()                              # close the previous section
-            current_section = text
+                flush()
+            
+            # Update heading stack based on inferred level
+            level = get_heading_level(text, ref.get("bbox"))
+            # Keep stack truncated up to parent level (level - 1)
+            heading_stack = heading_stack[:level - 1]
+            heading_stack.append(text)
+            
             if buf_ref is None:
                 buf_ref = block.get("source_ref")
             buf_page = pg
-            buf_parts.append(text)                   # lead the section with its title
+            buf_parts.append(text)
             buf_heading_only = True
+            
+            # Add to preceding queue
+            preceding_blocks.append(text)
+            if len(preceding_blocks) > 5:
+                preceding_blocks.pop(0)
             continue
 
-        if btype in ATOMIC_TYPES:  # table / image_caption -> atomic, breaks the stream
+        if btype in ATOMIC_TYPES:
             heading_lead = pending_lead_text()
             flush()
-            # an image still pending vision was never described — its placeholder
-            # text isn't content; vision_enrichment writes the real caption.
+            
             if btype == "image_caption" and (block.get("metadata") or {}).get(
                 "pending_vision"
             ):
                 continue
 
             if btype == "table":
-                # 0. Check if table represents a Troubleshooting Cause & Action list
+                active_sec = _get_active_section()
+                prec_context = " ".join(preceding_blocks)
+                
+                # Check if it needs LLM repair first
+                classification = classify_table(block, active_sec, prec_context)
+                if classification["needs_llm"] and config is not None:
+                    logger.info("Table needs LLM repair: %s (reasons: %s)", block.get("block_id"), classification["reasons"])
+                    llm_chunks = repair_table_with_llm(block, config, active_sec, prec_context)
+                    if llm_chunks is not None:
+                        logger.info("Successfully repaired table with LLM, generated %d chunks", len(llm_chunks))
+                        chunks.extend(llm_chunks)
+                        continue
+                    # Else fall back automatically to standard splitters
+
                 trouble_chunks = _try_extract_troubleshooting_table_chunks(block, document_id, _ref)
                 if trouble_chunks:
                     chunks.extend(trouble_chunks)
                     continue
 
-                # 1. Check if table represents an Alarm/Error list
                 alarm_chunks = _try_extract_alarm_table_chunks(block, document_id, _ref)
                 if alarm_chunks:
                     chunks.extend(alarm_chunks)
                     continue
 
-                # 2. Check if table is a safety warning callout
                 warning_chunks = _try_extract_warning_chunk(block, document_id, _ref)
                 if warning_chunks:
                     if isinstance(warning_chunks, list):
@@ -826,16 +1153,46 @@ def chunk_blocks(
                         chunks.append(warning_chunks)
                     continue
 
-                # Large-table splitting (row-group pagination with repeated header) is
-                # handled below by _split_table_block, gated on split_large_tables and
-                # the token `size` threshold — not here, to avoid two competing
-                # large-table splitters with different thresholds firing on the same table.
-
-                # 3. Check if table is a multi-column model specification matrix
                 model_chunks = _try_extract_model_column_chunks(block, document_id, _ref)
                 if model_chunks:
                     chunks.extend(model_chunks)
                     continue
+
+            if btype == "image_caption":
+                # Compute dynamic confidence rating
+                base_score = 1.0
+                metadata = block.get("metadata") or {}
+                fig_kind = metadata.get("figure_kind")
+                if fig_kind == "unknown":
+                    base_score -= 0.3
+                if fig_kind in {"text", "blank", "decoration"}:
+                    base_score -= 0.1
+                    
+                # Conflation check
+                conflated = validate_spatial_conflation(block, blocks, text)
+                if conflated:
+                    logger.warning("Caption block %s: Spatial conflation detected - flagging for exclusion", block.get("block_id"))
+                    base_score -= 0.3
+                    
+                # Clamp score
+                confidence_score = max(0.0, base_score)
+                
+                exclude = False
+                if confidence_score < 0.7 or fig_kind in {"logo", "banner", "header_footer"}:
+                    exclude = True
+                    logger.info("Caption block %s: Excluded from index (Confidence: %.2f, Kind: %s)", block.get("block_id"), confidence_score, fig_kind)
+                    
+                b = dict(block)
+                b["source_ref"] = _ref(block.get("source_ref"))
+                lead_text = f"{heading_lead}\n{text}".strip() if heading_lead else text
+                
+                c = _make_chunk(b, lead_text, document_id)
+                c.setdefault("tags", {})
+                c["tags"]["exclude_from_index"] = exclude
+                c["tags"]["confidence"] = confidence_score
+                c["tags"]["figure_kind"] = fig_kind
+                chunks.append(c)
+                continue
 
             if text or block.get("table_data"):
                 b = dict(block)
@@ -847,21 +1204,16 @@ def chunk_blocks(
                     chunks.append(_make_chunk(b, lead_text, document_id))
             continue
 
-        # text (and headings when not section_aware) -> accumulate into the stream
         if text:
             if buf_ref is None:
                 buf_ref = block.get("source_ref")
             buf_parts.append(text)
             buf_heading_only = False
+            preceding_blocks.append(text)
+            if len(preceding_blocks) > 5:
+                preceding_blocks.pop(0)
 
     flush()
-    # Deduplicate exact repeat chunks (scoped per page — a manual's running headers/
-    # footers legitimately repeat the same text on every page, and each occurrence is
-    # a distinct, real citation source; only collapse a true duplicate on the SAME page)
-    # & filter near-empty noise (<5 tokens). A chunk carrying table_data or an
-    # image_path is never noise regardless of how short its rendered text is — e.g. a
-    # 1-row table's `text` field can be a few characters while table_data holds the
-    # real content; dropping it here would silently delete it from the corpus.
     seen_texts: set[tuple] = set()
     deduped_chunks = []
     for c in chunks:
@@ -869,7 +1221,6 @@ def chunk_blocks(
         tok_count = c.get("token_count", _ntok(t_raw))
         has_structured_data = bool(c.get("table_data") or c.get("image_path"))
 
-        # Filter near-empty noise chunks (<5 tokens matching page/section numbers or stray fragments)
         if tok_count < 5 and not has_structured_data:
             if re.match(r"^\d+(-\d+)?$", t_raw) or re.match(r"^[iIvVxXlLcCdDmM]+$", t_raw) or len(t_raw) <= 3:
                 continue
@@ -900,6 +1251,7 @@ class ChunkTool:
                 "chunking_model", "minishlab/potion-base-32M"),
             section_aware=cfg.get("section_aware", True),
             split_large_tables=cfg.get("split_large_tables", True),
+            config=config,
         )
         state.setdefault("chunks", []).extend(chunks)
         return state

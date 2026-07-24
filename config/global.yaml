@@ -21,19 +21,21 @@
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  # ACTIVE (24-Jul, v3): z.ai GLM-4.7-flash (FREE) — Gemini 2.5-flash (the 21-Jul v2
-  # choice below) got RETIRED by Google: every call now 404s with "no longer
-  # available to new users" (confirmed live, not a transient outage — same for
-  # vision/vision_ocr, which shared this key). z.ai's known weakness is BULK
-  # ingestion throughput (26.2-min enrich step, 429s under load — see the v2 note
-  # below, still accurate) — accepted for now since there's no other zero-setup
-  # option; re-benchmark against Cerebras+Gemma4 (real vision support, ~1M
-  # tok/day free — see vision: block) once that key exists, and NVIDIA as a
-  # faster paid-credit alternative if z.ai's throughput becomes the bottleneck
-  # again. agent stays on NVIDIA (unaffected by any of this).
+  # ACTIVE (24-Jul, v4): z.ai GLM-4.5-flash (FREE) — swapped from glm-4.7-flash
+  # (v3) same day: the account's real concurrency limits (from z.ai's own console,
+  # 24-Jul) show glm-4.7-flash capped at concurrency=1, the worst tier available;
+  # glm-4.5-flash is concurrency=2. Confirmed live: glm-4.7-flash 429'd on a
+  # trivial "say hi" call while glm-4.5-flash answered in 1.0s in the same test.
+  # Higher tiers (glm-4.7-flashx, glm-4.6v, glm-ocr, etc., concurrency 3-20) all
+  # returned "Insufficient balance or no resource package" live — NOT actually
+  # free on this account despite being listed, so don't reach for them without
+  # adding a paid balance first. Gemini 2.5-flash (the 21-Jul v2 choice) got
+  # RETIRED by Google: every call now 404s "no longer available to new users"
+  # (confirmed live) — same root cause that took out vision/vision_ocr, which
+  # shared that key. agent stays on NVIDIA (unaffected by any of this).
   provider: openai
-  model: glm-4.7-flash
-  answer_model: glm-4.7-flash
+  model: glm-4.5-flash
+  answer_model: glm-4.5-flash
   base_url: https://api.z.ai/api/paas/v4/
   api_key: ${ZAI_API_KEY}
   temperature: 0.2

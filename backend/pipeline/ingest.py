@@ -218,6 +218,63 @@ def ingest_document(
                 return {"document_id": document_id, "status": "deleted",
                         "metrics": metrics, "errors": errors, "trace_id": trace_id}
                 
+            # Render and register page/slide images for visual grounding
+            if status == "ready":
+                try:
+                    pages_dir = os.path.join("uploads", "pages")
+                    page_dir = os.path.join(pages_dir, document_id)
+                    os.makedirs(page_dir, exist_ok=True)
+                    
+                    ext = os.path.splitext(file_path)[1].lower()
+                    file_type = result.get("document_type") or ""
+                    
+                    if ext in (".pptx", ".ppt") or file_type == "presentation":
+                        from backend.core.office_renderer import render_pptx_slides
+                        render_pptx_slides(file_path, page_dir)
+                        
+                        # Register PPT slide entries in DB
+                        pages = {
+                            int(c["source_ref"]["slide"]) for c in chunks
+                            if isinstance(c.get("source_ref"), dict)
+                            and c["source_ref"].get("slide") is not None
+                        }
+                        for p in pages:
+                            fname = f"p{p}.jpg"
+                            img_path = os.path.join(page_dir, fname)
+                            w, h = 960, 720
+                            if os.path.isfile(img_path):
+                                try:
+                                    from PIL import Image
+                                    with Image.open(img_path) as img:
+                                        w, h = img.size
+                                except Exception:
+                                    pass
+                            pg.insert_page_image(document_id, p, f"/pages/{document_id}/{fname}", w, h)
+                        logger.info("saved %d slide images for %s", len(pages), document_id)
+                        
+                    elif ext == ".pdf" or file_type == "pdf":
+                        pages = {
+                            int(c["source_ref"]["page"]) for c in chunks
+                            if isinstance(c.get("source_ref"), dict)
+                            and c["source_ref"].get("page") is not None
+                        }
+                        import fitz
+                        doc = fitz.open(file_path)
+                        try:
+                            for p in sorted(pages):
+                                if p < 1 or p > len(doc):
+                                    continue
+                                pix = doc[p - 1].get_pixmap(dpi=150)
+                                fname = f"p{p}.jpg"
+                                with open(os.path.join(page_dir, fname), "wb") as f:
+                                    f.write(pix.tobytes("jpeg", jpg_quality=80))
+                                pg.insert_page_image(document_id, p, f"/pages/{document_id}/{fname}", pix.width, pix.height)
+                        finally:
+                            doc.close()
+                        logger.info("saved %d page images for %s", len(pages), document_id)
+                except Exception:
+                    logger.exception("Failed to render and save page/slide images for %s", document_id)
+                
             pg.finalize_document(
                 document_id,
                 document_type=result.get("document_type"),

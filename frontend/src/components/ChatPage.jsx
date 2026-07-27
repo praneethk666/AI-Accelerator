@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import * as XLSX from 'xlsx';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
@@ -431,6 +432,15 @@ const ChatPage = () => {
       } catch { /* skip malformed */ }
     }
     const pageSources = allSources
+      .map(s => {
+        if (s.page == null && s.slide != null) {
+          return { ...s, page: s.slide };
+        }
+        if (s.page == null && s.sheet != null) {
+          return { ...s, page: s.sheet };
+        }
+        return s;
+      })
       .filter(s => s.page != null && s.document_id)
       // Deduplicate by (document_id, page)
       .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
@@ -578,8 +588,8 @@ const ChatPage = () => {
                 key={s.session_id}
                 onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
                 className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${s.session_id === sessionId
-                    ? 'bg-slate-800 text-white'
-                    : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
+                  ? 'bg-slate-800 text-white'
+                  : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
                   }`}
                 title={s.title}
               >
@@ -804,8 +814,8 @@ const ChatPage = () => {
                 onClick={handleSend}
                 disabled={loading || (!input.trim() && !attachedFile)}
                 className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${loading || (!input.trim() && !attachedFile)
-                    ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                  ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
                   }`}
               >
                 <PaperAirplaneIcon className="h-4 w-4" />
@@ -829,11 +839,13 @@ const ChatPage = () => {
 };
 
 // ── PageViewerPanel ───────────────────────────────────────────────────────────
-// Right-side panel that shows the PDF page image for the current page.
-// Supports page navigation, button-based zoom, and trackpad/mouse-wheel zoom.
+// Right-side panel that shows the PDF page image for the current page, or an Excel grid view.
+// Supports page navigation, button-based zoom, trackpad/mouse-wheel zoom, and Excel sheet tabs.
 const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const { pages, activeIdx } = viewer;
   const active = pages[activeIdx];
+
+  const isExcel = active?.filename?.endsWith('.xlsx') || active?.filename?.endsWith('.xls') || active?.filename?.endsWith('.xlsm');
 
   const [currentPage, setCurrentPage] = useState(active?.page || 1);
   const [totalPages, setTotalPages] = useState(null);
@@ -841,6 +853,14 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const [imgError, setImgError] = useState(false);
   const [scale, setScale] = useState(1);
   const containerRef = useRef(null);
+
+  // Excel Specific State
+  const [workbook, setWorkbook] = useState(null);
+  const [sheetNames, setSheetNames] = useState([]);
+  const [activeSheet, setActiveSheet] = useState(null);
+  const [sheetData, setSheetData] = useState([]);
+  const [excelLoading, setExcelLoading] = useState(false);
+  const [excelError, setExcelError] = useState(false);
 
   // When active page changes from parent, sync currentPage and reset scale
   useEffect(() => {
@@ -850,9 +870,9 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     }
   }, [activeIdx, active?.page]);
 
-  // Fetch total page count for active document
+  // Fetch total page count for active document (PDF/PPT only)
   useEffect(() => {
-    if (!active?.document_id) return;
+    if (!active?.document_id || isExcel) return;
     setTotalPages(null);
     fetch(`${API_BASE_URL}/files/${active.document_id}/pdf-info`)
       .then((res) => {
@@ -865,13 +885,80 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       .catch((err) => {
         console.error("Failed to load PDF info:", err);
       });
-  }, [active?.document_id]);
+  }, [active?.document_id, isExcel]);
 
-  // Reset image status when current page changes
+  // Excel loader
   useEffect(() => {
-    setImgLoaded(false);
-    setImgError(false);
-  }, [currentPage, active?.document_id]);
+    if (!active?.document_id || !isExcel) return;
+
+    setExcelLoading(true);
+    setExcelError(false);
+    setWorkbook(null);
+    setSheetNames([]);
+    setActiveSheet(null);
+    setSheetData([]);
+
+    fetch(`${API_BASE_URL}/files/${active.document_id}/raw`)
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to fetch Excel raw file");
+        return res.arrayBuffer();
+      })
+      .then((ab) => {
+        const wb = XLSX.read(ab, { type: 'array' });
+        setWorkbook(wb);
+        setSheetNames(wb.SheetNames);
+
+        let initialSheet = wb.SheetNames[0];
+        if (active?.sheet && wb.SheetNames.includes(active.sheet)) {
+          initialSheet = active.sheet;
+        } else if (active?.page && wb.SheetNames.includes(String(active.page))) {
+          initialSheet = String(active.page);
+        }
+
+        setActiveSheet(initialSheet);
+        let data = [];
+        try {
+          const ws = wb.Sheets[initialSheet];
+          if (ws) {
+            data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+          }
+        } catch (parseErr) {
+          console.error("SheetJS parsing failed:", parseErr);
+        }
+        setSheetData(data);
+        setExcelLoading(false);
+      })
+      .catch((err) => {
+        console.error("Failed to load Excel workbook:", err);
+        setExcelError(true);
+        setExcelLoading(false);
+      });
+  }, [active?.document_id, isExcel, active?.sheet, active?.page]);
+
+  const handleSheetChange = (sheetName) => {
+    if (!workbook) return;
+    setActiveSheet(sheetName);
+    let data = [];
+    try {
+      const ws = workbook.Sheets[sheetName];
+      if (ws) {
+        data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      }
+    } catch (err) {
+      console.error("Failed to parse worksheet on sheet change:", err);
+    }
+    setSheetData(data);
+  };
+
+  const getColumnLetter = (colIdx) => {
+    let temp = colIdx;
+    let letter = '';
+    while (temp >= 0) {
+      letter = String.fromCharCode((temp % 26) + 65) + letter;
+      temp = Math.floor(temp / 26) - 1;
+    }
+    return letter;
+  };
 
   // Trap Ctrl + MouseWheel / trackpad pinch zooms on the viewer container
   // to zoom the document internally and prevent the browser from zooming the dashboard.
@@ -899,8 +986,8 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const handlePageChange = (page) => {
     setCurrentPage(page);
     setScale(1);
-    // If the new page is in our cited pages, update activeIdx in parent
-    const idx = pages.findIndex((p) => p.page === page);
+    // If the new page is in our cited pages for the same document, update activeIdx in parent
+    const idx = pages.findIndex((p) => p.page === page && p.document_id === active?.document_id);
     if (idx !== -1) {
       onPageChange(idx);
     }
@@ -910,7 +997,13 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     setScale((prev) => (prev > 1.1 ? 1 : 1.8));
   };
 
-  const imageUrl = active?.document_id
+  // Reset image status when current page changes
+  useEffect(() => {
+    setImgLoaded(false);
+    setImgError(false);
+  }, [currentPage, active?.document_id]);
+
+  const imageUrl = active?.document_id && !isExcel
     ? `${API_BASE_URL}/files/${active.document_id}/pages/${currentPage}/image`
     : null;
 
@@ -919,8 +1012,8 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
 
   return (
     <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
-        ? 'w-[40%] min-w-[40%] max-w-[40%]'
-        : 'w-[50%] min-w-[50%] max-w-[50%]'
+      ? 'w-[40%] min-w-[40%] max-w-[40%]'
+      : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>
       {/* Header matching user request */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
@@ -928,65 +1021,69 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           {active?.filename}
         </span>
 
-        {/* Navigation */}
-        <div className="flex items-center gap-3 select-none flex-shrink-0">
-          <button
-            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-            disabled={currentPage <= 1}
-            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
-            title="Previous Page"
-          >
-            <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
-          </button>
+        {/* Navigation - Hidden for Excel */}
+        {!isExcel && (
+          <div className="flex items-center gap-3 select-none flex-shrink-0">
+            <button
+              onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+              disabled={currentPage <= 1}
+              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              title="Previous Page"
+            >
+              <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
+            </button>
 
-          <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
-            {currentPage} / {totalPages || '...'}
-          </span>
+            <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
+              {currentPage} / {totalPages || '...'}
+            </span>
 
-          <button
-            onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
-            disabled={currentPage >= (totalPages || 1)}
-            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
-            title="Next Page"
-          >
-            <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
-          </button>
-        </div>
+            <button
+              onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
+              disabled={currentPage >= (totalPages || 1)}
+              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              title="Next Page"
+            >
+              <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
+            </button>
+          </div>
+        )}
 
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
-          <button
-            onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
-            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
-            title="Zoom Out"
-          >
-            －
-          </button>
+        {/* Zoom Controls - Hidden for Excel */}
+        {!isExcel && (
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
+            <button
+              onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
+              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              title="Zoom Out"
+            >
+              －
+            </button>
 
-          <button
-            onClick={() => setScale(1)}
-            className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
-            title="Reset to 100%"
-          >
-            {Math.round(scale * 100)}%
-          </button>
+            <button
+              onClick={() => setScale(1)}
+              className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
+              title="Reset to 100%"
+            >
+              {Math.round(scale * 100)}%
+            </button>
 
-          <button
-            onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
-            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
-            title="Zoom In"
-          >
-            ＋
-          </button>
+            <button
+              onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
+              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              title="Zoom In"
+            >
+              ＋
+            </button>
 
-          <button
-            onClick={() => setScale(1)}
-            className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
-            title="Reset Zoom to 100%"
-          >
-            Reset
-          </button>
-        </div>
+            <button
+              onClick={() => setScale(1)}
+              className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
+              title="Reset Zoom to 100%"
+            >
+              Reset
+            </button>
+          </div>
+        )}
 
         {/* Close Button */}
         <button
@@ -998,23 +1095,25 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </button>
       </div>
 
-      {/* Page Badges — cited pages shown below header */}
+      {/* Page Badges — cited pages/sheets shown below header */}
       {multiPage && (
-        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5">
+        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
           {pages.map((p, i) => {
             const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
-            const isActive = p.page === currentPage;
+            const isActive = isExcel
+              ? (p.document_id === active?.document_id && p.page === activeSheet)
+              : (p.document_id === active?.document_id && p.page === currentPage);
             return (
               <button
                 key={i}
-                onClick={() => handlePageChange(p.page)}
+                onClick={() => onPageChange(i)}
                 className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
-                    ? 'bg-blue-600/20 border-blue-500 text-blue-300'
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                  ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                   }`}
-                title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
+                title={`${isExcel ? 'Sheet' : 'Page'} ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
-                <span>P.{p.page}</span>
+                <span>{isExcel ? '' : 'P.'}{p.page}</span>
                 <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
                   <div
                     className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}
@@ -1030,43 +1129,121 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       {/* Page Canvas — overflow:auto creates scrollbars when zoomed in */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto bg-slate-950 p-4"
+        className="flex-1 overflow-auto bg-slate-950 p-4 flex flex-col min-h-0"
       >
-        {imageUrl && (
-          <div
-            style={{
-              /* Scale < 1 → shrink & center via auto margin.
-                 Scale > 1 → grow wider than panel → scrollbars appear. */
-              width: scale <= 1
-                ? `${Math.round(scale * 100)}%`
-                : `${Math.round(scale * 100)}%`,
-              marginLeft: scale <= 1 ? 'auto' : '0',
-              marginRight: scale <= 1 ? 'auto' : '0',
-              transition: 'width 150ms ease-out',
-              position: 'relative',
-            }}
-          >
-            {!imgLoaded && !imgError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
-                <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-                <span>Rendering Page {currentPage}...</span>
-              </div>
-            )}
-            {imgError && (
-              <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
-                <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
-                <span>Page image not available.</span>
-              </div>
-            )}
-            <img
-              src={imageUrl}
-              alt={`Page ${currentPage}`}
-              onLoad={() => setImgLoaded(true)}
-              onError={() => { setImgError(true); setImgLoaded(true); }}
-              className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
-                }`}
-            />
+        {isExcel ? (
+          <div className="flex-1 flex flex-col min-h-0 bg-slate-900 rounded border border-slate-800 overflow-hidden">
+            {/* Sheet Tabs */}
+            <div className="flex bg-slate-950 border-b border-slate-850 px-3 py-1 overflow-x-auto gap-1 select-none flex-shrink-0 scrollbar-thin">
+              {sheetNames.map((name) => {
+                const isActive = name === activeSheet;
+                return (
+                  <button
+                    key={name}
+                    onClick={() => handleSheetChange(name)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-t-lg border-t border-x transition-all flex-shrink-0 ${isActive
+                      ? 'bg-slate-900 border-slate-800 text-green-400 border-t-2 border-t-green-500'
+                      : 'bg-slate-950 border-transparent text-slate-500 hover:text-slate-200'
+                      }`}
+                  >
+                    {name}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Grid Area */}
+            <div className="flex-1 overflow-auto p-2 scrollbar-thin">
+              {excelLoading && (
+                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs gap-2">
+                  <ArrowPathIcon className="h-5 w-5 animate-spin text-green-500" />
+                  <span>Loading spreadsheet...</span>
+                </div>
+              )}
+              {excelError && (
+                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
+                  <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
+                  <span>Failed to load spreadsheet.</span>
+                </div>
+              )}
+              {!excelLoading && !excelError && sheetData.length > 0 && (
+                <div className="w-full overflow-x-auto">
+                  <table className="border-collapse text-[11px] text-slate-350 min-w-full font-mono">
+                    <thead>
+                      <tr className="bg-slate-950">
+                        <th className="border border-slate-800 bg-slate-950 text-slate-500 px-2 py-1.5 sticky top-0 left-0 z-20 w-10 text-center select-none"></th>
+                        {Array.from({ length: Math.max(...sheetData.map(r => r.length), 1) }).map((_, colIdx) => (
+                          <th
+                            key={colIdx}
+                            className="border border-slate-800 bg-slate-950 text-slate-400 px-3 py-1 font-semibold text-center select-none sticky top-0 z-10 min-w-[100px]"
+                          >
+                            {getColumnLetter(colIdx)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sheetData.map((row, rowIdx) => (
+                        <tr key={rowIdx} className="hover:bg-slate-850/40 transition-colors odd:bg-slate-900/40 even:bg-slate-900/10">
+                          <td className="border border-slate-800 bg-slate-950 text-slate-500 text-center font-semibold select-none sticky left-0 z-10 w-10 py-1">
+                            {rowIdx + 1}
+                          </td>
+                          {row.map((cell, colIdx) => (
+                            <td
+                              key={colIdx}
+                              className="border border-slate-800/80 px-3 py-1.5 whitespace-pre min-w-[100px] text-left align-top"
+                            >
+                              {cell !== null && cell !== undefined ? String(cell) : ""}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {!excelLoading && !excelError && sheetData.length === 0 && (
+                <div className="text-center py-12 text-slate-500 text-xs">
+                  Sheet is empty.
+                </div>
+              )}
+            </div>
           </div>
+        ) : (
+          imageUrl && (
+            <div
+              style={{
+                width: scale <= 1
+                  ? `${Math.round(scale * 100)}%`
+                  : `${Math.round(scale * 100)}%`,
+                marginLeft: scale <= 1 ? 'auto' : '0',
+                marginRight: scale <= 1 ? 'auto' : '0',
+                transition: 'width 150ms ease-out',
+                position: 'relative',
+              }}
+            >
+              {!imgLoaded && !imgError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
+                  <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+                  <span>Rendering Page {currentPage}...</span>
+                </div>
+              )}
+              {imgError && (
+                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
+                  <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
+                  <span>Page image not available.</span>
+                </div>
+              )}
+              <img
+                src={imageUrl}
+                alt={`Page ${currentPage}`}
+                onLoad={() => setImgLoaded(true)}
+                onError={() => { setImgError(true); setImgLoaded(true); }}
+                className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+                  }`}
+              />
+            </div>
+          )
         )}
       </div>
     </div>
@@ -1083,7 +1260,18 @@ const parseSources = (toolCalls) => {
     if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
     try {
       const parsed = JSON.parse(call.result);
-      if (Array.isArray(parsed.sources)) sources.push(...parsed.sources);
+      if (Array.isArray(parsed.sources)) {
+        const mapped = parsed.sources.map(s => {
+          if (s.page == null && s.slide != null) {
+            return { ...s, page: s.slide };
+          }
+          if (s.page == null && s.sheet != null) {
+            return { ...s, page: s.sheet };
+          }
+          return s;
+        });
+        sources.push(...mapped);
+      }
     } catch {
       // not JSON (e.g. a blocked/error string) — nothing to show
     }

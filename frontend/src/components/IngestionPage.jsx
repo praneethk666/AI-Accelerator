@@ -77,7 +77,25 @@ const IngestionPage = () => {
   const [uploadProgress, setUploadProgress] = useState({});
   // metrics from the most recent upload: { name, status, metrics: [{step, ms, status}] }
   const [lastRun, setLastRun] = useState(null);
+  const [selectedDocId, setSelectedDocId] = useState(null);
+  const selectedDocIdRef = useRef(null);
   const activePolls = useRef({});
+
+  const selectDocument = (docId, fileInfo = null) => {
+    setSelectedDocId(docId);
+    selectedDocIdRef.current = docId;
+    if (fileInfo) {
+      setLastRun({
+        id: docId,
+        name: fileInfo.filename || fileInfo.name,
+        status: fileInfo.status,
+        metrics: fileInfo.metrics || [],
+        tokenUsage: fileInfo.token_usage,
+        indexedTokens: fileInfo.indexed_tokens,
+        chunks: fileInfo.chunk_count || fileInfo.chunks,
+      });
+    }
+  };
 
   // Check server health on component mount
   useEffect(() => {
@@ -103,6 +121,12 @@ const IngestionPage = () => {
       const filesList = res.data || [];
       setFiles(filesList);
       setError(null);
+
+      // Default select to the most recent file if nothing is selected
+      if (filesList.length > 0 && !selectedDocIdRef.current) {
+        const first = filesList[0];
+        selectDocument(first.document_id || first.id, first);
+      }
 
       // Auto-poll any file that is currently processing in the background
       filesList.forEach((file) => {
@@ -134,14 +158,21 @@ const IngestionPage = () => {
         // runs in the background and we poll per-step progress below.
         const res = await uploadFile(file);
         const doc = res.data;
+        const docId = doc.document_id || doc.id;
+        
         setFiles((prev) => [doc, ...prev]);
-        setLastRun({ id: doc.document_id || doc.id, name: file.name, status: doc.status, metrics: [] });
+        selectDocument(docId, {
+          filename: file.name,
+          status: doc.status,
+          metrics: [],
+        });
+
         setUploadProgress((prev) => {
           const newProgress = { ...prev };
           delete newProgress[file.name];
           return newProgress;
         });
-        pollProgress(doc.document_id || doc.id, file.name);
+        pollProgress(docId, file.name);
       } catch (err) {
         console.error('Upload failed:', err);
         setError(`Upload failed for ${file.name}: ${err.message}`);
@@ -167,15 +198,20 @@ const IngestionPage = () => {
       attempts += 1;
       try {
         const { data } = await getProgress(docId);
-        setLastRun({
-          id: docId,
-          name,
-          status: data.status,
-          metrics: data.metrics || [],
-          tokenUsage: data.token_usage,
-          indexedTokens: data.indexed_tokens,
-          chunks: data.chunks,
-        });
+        
+        // Only update metrics if this document is currently selected
+        if (selectedDocIdRef.current === docId) {
+          setLastRun({
+            id: docId,
+            name,
+            status: data.status,
+            metrics: data.metrics || [],
+            tokenUsage: data.token_usage,
+            indexedTokens: data.indexed_tokens,
+            chunks: data.chunks,
+          });
+        }
+
         setFiles((prev) =>
           prev.map((f) =>
             (f.document_id === docId || f.id === docId)
@@ -521,7 +557,15 @@ const IngestionPage = () => {
           ) : (
             <div className="grid gap-4">
               {files.map((file) => (
-                <div key={file.id} className="group bg-gradient-to-br from-slate-800/60 to-slate-800/40 border border-slate-700 rounded-lg p-6 hover:border-blue-500/30 hover:from-slate-800/80 hover:to-slate-800/60 transition-all duration-300 shadow-lg hover:shadow-blue-500/10">
+                <div
+                  key={file.id}
+                  onClick={() => selectDocument(file.document_id || file.id, file)}
+                  className={`group bg-gradient-to-br from-slate-800/60 to-slate-800/40 border rounded-lg p-6 hover:from-slate-800/80 hover:to-slate-800/60 transition-all duration-300 shadow-lg hover:shadow-blue-500/10 cursor-pointer ${
+                    selectedDocId === (file.document_id || file.id)
+                      ? 'border-blue-500 ring-1 ring-blue-500/30'
+                      : 'border-slate-700 hover:border-slate-600'
+                  }`}
+                >
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-4 flex-1">
                       <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20 group-hover:bg-blue-500/20 transition-colors flex-shrink-0">
@@ -620,14 +664,14 @@ const IngestionPage = () => {
                         <span>{file.status}</span>
                       </div>
                       <button
-                        onClick={() => handleOpenChat(file.id)}
+                        onClick={(e) => { e.stopPropagation(); handleOpenChat(file.id); }}
                         className="p-2 hover:bg-blue-500/20 rounded-lg text-blue-400 hover:text-blue-300 transition-all border border-transparent hover:border-blue-500/30 group-hover:opacity-100"
                         title="Chat about this document"
                       >
                         <ChatBubbleLeftIcon className="h-5 w-5" />
                       </button>
                       <button
-                        onClick={() => handleDelete(file.id, file.filename)}
+                        onClick={(e) => { e.stopPropagation(); handleDelete(file.id, file.filename); }}
                         className="p-2 hover:bg-red-500/20 rounded-lg text-red-400 hover:text-red-300 transition-all border border-transparent hover:border-red-500/30"
                         title="Delete file"
                       >

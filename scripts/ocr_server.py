@@ -114,7 +114,17 @@ def _ensure_surya_loaded() -> None:
         logger.info("Surya loaded in %.1fs", time.time() - t0)
 
 
-def _infer_unlimited_ocr(tmp_path: str, out_dir: str, crop_mode: bool, invoice_mode: bool) -> str:
+def _infer_unlimited_ocr(tmp_path: str, out_dir: str, crop_mode: bool, invoice_mode: bool,
+                         base_size: int = 1024) -> str:
+    """base_size is the canvas the model normalizes the WHOLE image to before
+    tiling -- NOT derived from the input file's own pixel dimensions. Real finding,
+    27-Jul: a client-side pre-resize of the input PNG had ZERO effect on peak GPU
+    memory (confirmed live -- "Tried to allocate 3.21 GiB" was IDENTICAL across 3
+    retries at 3 different input sizes), because the model re-normalizes to
+    base_size regardless of what resolution it's handed. base_size is the actual
+    lever: a smaller canvas means fewer tiles at the same image_size, which is what
+    genuinely reduces the SAM patch-attention memory that OOMs. Exposed so a retry
+    can shrink THIS instead of the input image."""
     if invoice_mode:
         max_length, no_repeat_ngram, ngram_window = 4096, 15, 50
         crop_mode = False  # part of the invoice preset, not left to caller discipline
@@ -128,7 +138,7 @@ def _infer_unlimited_ocr(tmp_path: str, out_dir: str, crop_mode: bool, invoice_m
         prompt="<image>document parsing.",
         image_file=tmp_path,
         output_path=out_dir,
-        base_size=1024,
+        base_size=base_size,
         image_size=640 if crop_mode else 1024,
         crop_mode=crop_mode,
         eval_mode=True,
@@ -153,6 +163,7 @@ async def infer(
     engine: str = Form("unlimited_ocr"),
     crop_mode: bool = Form(True),
     invoice_mode: bool = Form(False),
+    base_size: int = Form(1024),
 ):
     """engine: "unlimited_ocr" (structured <table> HTML + correct reading order,
     ~26-34s/page) or "surya" (flat unordered text lines, no table structure,
@@ -182,16 +193,37 @@ async def infer(
             tmp_path = f.name
         out_dir = tempfile.mkdtemp()
         try:
-            text = _infer_unlimited_ocr(tmp_path, out_dir, crop_mode, invoice_mode)
-        except torch.cuda.OutOfMemoryError as e:
+            text = _infer_unlimited_ocr(tmp_path, out_dir, crop_mode, invoice_mode, base_size)
+        except RuntimeError as e:
+            # Catches torch.cuda.OutOfMemoryError (a RuntimeError subclass) AND any
+            # other CUDA-OOM-shaped RuntimeError the model's own trust_remote_code
+            # infer() might wrap/reraise as -- real finding, 27-Jul: at reduced
+            # resolution retries, the client-visible 503 kept firing but this
+            # handler's own log line never appeared, meaning the exception surfacing
+            # here isn't reliably torch.cuda.OutOfMemoryError by class alone. Message
+            # text ("CUDA out of memory") is the one thing that's stayed consistent
+            # across every real OOM seen so far, so that's what's actually checked.
+            # Anything else re-raises untouched -- this must never swallow a real bug.
+            if "out of memory" not in str(e).lower():
+                raise
             # Real, confirmed failure mode (27-Jul, live on the servo manual): some
             # large/dense table crops need more peak memory than this T4 has free
             # under crop_mode=True's patch-tiling path. A plain 500 gives the client
             # no way to tell "genuinely too large" apart from any other server error,
             # so it can only fall back straight to the paid VLM call. Returning a
-            # distinguishable 503 lets the client retry once with crop_mode=False
-            # (a different, less memory-hungry codepath) before paying for VLM.
-            logger.warning("infer: CUDA OOM (engine=%s crop_mode=%s): %s", engine, crop_mode, e)
+            # distinguishable 503 lets the client retry with a SMALLER base_size
+            # (still crop_mode=True — switching to crop_mode=False was tried first
+            # and rejected: confirmed live to silently drop whole columns of real
+            # data on at least one table, matching the same crop_mode=False risk
+            # already found 24-Jul on invoices. Pre-shrinking the input PNG client-
+            # side was ALSO tried and rejected: confirmed live to have zero effect on
+            # peak memory -- "Tried to allocate" was byte-identical across 3 input
+            # sizes, because the model re-normalizes to base_size regardless of the
+            # input file's own resolution. base_size is the actual lever).
+            msg = f"infer: CUDA OOM (engine={engine} crop_mode={crop_mode} base_size={base_size}): {e}"
+            logger.warning(msg)
+            print(msg, flush=True)  # belt-and-suspenders: confirm this fires even
+            # if a logging-config quirk (e.g. uvicorn's own setup) swallows logger.warning
             raise HTTPException(503, "cuda_oom") from e
         finally:
             os.unlink(tmp_path)

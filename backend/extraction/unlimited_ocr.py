@@ -265,23 +265,79 @@ def transcribe_table_local(png_bytes: bytes, config: dict) -> dict | None:
 
     On a CUDA-OOM-shaped failure (real finding, 27-Jul: some large/dense table crops
     need more peak GPU memory than crop_mode=True's patch-tiling path has free),
-    retries ONCE with crop_mode=False -- a different, less memory-hungry codepath --
-    before letting the caller fall back to the paid VLM call. ocr_server.py returns a
-    distinguishable 503 for this specific case (a plain 500 could be anything)."""
+    retries with a SMALLER base_size -- still crop_mode=True. Two approaches were
+    tried and rejected first:
+    - crop_mode=False: confirmed live to silently drop an entire column of real data
+      (icon+short-label cells) on a real table, matching the same crop_mode=False
+      risk already found 24-Jul on invoices.
+    - Pre-shrinking the input PNG client-side: confirmed live to have ZERO effect on
+      peak memory -- the server's "Tried to allocate" size was byte-identical across
+      3 different input resolutions, because the model re-normalizes every input to
+      base_size (a fixed canvas, currently hardcoded server-side) before tiling,
+      regardless of the input file's own resolution. base_size is the real lever,
+      so it's what the retry actually varies -- passed as a form field, not derived
+      from image dimensions. ocr_server.py returns a distinguishable 503 for this
+      specific case (a plain 500 could be anything).
+
+    Retries down _RETRY_BASE_SIZES in order (largest/highest-fidelity first),
+    stopping at the first that doesn't OOM. Only raises (letting the caller fall
+    back to VLM) once every size has failed.
+
+    Whichever attempt succeeds, the result is discarded (returns None, same as any
+    other local failure) if any column comes back blank in EVERY row -- a real,
+    confirmed failure signature, not assumed to be a table that legitimately has no
+    data there."""
     cfg = config.get("vision_ocr") or {}
-    try:
-        raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr")
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code != 503:
-            raise
-        logger.warning("unlimited_ocr: CUDA OOM on table crop, retrying with crop_mode=False")
-        raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr",
-                               extra_form={"crop_mode": False})
+    raw = None
+    last_error: httpx.HTTPStatusError | None = None
+    for base_size in (None,) + _RETRY_BASE_SIZES:
+        extra_form = None if base_size is None else {"base_size": base_size}
+        try:
+            raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr", extra_form=extra_form)
+            break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 503:
+                raise
+            last_error = e
+            logger.warning("unlimited_ocr: CUDA OOM on table crop (base_size=%s), retrying smaller",
+                           base_size or 1024)
+    if raw is None:
+        raise last_error
+
     matches = list(_DET_RE.finditer(raw))
     for idx, m in enumerate(matches):
         if m.group("type").strip().lower() != "table":
             continue
         start = m.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
-        return _parse_html_table(raw[start:end].strip())
+        table_data = _parse_html_table(raw[start:end].strip())
+        if table_data is not None and _has_fully_empty_column(table_data):
+            logger.warning("unlimited_ocr: table has a column blank in every row, discarding as unreliable")
+            return None
+        return table_data
     return None
+
+
+# Largest (highest-fidelity) first. base_size is the server's pre-tiling canvas
+# size (see transcribe_table_local's docstring for why THIS, not an input-image
+# resize, is the real memory lever) -- 768 gives real headroom over the 1024
+# default; 640 matches crop_mode=True's own image_size exactly, which likely
+# collapses tiling to a single patch, the strongest reduction short of giving up.
+_RETRY_BASE_SIZES = (768, 640)
+
+
+def _has_fully_empty_column(table_data: dict) -> bool:
+    """A column blank in EVERY row is a real, confirmed failure signature (found
+    live, 27-Jul: a retry silently dropped an entire 'Symbols' label column on a
+    real safety-precautions table) rather than assumed to be a column the table
+    genuinely has no data for. Only checked on multi-column, multi-row tables --
+    a single-column table or a <2-row table can't distinguish "empty column" from
+    "this table genuinely only has one real column of content"."""
+    headers = table_data.get("headers") or []
+    rows = table_data.get("rows") or []
+    if len(headers) < 2 or len(rows) < 2:
+        return False
+    for col in range(len(headers)):
+        if not any(str(r[col]).strip() for r in rows if col < len(r)):
+            return True
+    return False

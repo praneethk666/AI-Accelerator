@@ -8,7 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from backend.extraction.unlimited_ocr import det_to_blocks, transcribe_page_local, transcribe_table_local
+from backend.extraction.unlimited_ocr import (
+    det_to_blocks, transcribe_page_local, transcribe_table_local,
+    _has_fully_empty_column,
+)
 from backend.extraction.vision_ocr import transcribe_page_blocks
 
 
@@ -293,11 +296,23 @@ def test_transcribe_table_local_extracts_just_the_table_and_denormalizes_rowspan
     assert kwargs["data"]["engine"] == "unlimited_ocr"
 
 
-def test_transcribe_table_local_retries_with_crop_mode_false_on_cuda_oom():
+def _real_png_bytes(width=200, height=100) -> bytes:
+    import io as _io
+    from PIL import Image as _Image
+    buf = _io.BytesIO()
+    _Image.new("RGB", (width, height), color="white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_transcribe_table_local_retries_with_smaller_base_size_on_cuda_oom():
     # Real fix, 27-Jul: ocr_server.py returns a distinguishable 503 specifically for
-    # a CUDA-OOM-shaped failure (large/dense crop under crop_mode=True's patch-tiling
-    # path) so the client can retry with a less memory-hungry codepath instead of
-    # immediately giving up to the paid VLM fallback.
+    # a CUDA-OOM-shaped failure so the client can retry with a smaller base_size --
+    # STILL crop_mode=True, STILL the original image bytes -- instead of immediately
+    # giving up to the paid VLM fallback. Two other approaches were tried and
+    # rejected first: crop_mode=False (silently dropped a whole column of real
+    # data) and pre-shrinking the input PNG client-side (confirmed live to have
+    # ZERO effect on memory -- the model re-normalizes to base_size regardless of
+    # input resolution, so base_size itself must be what the retry varies).
     oom_resp = MagicMock()
     oom_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
         "503", request=MagicMock(), response=MagicMock(status_code=503))
@@ -311,15 +326,118 @@ def test_transcribe_table_local_retries_with_crop_mode_false_on_cuda_oom():
     good_resp.raise_for_status.return_value = None
     good_resp.json.return_value = {"text": good_raw}
 
+    original = _real_png_bytes(200, 100)
     with patch("httpx.post", side_effect=[oom_resp, good_resp]) as mock_post:
-        result = transcribe_table_local(b"crop-bytes", {
+        result = transcribe_table_local(original, {
             "vision_ocr": {"local_endpoint": "http://gpu-box/infer", "local_api_key": "k"}
         })
 
     assert result["headers"] == ["Code", "Name"]
     assert mock_post.call_count == 2
-    _, retry_kwargs = mock_post.call_args  # the retry (second/last) call
-    assert retry_kwargs["data"]["crop_mode"] is False
+    first_kwargs = mock_post.call_args_list[0][1]
+    retry_kwargs = mock_post.call_args_list[1][1]
+    # crop_mode is never overridden -- stays on the server's default (True) both times
+    assert "crop_mode" not in first_kwargs["data"]
+    assert "crop_mode" not in retry_kwargs["data"]
+    # first attempt doesn't send base_size at all (server default); retry does
+    assert "base_size" not in first_kwargs["data"]
+    assert retry_kwargs["data"]["base_size"] == 768
+    # the SAME original image bytes are sent both times -- no client-side resize
+    assert first_kwargs["files"]["image"][1] == original
+    assert retry_kwargs["files"]["image"][1] == original
+
+
+def test_transcribe_table_local_escalates_through_the_full_retry_ladder():
+    # Real finding, 27-Jul: a single fixed retry (base_size=768 alone) still OOM'd
+    # on the manual's largest real tables -- confirms the ladder actually walks to
+    # a SECOND, smaller base_size rather than giving up after one retry.
+    oom_resp_1 = MagicMock()
+    oom_resp_1.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=MagicMock(status_code=503))
+    oom_resp_2 = MagicMock()
+    oom_resp_2.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=MagicMock(status_code=503))
+
+    good_raw = (
+        "<|det|>table [1,2,3,4]<|/det|>"
+        "<table><tr><td>Code</td><td>Name</td></tr>"
+        "<tr><td>F7H</td><td>Motor error</td></tr></table>"
+    )
+    good_resp = MagicMock()
+    good_resp.raise_for_status.return_value = None
+    good_resp.json.return_value = {"text": good_raw}
+
+    original = _real_png_bytes(400, 200)
+    with patch("httpx.post", side_effect=[oom_resp_1, oom_resp_2, good_resp]) as mock_post:
+        result = transcribe_table_local(original, {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer"}
+        })
+
+    assert result["headers"] == ["Code", "Name"]
+    assert mock_post.call_count == 3
+    assert "base_size" not in mock_post.call_args_list[0][1]["data"]
+    assert mock_post.call_args_list[1][1]["data"]["base_size"] == 768
+    assert mock_post.call_args_list[2][1]["data"]["base_size"] == 640
+
+
+def test_transcribe_table_local_raises_after_every_retry_base_size_is_exhausted():
+    always_oom = MagicMock()
+    always_oom.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=MagicMock(status_code=503))
+
+    with patch("httpx.post", return_value=always_oom) as mock_post:
+        raised = False
+        try:
+            transcribe_table_local(_real_png_bytes(), {"vision_ocr": {"local_endpoint": "http://gpu-box/infer"}})
+        except httpx.HTTPStatusError:
+            raised = True
+    assert raised
+    # original attempt + every size in _RETRY_BASE_SIZES
+    from backend.extraction.unlimited_ocr import _RETRY_BASE_SIZES
+    assert mock_post.call_count == 1 + len(_RETRY_BASE_SIZES)
+
+
+def test_transcribe_table_local_discards_result_with_a_fully_empty_column():
+    # Real bug found live, 27-Jul: a table came back "successfully" (no exception)
+    # but with an entire column blank in every row -- real data silently lost.
+    # Must be treated the same as any other local failure (returns None, caller
+    # falls back to VLM), not accepted at face value just because parsing succeeded.
+    raw = (
+        "<|det|>table [1,2,3,4]<|/det|>"
+        "<table><tr><td>Category</td><td>Description</td><td>Symbol</td></tr>"
+        "<tr><td>Danger</td><td>Hazardous situation.</td><td></td></tr>"
+        "<tr><td>Caution</td><td>Minor injury risk.</td><td></td></tr></table>"
+    )
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"text": raw}
+
+    with patch("httpx.post", return_value=resp):
+        result = transcribe_table_local(_real_png_bytes(), {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer"}
+        })
+
+    assert result is None
+
+
+def test_transcribe_table_local_keeps_result_when_no_column_is_fully_empty():
+    raw = (
+        "<|det|>table [1,2,3,4]<|/det|>"
+        "<table><tr><td>Category</td><td>Description</td><td>Symbol</td></tr>"
+        "<tr><td>Danger</td><td>Hazardous situation.</td><td>Danger, injury</td></tr>"
+        "<tr><td>Caution</td><td>Minor injury risk.</td><td>Caution</td></tr></table>"
+    )
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"text": raw}
+
+    with patch("httpx.post", return_value=resp):
+        result = transcribe_table_local(_real_png_bytes(), {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer"}
+        })
+
+    assert result is not None
+    assert result["headers"] == ["Category", "Description", "Symbol"]
 
 
 def test_transcribe_table_local_reraises_non_oom_http_errors_without_retry():
@@ -335,6 +453,37 @@ def test_transcribe_table_local_reraises_non_oom_http_errors_without_retry():
             raised = True
     assert raised
     mock_post.assert_called_once()  # a non-OOM error must NOT trigger a retry
+
+
+# ── _has_fully_empty_column (unit-level) ────────────────────────────────────────
+
+def test_has_fully_empty_column_true_when_one_column_blank_everywhere():
+    assert _has_fully_empty_column({
+        "headers": ["A", "B"],
+        "rows": [["1", ""], ["2", ""]],
+    }) is True
+
+
+def test_has_fully_empty_column_false_when_every_column_has_something():
+    assert _has_fully_empty_column({
+        "headers": ["A", "B"],
+        "rows": [["1", ""], ["2", "x"]],
+    }) is False
+
+
+def test_has_fully_empty_column_false_for_single_column_table():
+    # Can't distinguish "empty column" from "this table only has one real column".
+    assert _has_fully_empty_column({
+        "headers": ["A"],
+        "rows": [[""], [""]],
+    }) is False
+
+
+def test_has_fully_empty_column_false_for_table_with_under_two_rows():
+    assert _has_fully_empty_column({
+        "headers": ["A", "B"],
+        "rows": [["1", ""]],
+    }) is False
 
 
 def test_transcribe_table_local_returns_none_when_no_table_tag_present():

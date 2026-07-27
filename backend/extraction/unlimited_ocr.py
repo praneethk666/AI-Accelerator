@@ -261,9 +261,22 @@ def transcribe_table_local(png_bytes: bytes, config: dict) -> dict | None:
     point) survives intact. Swap-in for docling_extract.py's _vlm_table() when
     extraction.docling.table_engine == 'local'. Uses the SAME connection config as the
     whole-page rescue path (vision_ocr.local_endpoint/local_api_key) since both hit the
-    same physical server."""
+    same physical server.
+
+    On a CUDA-OOM-shaped failure (real finding, 27-Jul: some large/dense table crops
+    need more peak GPU memory than crop_mode=True's patch-tiling path has free),
+    retries ONCE with crop_mode=False -- a different, less memory-hungry codepath --
+    before letting the caller fall back to the paid VLM call. ocr_server.py returns a
+    distinguishable 503 for this specific case (a plain 500 could be anything)."""
     cfg = config.get("vision_ocr") or {}
-    raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr")
+    try:
+        raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 503:
+            raise
+        logger.warning("unlimited_ocr: CUDA OOM on table crop, retrying with crop_mode=False")
+        raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr",
+                               extra_form={"crop_mode": False})
     matches = list(_DET_RE.finditer(raw))
     for idx, m in enumerate(matches):
         if m.group("type").strip().lower() != "table":

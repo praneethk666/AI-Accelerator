@@ -6,6 +6,8 @@ covers the exact shape this project's real data produces.
 """
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from backend.extraction.unlimited_ocr import det_to_blocks, transcribe_page_local, transcribe_table_local
 from backend.extraction.vision_ocr import transcribe_page_blocks
 
@@ -289,6 +291,50 @@ def test_transcribe_table_local_extracts_just_the_table_and_denormalizes_rowspan
     # header/page_number furniture around the table must not leak into the result
     _, kwargs = mock_post.call_args
     assert kwargs["data"]["engine"] == "unlimited_ocr"
+
+
+def test_transcribe_table_local_retries_with_crop_mode_false_on_cuda_oom():
+    # Real fix, 27-Jul: ocr_server.py returns a distinguishable 503 specifically for
+    # a CUDA-OOM-shaped failure (large/dense crop under crop_mode=True's patch-tiling
+    # path) so the client can retry with a less memory-hungry codepath instead of
+    # immediately giving up to the paid VLM fallback.
+    oom_resp = MagicMock()
+    oom_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=MagicMock(status_code=503))
+
+    good_raw = (
+        "<|det|>table [1,2,3,4]<|/det|>"
+        "<table><tr><td>Code</td><td>Name</td></tr>"
+        "<tr><td>F7H</td><td>Motor error</td></tr></table>"
+    )
+    good_resp = MagicMock()
+    good_resp.raise_for_status.return_value = None
+    good_resp.json.return_value = {"text": good_raw}
+
+    with patch("httpx.post", side_effect=[oom_resp, good_resp]) as mock_post:
+        result = transcribe_table_local(b"crop-bytes", {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer", "local_api_key": "k"}
+        })
+
+    assert result["headers"] == ["Code", "Name"]
+    assert mock_post.call_count == 2
+    _, retry_kwargs = mock_post.call_args  # the retry (second/last) call
+    assert retry_kwargs["data"]["crop_mode"] is False
+
+
+def test_transcribe_table_local_reraises_non_oom_http_errors_without_retry():
+    err_resp = MagicMock()
+    err_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "500", request=MagicMock(), response=MagicMock(status_code=500))
+
+    with patch("httpx.post", return_value=err_resp) as mock_post:
+        raised = False
+        try:
+            transcribe_table_local(b"crop-bytes", {"vision_ocr": {"local_endpoint": "http://gpu-box/infer"}})
+        except httpx.HTTPStatusError:
+            raised = True
+    assert raised
+    mock_post.assert_called_once()  # a non-OOM error must NOT trigger a retry
 
 
 def test_transcribe_table_local_returns_none_when_no_table_tag_present():

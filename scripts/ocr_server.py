@@ -183,6 +183,16 @@ async def infer(
         out_dir = tempfile.mkdtemp()
         try:
             text = _infer_unlimited_ocr(tmp_path, out_dir, crop_mode, invoice_mode)
+        except torch.cuda.OutOfMemoryError as e:
+            # Real, confirmed failure mode (27-Jul, live on the servo manual): some
+            # large/dense table crops need more peak memory than this T4 has free
+            # under crop_mode=True's patch-tiling path. A plain 500 gives the client
+            # no way to tell "genuinely too large" apart from any other server error,
+            # so it can only fall back straight to the paid VLM call. Returning a
+            # distinguishable 503 lets the client retry once with crop_mode=False
+            # (a different, less memory-hungry codepath) before paying for VLM.
+            logger.warning("infer: CUDA OOM (engine=%s crop_mode=%s): %s", engine, crop_mode, e)
+            raise HTTPException(503, "cuda_oom") from e
         finally:
             os.unlink(tmp_path)
             torch.cuda.empty_cache()  # release reserved-but-unallocated memory

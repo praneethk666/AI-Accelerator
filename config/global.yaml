@@ -119,12 +119,26 @@ vision:
   min_image_px: 150         # images smaller than this (each side) are skipped
   timeout_s: 120
   max_retries: 5            # retry/backoff is the safety net for transient 429/5xx
-  max_concurrency: 3        # moderate, not maximal — burned by wrong "unlimited paid
-                             # tier" assumptions twice today (Gemma, and z.ai). Raise
-                             # once real ingestion confirms headroom at this setting.
-  min_interval_s: 0.5       # ~120 RPM ceiling this enforces, comfortably under even
-                             # the lowest documented paid tier (150 RPM) — a deliberate
-                             # safety margin, not the same mistake as min_interval_s: 0.
+  max_concurrency: 1        # REDUCED from 3 (27-Jul) — see min_interval_s note below;
+                             # concurrent in-flight calls add real demand on top of what
+                             # interval-pacing between call STARTS accounts for.
+  min_interval_s: 1.0       # RAISED from 0.5 (27-Jul) — real finding on gpt-4o-mini:
+                             # this project's own pacing.pace() only paces REQUEST rate
+                             # (built for free-tier RPM caps like Gemma/Groq), but
+                             # gpt-4o-mini's real binding constraint is TOKENS per minute
+                             # (200K TPM, this account's actual tier). Live-tested during
+                             # a real 105-page extraction run: 0.5s pacing (~120
+                             # calls/min) with max_concurrency=3 repeatedly hit "Used
+                             # 200000, Limit 200000" and LOST multiple figure captions
+                             # entirely (pages 11, 13, 26, 29, 30, 33, 35+ all failed
+                             # after exhausting retries) — real data loss, not just
+                             # slowness. Each caption call costs ~1200-1300 tokens
+                             # (observed in the 429 error bodies), so the theoretical
+                             # math (120/min x 1250 ~= 150K, under 200K) didn't hold up
+                             # in practice — went more conservative empirically rather
+                             # than re-deriving the exact real window mechanics.
+                             # Re-verify with a live rerun before raising either value
+                             # again; don't just trust the arithmetic.
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
@@ -292,7 +306,7 @@ extraction:
     max_vlm_pages: 60
     device: auto              # auto | cpu | cuda | mps  (cuda on the GPU box)
     num_threads: 4
-    table_engine: vlm         # vlm (default, hosted) | local (self-hosted Unlimited-OCR
+    table_engine: local       # vlm (default, hosted) | local (self-hosted Unlimited-OCR
                               # — see backend/extraction/unlimited_ocr.py). ONLY affects
                               # per-table-crop escalation (table_source: vlm/auto+complex
                               # below) — a DIFFERENT trigger than vision_ocr.engine, which

@@ -56,30 +56,6 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# Run git commit and push on server load
-try:
-    import subprocess
-    with open("git_push_log.txt", "w", encoding="utf-8") as f:
-        f.write("=== GIT ADD ===\n")
-        f.write(subprocess.check_output(["git", "add", "."], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
-        
-        # Check status
-        status = subprocess.check_output(["git", "status"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace")
-        if "nothing to commit" not in status:
-            f.write("\n=== GIT COMMIT ===\n")
-            f.write(subprocess.check_output(["git", "commit", "-m", "Feat: PowerPoint slide viewer, Excel grid viewer, and ingestion selection lock updates"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
-        else:
-            f.write("\n=== NOTHING TO COMMIT ===\n")
-            
-        f.write("\n=== GIT PUSH ===\n")
-        f.write(subprocess.check_output(["git", "push"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
-except Exception as e:
-    try:
-        with open("git_push_log.txt", "a", encoding="utf-8") as f:
-            f.write(f"\nError: {e}\n")
-    except Exception:
-        pass
-
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config/global.yaml")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 

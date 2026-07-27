@@ -110,6 +110,68 @@ def test_rowspan_img_placeholder_cell_denormalizes_too_without_crashing():
     assert all(row[3] == "" for row in data["rows"])
 
 
+# ── det_to_blocks: MULTIPLE rowspan columns + a later group (real p059 excerpt,
+# trimmed) — the bug found live 27-Jul that _P050_TABLE_EXCERPT above didn't catch
+# because it only has ONE spanning column (Code) whose value differs per group; this
+# real alarm-code table also spans the Indication/Remarks columns AND has
+# continuation rows with only ONE new <td> (just the details cell) — leaving those
+# trailing spanning columns un-visited by a naive column-skip for that row, so their
+# pending carry-down survived stale into the NEXT alarm group once that group's own
+# column also carried a genuine rowspan. ─────────────────────────────────────────
+
+_P059_TWO_GROUP_EXCERPT = (
+    "<|det|>table [93, 76, 915, 699]<|/det|>"
+    "<table><tr><td>Alarm name</td><td>Code</td><td>Alarm details, detecting and "
+    "clearing method</td><td>Indication</td><td>Remarks</td></tr>"
+    "<tr><td rowspan=\"3\">Motor model setting error</td><td rowspan=\"3\">F7H</td>"
+    "<td>Motor model setting inconsistency detected.</td><td rowspan=\"3\"><img></td>"
+    "<td rowspan=\"3\">SUDBAt initializationRe-power on</td></tr>"
+    "<tr><td>Detect error when motor code being set is not the one allowable for "
+    "the amplifier you use.</td></tr>"
+    "<tr><td>Clear by re-powering on.</td></tr>"
+    "<tr><td rowspan=\"4\">Parameter error 1</td><td rowspan=\"4\">F8H</td>"
+    "<td>System parameter error detected.</td><td rowspan=\"4\"><img></td>"
+    "<td rowspan=\"4\">SUDBAlwaysRe-power on</td></tr>"
+    "<tr><td>Detect error when system parameter re-written, any errors in data "
+    "settings.</td></tr>"
+    "<tr><td>Clear by re-powering on.</td></tr>"
+    "<tr><td>This error occurs when writing parameters into new amplifier.This is "
+    "not abnormal.</td></tr>"
+    "</table>"
+)
+
+
+def test_later_group_does_not_inherit_an_earlier_groups_stale_rowspan_value():
+    # Real bug: once a continuation row has FEWER <td>s than actively-spanning
+    # columns (here: only the details cell, while Indication+Remarks are ALSO under
+    # rowspan), a naive column-skip never visits/decrements those trailing columns
+    # for that row -- so their pending value survived stale into the NEXT group,
+    # which got fed "Motor model setting error"'s own leftover Indication/Remarks
+    # values instead of its own once the column indices happened to realign.
+    blocks = det_to_blocks(_P059_TWO_GROUP_EXCERPT, "doc1", 59, "manual.pdf")
+    data = blocks[0]["table_data"]
+    assert data["headers"] == [
+        "Alarm name", "Code", "Alarm details, detecting and clearing method",
+        "Indication", "Remarks",
+    ]
+    assert len(data["rows"]) == 7  # 3 rows for group 1, 4 for group 2
+    for row in data["rows"]:
+        assert len(row) == 5  # never drifts wider than the real header count
+
+    group1 = data["rows"][:3]
+    for row in group1:
+        assert row[0] == "Motor model setting error"
+        assert row[1] == "F7H"
+        assert row[4] == "SUDBAt initializationRe-power on"
+
+    group2 = data["rows"][3:]
+    for row in group2:
+        assert row[0] == "Parameter error 1"
+        assert row[1] == "F8H"
+        # the real bug: this used to come out as group 1's leftover value instead
+        assert row[4] == "SUDBAlwaysRe-power on"
+
+
 # ── det_to_blocks: simple (non-rowspan) table, real p061 excerpt ───────────────
 
 def test_simple_table_without_spans_parses_headers_and_rows():

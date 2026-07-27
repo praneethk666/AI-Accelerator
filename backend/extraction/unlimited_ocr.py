@@ -102,6 +102,7 @@ class _RowspanTableParser(HTMLParser):
             self._col += self._cell_colspan
             self._in_cell = False
         elif tag == "tr" and self._row is not None:
+            self._flush_trailing_pending()
             if any(c.strip() for c in self._row):
                 self.rows.append(self._row)
             self._row = None
@@ -109,6 +110,31 @@ class _RowspanTableParser(HTMLParser):
     def _skip_filled_cols(self):
         while self._col in self._pending and self._pending[self._col]:
             self._set_cell(self._col, None)  # placeholder consumed below
+            self._col += 1
+
+    def _flush_trailing_pending(self):
+        """A continuation row with FEWER real <td>s than there are actively-
+        spanning columns (e.g. only a 'details' cell, while 'Indication' and
+        'Remarks' are ALSO under rowspan from the header row above) leaves those
+        trailing columns' carry-down un-consumed by _skip_filled_cols, which only
+        ever advances far enough to place the row's own new <td>s. Left alone, that
+        stale (rows_left, value) entry survives into the NEXT row untouched by this
+        row's pass at all -- and once a later, unrelated group's own column lands
+        on that same index, it gets fed the wrong group's leftover value instead of
+        its own. Real bug found live, 27-Jul, on the servo manual's F7H-FFH alarm
+        table: a later alarm group's Remarks cell also carried a genuine rowspan,
+        and inherited an earlier group's stale Indication/Remarks carry-down,
+        corrupting both from that point on. Fix: after all of THIS row's real
+        <td>s are placed, walk every remaining column index that has ANY pending
+        state at all (active or not) and consume/decrement the active ones, so
+        pending state always reflects exactly how many physical rows have passed
+        -- regardless of whether this particular row had a new <td> reach there."""
+        if not self._pending:
+            return
+        last_col = max(self._pending.keys())
+        while self._col <= last_col:
+            if self._pending.get(self._col):
+                self._set_cell(self._col, None)
             self._col += 1
 
     def _set_cell(self, col, text):

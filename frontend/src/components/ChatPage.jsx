@@ -2,6 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
   patchAgentSession, stageFile, getFile, API_BASE_URL,
@@ -46,6 +49,40 @@ const relativeTime = (iso) => {
 
 const newSessionId = () =>
   crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+/**
+ * Pre-render $$..$$ (display) and $..$  (inline) math with KaTeX before the
+ * markdown parser sees the text. This avoids remark-math's paragraph-boundary
+ * ambiguity and ensures fonts/metrics are always correct.
+ */
+const renderMathInMarkdown = (text) => {
+  if (!text) return text;
+  // Display math first ($$...$$) — must come before inline to avoid double-parsing
+  let result = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, latex) => {
+    try {
+      return katex.renderToString(latex.trim(), {
+        displayMode: true,
+        throwOnError: false,
+        output: 'html',
+      });
+    } catch {
+      return `$$${latex}$$`;
+    }
+  });
+  // Inline math ($...$) — skip if preceded/followed by another $
+  result = result.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, latex) => {
+    try {
+      return katex.renderToString(latex.trim(), {
+        displayMode: false,
+        throwOnError: false,
+        output: 'html',
+      });
+    } catch {
+      return `$${latex}$`;
+    }
+  });
+  return result;
+};
 
 const PinIcon = ({ className }) => (
   <svg
@@ -135,6 +172,33 @@ const ChatPage = () => {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const [showChatScrollDown, setShowChatScrollDown] = useState(false);
+
+  const checkChatScroll = () => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const isScrollable = el.scrollHeight > el.clientHeight;
+    // Show button if user scrolled up by more than 120px from the bottom
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    setShowChatScrollDown(isScrollable && !isNearBottom);
+  };
+
+  const handleChatScrollToBottom = () => {
+    chatContainerRef.current?.scrollTo({
+      top: chatContainerRef.current.scrollHeight,
+      behavior: 'smooth',
+    });
+  };
+
+  // Check scroll when messages change or loading changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      checkChatScroll();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [messages, loading]);
+
   // Mirrors sessionId so an in-flight reply can check whether the user switched
   // conversations before it landed (otherwise A's answer appends under B).
   const sessionIdRef = useRef(sessionId);
@@ -178,7 +242,7 @@ const ChatPage = () => {
 
   useEffect(() => {
     if (!fileId) return;
-    getFile(fileId).then((res) => setContextFile(res.data)).catch(() => {});
+    getFile(fileId).then((res) => setContextFile(res.data)).catch(() => { });
   }, [fileId]);
 
   const loadSessions = async () => {
@@ -394,11 +458,11 @@ const ChatPage = () => {
       prev.map((s) =>
         s.session_id === sessionId
           ? {
-              ...s,
-              title: rawInput ? rawInput.slice(0, 60) : (attachedFile ? attachedFile.filename : 'New chat'),
-              last_active: new Date().toISOString(),
-              isPlaceholder: false,
-            }
+            ...s,
+            title: rawInput ? rawInput.slice(0, 60) : (attachedFile ? attachedFile.filename : 'New chat'),
+            last_active: new Date().toISOString(),
+            isPlaceholder: false,
+          }
           : s
       )
     );
@@ -471,9 +535,8 @@ const ChatPage = () => {
     <div className="flex h-screen bg-slate-900 text-gray-100 relative">
       {/* Sidebar */}
       <div
-        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-300 ${
-          sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
-        }`}
+        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-300 ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
+          }`}
       >
         {/* Sidebar Header */}
         <div className="p-3 flex items-center justify-between border-b border-slate-800/60 h-14">
@@ -511,78 +574,77 @@ const ChatPage = () => {
               return new Date(b.last_active) - new Date(a.last_active);
             })
             .map((s) => (
-            <div
-              key={s.session_id}
-              onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
-              className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
-                s.session_id === sessionId
-                  ? 'bg-slate-800 text-white'
-                  : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
-              }`}
-              title={s.title}
-            >
-              <div className="min-w-0 flex-1">
-                {renamingId === s.session_id ? (
-                  <input
-                    type="text"
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    onBlur={() => handleRenameSave(s.session_id)}
-                    onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
-                    className="w-full bg-slate-700 text-white text-sm px-2 py-0.5 rounded border border-blue-500 outline-none"
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <>
-                    <p className="truncate flex items-center gap-1.5">
-                      {s.pinned && <PinIcon className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />}
-                      {s.title}
-                    </p>
-                    <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
-                  </>
-                )}
+              <div
+                key={s.session_id}
+                onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
+                className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${s.session_id === sessionId
+                    ? 'bg-slate-800 text-white'
+                    : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
+                  }`}
+                title={s.title}
+              >
+                <div className="min-w-0 flex-1">
+                  {renamingId === s.session_id ? (
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={() => handleRenameSave(s.session_id)}
+                      onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
+                      className="w-full bg-slate-700 text-white text-sm px-2 py-0.5 rounded border border-blue-500 outline-none"
+                      autoFocus
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <>
+                      <p className="truncate flex items-center gap-1.5">
+                        {s.pinned && <PinIcon className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />}
+                        {s.title}
+                      </p>
+                      <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
+                    </>
+                  )}
+                </div>
+                <div className="relative flex-shrink-0" data-menu>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
+                    }}
+                    className="text-slate-500 hover:text-blue-400 hover:bg-slate-700/50 rounded p-0.5 transition-colors"
+                    title="More"
+                  >
+                    <EllipsisVerticalIcon className="h-4 w-4" />
+                  </button>
+                  {menuOpen === s.session_id && (
+                    <div className="absolute right-0 top-6 z-50 w-40 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-sm" data-menu>
+                      <button
+                        onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
+                      >
+                        <PencilIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
+                        Rename
+                      </button>
+                      <button
+                        onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
+                      >
+                        <PinIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
+                        {s.pinned ? 'Unpin' : 'Pin'}
+                      </button>
+                      <div className="border-t border-slate-600 my-1" />
+                      <button
+                        onClick={(e) => handleDeleteSession(s.session_id, e)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-slate-700 hover:text-red-300 text-left group"
+                      >
+                        <TrashIcon className="h-4 w-4 text-red-400/80 group-hover:text-red-300" />
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="relative flex-shrink-0" data-menu>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
-                  }}
-                  className="text-slate-500 hover:text-blue-400 hover:bg-slate-700/50 rounded p-0.5 transition-colors"
-                  title="More"
-                >
-                  <EllipsisVerticalIcon className="h-4 w-4" />
-                </button>
-                {menuOpen === s.session_id && (
-                  <div className="absolute right-0 top-6 z-50 w-40 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-sm" data-menu>
-                    <button
-                      onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
-                    >
-                      <PencilIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
-                      Rename
-                    </button>
-                    <button
-                      onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
-                    >
-                      <PinIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
-                      {s.pinned ? 'Unpin' : 'Pin'}
-                    </button>
-                    <div className="border-t border-slate-600 my-1" />
-                    <button
-                      onClick={(e) => handleDeleteSession(s.session_id, e)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-slate-700 hover:text-red-300 text-left group"
-                    >
-                      <TrashIcon className="h-4 w-4 text-red-400/80 group-hover:text-red-300" />
-                      Delete
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+            ))}
         </div>
 
         <div className="p-3 border-t border-slate-800">
@@ -629,11 +691,15 @@ const ChatPage = () => {
               </span>
             )}
           </div>
-          
+
           <div className="flex items-center gap-2" />
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div
+          ref={chatContainerRef}
+          onScroll={checkChatScroll}
+          className="flex-1 overflow-y-auto relative"
+        >
           <div className="max-w-3xl mx-auto px-4 py-8">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center h-[60vh] text-center">
@@ -648,9 +714,9 @@ const ChatPage = () => {
 
             {messages.map((msg, idx) => (
               <MessageRow key={idx} msg={msg} onApprove={() => handleApproval(idx, true)}
-                          onDecline={() => handleApproval(idx, false)}
-                          onClarify={(opt) => handleClarify(opt, idx)} loading={loading}
-                          onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })} />
+                onDecline={() => handleApproval(idx, false)}
+                onClarify={(opt) => handleClarify(opt, idx)} loading={loading}
+                onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })} />
             ))}
 
             {loading && (() => {
@@ -685,7 +751,17 @@ const ChatPage = () => {
         )}
 
         <div className="border-t border-slate-800 bg-slate-900 p-4 flex-shrink-0">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-3xl mx-auto relative">
+            {showChatScrollDown && (
+              <button
+                onClick={handleChatScrollToBottom}
+                className="absolute bottom-full mb-3 right-4 p-2.5 rounded-full bg-slate-950 hover:bg-slate-850 text-gray-400 hover:text-white shadow-xl hover:scale-105 active:scale-95 transition-all duration-200 flex items-center justify-center border border-slate-800 z-40"
+                title="Scroll to bottom"
+                style={{ cursor: 'pointer' }}
+              >
+                <ChevronDownIcon className="h-5 w-5 stroke-[2.5]" />
+              </button>
+            )}
             {attachedFile && (
               <div className="mb-2 inline-flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">
                 <DocumentIcon className="h-3.5 w-3.5 text-blue-400" />
@@ -727,11 +803,10 @@ const ChatPage = () => {
               <button
                 onClick={handleSend}
                 disabled={loading || (!input.trim() && !attachedFile)}
-                className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
-                  loading || (!input.trim() && !attachedFile)
+                className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${loading || (!input.trim() && !attachedFile)
                     ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
                     : 'bg-blue-600 text-white hover:bg-blue-700'
-                }`}
+                  }`}
               >
                 <PaperAirplaneIcon className="h-4 w-4" />
               </button>
@@ -759,7 +834,7 @@ const ChatPage = () => {
 const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const { pages, activeIdx } = viewer;
   const active = pages[activeIdx];
-  
+
   const [currentPage, setCurrentPage] = useState(active?.page || 1);
   const [totalPages, setTotalPages] = useState(null);
   const [imgLoaded, setImgLoaded] = useState(false);
@@ -843,17 +918,16 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const multiPage = pages.length > 1;
 
   return (
-    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${
-      sidebarOpen 
-        ? 'w-[40%] min-w-[40%] max-w-[40%]' 
+    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
+        ? 'w-[40%] min-w-[40%] max-w-[40%]'
         : 'w-[50%] min-w-[50%] max-w-[50%]'
-    }`}>
+      }`}>
       {/* Header matching user request */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
         <span className="text-xs font-bold text-gray-200 truncate flex-1" title={active?.filename}>
           {active?.filename}
         </span>
-        
+
         {/* Navigation */}
         <div className="flex items-center gap-3 select-none flex-shrink-0">
           <button
@@ -864,11 +938,11 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           >
             <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
           </button>
-          
+
           <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
             {currentPage} / {totalPages || '...'}
           </span>
-          
+
           <button
             onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
             disabled={currentPage >= (totalPages || 1)}
@@ -888,8 +962,8 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           >
             －
           </button>
-          
-          <button 
+
+          <button
             onClick={() => setScale(1)}
             className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
             title="Reset to 100%"
@@ -934,11 +1008,10 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               <button
                 key={i}
                 onClick={() => handlePageChange(p.page)}
-                className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${
-                  isActive
+                className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
                     ? 'bg-blue-600/20 border-blue-500 text-blue-300'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                }`}
+                  }`}
                 title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
                 <span>P.{p.page}</span>
@@ -990,9 +1063,8 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               alt={`Page ${currentPage}`}
               onLoad={() => setImgLoaded(true)}
               onError={() => { setImgError(true); setImgLoaded(true); }}
-              className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${
-                imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
-              }`}
+              className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+                }`}
             />
           </div>
         )}
@@ -1017,6 +1089,156 @@ const parseSources = (toolCalls) => {
     }
   }
   return sources;
+};
+
+const CustomCodeBlock = ({ language, value }) => {
+  const [copied, setCopied] = useState(false);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const containerRef = useRef(null);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
+
+  const handleDownload = () => {
+    const extensions = {
+      python: 'py',
+      javascript: 'js',
+      typescript: 'ts',
+      html: 'html',
+      css: 'css',
+      json: 'json',
+      markdown: 'md',
+      bash: 'sh',
+      shell: 'sh',
+      yaml: 'yaml',
+      yml: 'yaml',
+      sql: 'sql',
+      text: 'txt',
+    };
+    const ext = extensions[language.toLowerCase()] || 'txt';
+    const blob = new Blob([value], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `code-block.${ext}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const checkScroll = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    const isScrollable = el.scrollHeight > el.clientHeight;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 16;
+    setShowScrollDown(isScrollable && !isAtBottom);
+  };
+
+  useEffect(() => {
+    checkScroll();
+
+    if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
+      const observer = new ResizeObserver(() => {
+        checkScroll();
+      });
+      observer.observe(containerRef.current);
+      return () => observer.disconnect();
+    }
+  }, [value]);
+
+  const handleScrollToBottom = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: 'smooth',
+    });
+  };
+
+  return (
+    <div className="relative border border-slate-800 rounded-xl overflow-hidden my-4 bg-slate-950/90 group shadow-lg max-w-full">
+      {/* Code block header */}
+      <div className="flex items-center justify-between px-4 py-2 bg-slate-900/90 border-b border-slate-800/80 select-none">
+        <span className="text-xs font-mono font-semibold text-slate-400 uppercase tracking-wider">
+          {language}
+        </span>
+        <div className="flex items-center gap-3">
+          {/* Copy button */}
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors py-1 px-1.5 rounded hover:bg-slate-800"
+            title="Copy to clipboard"
+          >
+            {copied ? (
+              <>
+                <CheckIcon className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="text-emerald-400 font-medium">Copied!</span>
+              </>
+            ) : (
+              <>
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                </svg>
+                <span>Copy</span>
+              </>
+            )}
+          </button>
+
+          {/* Download button */}
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors py-1 px-1.5 rounded hover:bg-slate-800"
+            title="Download as file"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>Download</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Code Container */}
+      <pre
+        ref={containerRef}
+        onScroll={checkScroll}
+        className="overflow-x-auto overflow-y-auto max-h-80 p-4 text-xs font-mono text-slate-100 leading-relaxed bg-slate-950/60 whitespace-pre scrollbar-thin"
+      >
+        <code>{value}</code>
+      </pre>
+
+      {/* Floating Scroll-Down Button */}
+      {showScrollDown && (
+        <button
+          onClick={handleScrollToBottom}
+          className="absolute bottom-4 right-4 p-2 rounded-full bg-slate-900/90 text-gray-400 hover:text-white hover:bg-slate-850 shadow-md transition-all hover:scale-105 active:scale-95 flex items-center justify-center border border-slate-800/80 z-10"
+          title="Scroll to bottom"
+        >
+          <ChevronDownIcon className="h-4 w-4 stroke-[3]" />
+        </button>
+      )}
+    </div>
+  );
 };
 
 const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages }) => {
@@ -1045,11 +1267,28 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
             <div className="min-w-0 flex-1">
               {msg.content && (
                 <div
-                  className={`prose prose-invert prose-sm max-w-none leading-relaxed ${
-                    msg.isError ? 'text-red-300' : 'text-gray-100'
-                  }`}
+                  className={`prose prose-invert prose-sm max-w-none leading-relaxed w-full overflow-x-auto ${msg.isError ? 'text-red-300' : 'text-gray-100'
+                    }`}
                 >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw]}
+                    components={{
+                      code({ node, inline, className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className || '');
+                        const language = match ? match[1] : 'text';
+                        return !inline ? (
+                          <CustomCodeBlock language={language} value={String(children).replace(/\n$/, '')} />
+                        ) : (
+                          <code className={className} {...props}>
+                            {children}
+                          </code>
+                        );
+                      }
+                    }}
+                  >
+                    {renderMathInMarkdown(msg.content)}
+                  </ReactMarkdown>
                 </div>
               )}
 
@@ -1059,7 +1298,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                   {msg.toolCalls.map((call, i) => {
                     const isSearch = call.name === 'search_documents';
                     const isList = call.name === 'list_documents';
-                    
+
                     if (isSearch && sources.length > 0) {
                       return (
                         <button
@@ -1080,7 +1319,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                         </button>
                       );
                     }
-                    
+
                     if (isList) {
                       return (
                         <button

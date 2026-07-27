@@ -422,7 +422,7 @@ enrichment:
 # ── Query pipeline ────────────────────────────────────────────────────────────
 query:
   small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
-  max_context_tokens: 3000      # answer_tool context budget
+  max_context_tokens: 0      # answer_tool context budget
 
   # Query-time pipeline steps (the read path). run_query() builds the graph from
   # this list: plan the query -> retrieve -> answer. Same graph engine as ingestion.

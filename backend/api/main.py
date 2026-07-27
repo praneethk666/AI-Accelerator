@@ -821,6 +821,37 @@ def config_activate(body: ProfileActivate):
     return {"ok": True, "active": name}
 
 
+@app.get("/files/{file_id}/vision-calls")
+def get_vision_calls(file_id: str):
+    """Retrieve all LLM/vision calls made during ingestion for this document."""
+    pg = _pg()
+    try:
+        rows = pg.conn.execute(
+            """
+            SELECT kind, provider, model, prompt, raw_response, input_tokens, output_tokens, created_at
+            FROM llm_calls
+            WHERE document_id::text = %s
+            ORDER BY created_at ASC
+            """,
+            (file_id,)
+        ).fetchall()
+        return [
+            {
+                "kind": r[0],
+                "provider": r[1],
+                "model": r[2],
+                "prompt": r[3],
+                "raw_response": r[4],
+                "input_tokens": r[5],
+                "output_tokens": r[6],
+                "created_at": r[7].isoformat() if r[7] else None
+            }
+            for r in rows
+        ]
+    finally:
+        pg.close()
+
+
 @app.get("/")
 def root():
     return {"service": "Document Intelligence + RAG Accelerator", "docs": "/docs"}

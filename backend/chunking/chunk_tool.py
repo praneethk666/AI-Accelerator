@@ -965,7 +965,7 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
         "full sentence) — restate it plainly using its own words/values. Do not invent an "
         "explanation of what a symbol means or dress up a short list into elaborated prose "
         "using words the cell never used.\n"
-        "5. Return ONLY a raw JSON array matching: "
+        "7. Return ONLY a raw JSON array matching: "
         '[{"row_index": 0, "chunk_text": "...", "structured": {"...": "..."}}]. '
         "No markdown code fences, no explanation text."
     )

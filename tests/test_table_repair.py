@@ -16,6 +16,9 @@ from backend.chunking.chunk_tool import (
     _disambiguate_headers,
     _validate_repaired_rows,
     _repair_table_with_llm,
+    _row_traceability_error,
+    _row_is_continuation,
+    _stem,
     chunk_blocks,
 )
 
@@ -261,6 +264,114 @@ def test_validation_failure_fails_closed_returns_none():
     with patch("backend.chunking.chunk_tool.get_llm_for", return_value=_mock_llm(bad)):
         chunks = _repair_table_with_llm(block, {"chunking": {}}, "sec", "prec", lambda r: r)
     assert chunks is None
+
+
+# ── word-form + header + continuation-row anchor fixes (found live, 27-Jul, on the
+# servo manual's real F7H-FFH alarm table -- see docling_extract.py/_table_has_span
+# investigation: this table's blank-continuation-row repair kept failing traceability
+# even when the LLM correctly followed the "denormalize into each row" instruction) ──
+
+def test_stem_strips_common_suffixes():
+    assert _stem("cleared") == "clear"
+    assert _stem("powering") == "power"
+    assert _stem("occurs") == "occur"
+
+
+def test_stem_does_not_over_strip_short_words():
+    # Stripping "s" from "as" would leave "a" -- guarded by the min-remainder-length check.
+    assert _stem("as") == "as"
+
+
+def test_traceability_allows_verb_conjugation_of_a_cells_own_word():
+    # Real failure: cell says "Clear by re-powering on.", natural prose says "cleared
+    # by re-powering on" -- exact word-form matching alone flagged "cleared" as
+    # fabricated even though it's just a conjugation of the cell's own word. Kept to
+    # only the cell's own vocabulary (plus stopwords) so this isolates JUST the verb-
+    # conjugation behavior, not the separate proportional-slack allowance.
+    err = _row_traceability_error(
+        "It is cleared by re-powering on.",
+        ["", "", "Clear by re-powering on.", "", ""],
+        "",
+    )
+    assert err is None
+
+
+def test_traceability_allows_referencing_a_column_header_via_context():
+    # Real failure: chunk_text said "...with code 'F7H'..." and "code" is never a
+    # literal CELL value anywhere -- it's the column's HEADER name, which
+    # _validate_repaired_rows now folds into the context string passed here.
+    err = _row_traceability_error(
+        "The alarm has code F7H.",
+        ["Motor model setting error", "F7H"],
+        "code",  # headers get folded into context by the caller, not this function
+    )
+    assert err is None
+
+
+def test_traceability_still_rejects_a_genuinely_invented_word():
+    err = _row_traceability_error(
+        "Factor 1 costs $2,499.00 and ships in a Laptop Computer box.",
+        ["Factor 1", "Servo unit failure", "Replace servo unit."],
+        "",
+    )
+    assert err is not None
+
+
+_ALARM_HEADERS = ["Alarm name", "Code", "Details"]
+_ALARM_ROWS = [
+    ["Motor model setting error", "F7H", "Setting inconsistency detected."],
+    ["", "", "Detect error when motor code being set is wrong."],
+    ["", "", "Clear by re-powering on."],
+]
+
+
+def test_row_is_continuation_true_for_blank_leading_cells():
+    assert _row_is_continuation(["", "", "Clear by re-powering on."]) is True
+
+
+def test_row_is_continuation_false_for_a_new_header_row():
+    assert _row_is_continuation(["Parameter error 1", "F8H", "..."]) is False
+
+
+def test_continuation_row_may_repeat_its_anchor_rows_identifying_value():
+    # The repair prompt explicitly instructs denormalizing a continuation row by
+    # repeating the anchor (header) row's identifying value into its own chunk_text
+    # -- this is the whole point of the repair, so it must not be flagged as
+    # fabrication just because "Motor model setting error"/"F7H" aren't in THIS
+    # row's own (blank) cells.
+    parsed = [
+        {"row_index": 0, "chunk_text": "Alarm 'Motor model setting error' (F7H): Setting inconsistency detected.",
+         "structured": {}},
+        {"row_index": 1, "chunk_text": "Alarm 'Motor model setting error' (F7H): Detect error when motor code being set is wrong.",
+         "structured": {}},
+        {"row_index": 2, "chunk_text": "Alarm 'Motor model setting error' (F7H): Clear by re-powering on.",
+         "structured": {}},
+    ]
+    ordered, err = _validate_repaired_rows(parsed, _ALARM_HEADERS, _ALARM_ROWS, "sec", "prec")
+    assert err == ""
+    assert len(ordered) == 3
+
+
+def test_continuation_row_still_rejected_if_it_borrows_a_different_alarms_identity():
+    # Two distinct alarms back to back; row 1 (a continuation of alarm 0) must not
+    # get away with referencing alarm 2's name/code just because it appears
+    # somewhere else in the table -- only the IMMEDIATE anchor's cells are allowed.
+    rows = [
+        ["Motor model setting error", "F7H", "Setting inconsistency detected."],
+        ["", "", "Clear by re-powering on."],
+        ["Parameter error 1", "F8H", "System parameter error detected."],
+    ]
+    parsed = [
+        {"row_index": 0, "chunk_text": "Alarm 'Motor model setting error' (F7H): Setting inconsistency detected.",
+         "structured": {}},
+        {"row_index": 1, "chunk_text": "Alarm 'Parameter error 1' (F8H): Clear by re-powering on.",
+         "structured": {}},
+        {"row_index": 2, "chunk_text": "Alarm 'Parameter error 1' (F8H): System parameter error detected.",
+         "structured": {}},
+    ]
+    ordered, err = _validate_repaired_rows(parsed, _ALARM_HEADERS, rows, "sec", "prec")
+    assert ordered is None
+    assert "row 1" in err
 
 
 # ── chunk_blocks() integration ──────────────────────────────────────────────────

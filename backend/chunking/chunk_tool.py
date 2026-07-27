@@ -711,6 +711,20 @@ def _has_ragged_rows(rows: list[list]) -> bool:
     return len(col_counts) > 1
 
 
+def _row_is_continuation(row: list) -> bool:
+    """True if this row's leading half is blank but its trailing half has content --
+    the shape produced when a rowspan/merged source cell is split across output
+    rows. Used both to detect the table-wide pattern (_has_blank_continuation_rows)
+    and, per-row, to find which row a continuation row's identifying value (e.g.
+    alarm name/code) should be considered to legitimately come from during repair
+    validation (see _validate_repaired_rows)."""
+    if not row:
+        return False
+    lead = row[: max(1, len(row) // 2)]
+    rest = row[len(lead):]
+    return all(not str(c).strip() for c in lead) and any(str(c).strip() for c in rest)
+
+
 def _has_blank_continuation_rows(rows: list[list], min_fraction: float = 0.15) -> bool:
     """A DIFFERENT raggedness pymupdf's ruled-line table extraction produces (found
     live, 24-Jul, on the servo manual's alarm-list table via table_source: auto): every
@@ -722,14 +736,7 @@ def _has_blank_continuation_rows(rows: list[list], min_fraction: float = 0.15) -
     cells — the exact fragmentation failure mode this repair step exists for."""
     if len(rows) < 2:
         return False
-    blank_leading = 0
-    for row in rows[1:]:
-        if not row:
-            continue
-        lead = row[: max(1, len(row) // 2)]
-        rest = row[len(lead):]
-        if all(not str(c).strip() for c in lead) and any(str(c).strip() for c in rest):
-            blank_leading += 1
+    blank_leading = sum(1 for row in rows[1:] if _row_is_continuation(row))
     return blank_leading / (len(rows) - 1) >= min_fraction
 
 
@@ -816,17 +823,36 @@ _REPAIR_STOPWORDS = {
 }
 
 
+def _stem(word: str) -> str:
+    """Strip common English suffixes so a natural-language conjugation/pluralization
+    of a cell's own word (e.g. cell says 'Clear', prose says 'cleared'; cell says
+    'Indication', prose says 'indicated') doesn't register as a fabricated word —
+    real bug found live: a repaired row using only its own cells' content still
+    tripped the traceability check purely on verb-form/plural mismatches. Only
+    strips a suffix when the remainder is still a real-length word stem, so this
+    loosens grammatical variants without letting genuinely different words through."""
+    for suf in ("ing", "edly", "ed", "es", "s"):
+        if word.endswith(suf) and len(word) - len(suf) >= 3:
+            return word[: -len(suf)]
+    return word
+
+
 def _row_traceability_error(chunk_text: str, row_cells: list, context: str) -> str | None:
     """Every content word in a repaired row's text must trace back to THAT row's own
     cells or the surrounding context — checked per-row (not against the whole
     table), so words that are real elsewhere in the table but don't belong to THIS
     row (e.g. another row's cause/action) still fail. Catches misattribution, not
     just outright invention — a bag-of-words check against the whole table can't
-    tell 'used the right words' from 'used the right words from the wrong row'."""
+    tell 'used the right words' from 'used the right words from the wrong row'.
+    `context` should include the table's own column headers (naming a column,
+    e.g. 'code' or 'remarks', isn't fabrication) alongside the surrounding text."""
     norm_text = _normalize_fullwidth(chunk_text).lower()
     out_words = re.findall(r"\w+", norm_text)
     allowed = set(re.findall(r"\w+", _normalize_fullwidth(" ".join(str(c) for c in row_cells) + " " + context).lower()))
-    untraceable = [w for w in out_words if w not in allowed and w not in _REPAIR_STOPWORDS and not w.isdigit()]
+    allowed_stems = {_stem(w) for w in allowed}
+    untraceable = [w for w in out_words
+                   if w not in allowed and _stem(w) not in allowed_stems
+                   and w not in _REPAIR_STOPWORDS and not w.isdigit()]
     # Proportional, not a flat count: a single ROW's own text is short, so a flat
     # allowance (e.g. "3") is a huge fraction of a ~7-word sentence — validated live,
     # a misattributed row (right words, wrong row — e.g. row 0's text actually
@@ -862,14 +888,29 @@ def _validate_repaired_rows(
     if set(by_index) != set(range(len(rows))):
         return None, f"row_index values don't cover every original row: got {sorted(by_index)}"
 
-    context = f"{preceding_text} {section_lead}"
+    # Column headers are legitimate reference vocabulary -- naming a column (e.g.
+    # "code", "remarks") while describing its value isn't fabrication, it's labeling.
+    context = f"{preceding_text} {section_lead} {' '.join(str(h) for h in headers)}"
     ordered = []
+    anchor_cells: list | None = None
     for idx in range(len(rows)):
+        row = rows[idx]
+        # A continuation row is INSTRUCTED (see the repair prompt's guideline 5) to
+        # repeat its anchor row's identifying value (e.g. alarm name/code) into its
+        # own chunk_text -- that's the whole point of the repair, so its allowed
+        # vocabulary must include the anchor row's cells, not just its own (blank)
+        # leading cells. A non-continuation row becomes the new anchor for whatever
+        # continuation rows follow it.
+        if _row_is_continuation(row) and anchor_cells is not None:
+            check_cells = list(row) + list(anchor_cells)
+        else:
+            check_cells = row
+            anchor_cells = row
         item = by_index[idx]
         chunk_text = (item.get("chunk_text") or "").strip()
         if not chunk_text:
             return None, f"row {idx}: chunk_text is empty"
-        err = _row_traceability_error(chunk_text, rows[idx], context)
+        err = _row_traceability_error(chunk_text, check_cells, context)
         if err:
             return None, f"row {idx}: {err}"
         ordered.append(item)
@@ -913,6 +954,17 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
         "   - 'structured': a dict of column-label -> cell-value for ONLY this row.\n"
         "4. Never state a value under the wrong row_index, and never invent a value not "
         "present in that row or the given context.\n"
+        "5. Rows with blank leading cells are CONTINUATION rows of the row above (a "
+        "merged/spanning source cell split across several output rows) — denormalize by "
+        "repeating the identifying value (e.g. alarm name/code) from the row above into "
+        "each continuation row's own chunk_text, but do NOT do the reverse: never pull a "
+        "continuation row's own content up into the row it continues. Each row_index's "
+        "chunk_text must describe ONLY that row_index's own cells, even when several "
+        "row_indexes together describe one real-world item.\n"
+        "6. For a cell that is already a short code, symbol, or bare list of terms (not a "
+        "full sentence) — restate it plainly using its own words/values. Do not invent an "
+        "explanation of what a symbol means or dress up a short list into elaborated prose "
+        "using words the cell never used.\n"
         "5. Return ONLY a raw JSON array matching: "
         '[{"row_index": 0, "chunk_text": "...", "structured": {"...": "..."}}]. '
         "No markdown code fences, no explanation text."

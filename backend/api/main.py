@@ -89,6 +89,71 @@ _PAGES_DIR = os.path.join(UPLOAD_DIR, "pages")
 os.makedirs(_PAGES_DIR, exist_ok=True)
 app.mount("/pages", StaticFiles(directory=_PAGES_DIR), name="pages")
 
+
+@app.on_event("startup")
+def on_startup():
+    """Verify connections and auto-initialize database schema if missing."""
+    import psycopg
+    import re
+    from qdrant_client import QdrantClient
+    
+    from backend.storage.postgres_store import dsn_from_env
+    postgres_url = dsn_from_env()
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+    
+    logger.info("Verifying connections to database and vector store...")
+    
+    # 1. Verify / Initialize Postgres
+    if postgres_url:
+        try:
+            conn = psycopg.connect(postgres_url, connect_timeout=5)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'documents'
+                    );
+                """)
+                exists = cur.fetchone()[0]
+                if not exists:
+                    logger.info("Table 'documents' not found. Auto-initializing schema using scripts/init_db.sql...")
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
+                    if os.path.exists(schema_path):
+                        with open(schema_path, "r", encoding="utf-8") as sf:
+                            sql_content = sf.read()
+                        
+                        sql_no_comments = re.sub(r"--[^\n]*", "", sql_content)
+                        statements = []
+                        for stmt in sql_no_comments.split(";"):
+                            stmt = stmt.strip()
+                            if stmt and not stmt.upper().startswith("CREATE DATABASE"):
+                                statements.append(stmt)
+                        
+                        for stmt in statements:
+                            cur.execute(stmt)
+                        conn.commit()
+                        logger.info("Database schema initialized successfully!")
+                    else:
+                        logger.warning("scripts/init_db.sql not found at %s. Cannot auto-initialize schema.", schema_path)
+                else:
+                    cur.execute("SELECT 1;")
+            conn.close()
+            logger.info("Database connection verified successfully!")
+        except Exception as e:
+            logger.error("Database connection/initialization failed: %s", e)
+    else:
+        logger.warning("POSTGRES_URL environment variable is not set.")
+
+    # 2. Verify Qdrant
+    try:
+        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        client.get_collections()
+        logger.info("Qdrant connection verified successfully (Endpoint: %s)!", qdrant_url)
+    except Exception as e:
+        logger.error("Qdrant connection failed: %s", e)
+
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
 # Warm torch/nomic BEFORE anything can import paddle (paddleocr) — paddle-first

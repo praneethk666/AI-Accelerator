@@ -54,7 +54,10 @@ class QdrantStore:
     ) -> None:
         self.dim = dim
         self.collection = collection
-        self.client = QdrantClient(url=url or url_from_env())
+        self.client = QdrantClient(
+            url=url or url_from_env(),
+            api_key=os.getenv("QDRANT_API_KEY")
+        )
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
@@ -72,6 +75,13 @@ class QdrantStore:
                     ),
                 },
             )
+        # Create payload index for document_id (required by Qdrant Cloud for filtering/deletion)
+        from qdrant_client.models import PayloadSchemaType
+        self.client.create_payload_index(
+            collection_name=self.collection,
+            field_name="document_id",
+            field_schema=PayloadSchemaType.KEYWORD
+        )
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk's dense + sparse vectors + tag payload (keyed by chunk_id)."""

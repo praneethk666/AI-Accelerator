@@ -555,6 +555,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     page finishes converting — real per-page progress for a long document, since
     Docling converts one page at a time here specifically to bound memory."""
     from docling_core.types.doc import TextItem, TableItem, PictureItem
+    from backend.chunking.chunk_tool import _has_blank_continuation_rows
 
     dcfg = (config.get("extraction") or {}).get("docling") or {}
     min_pic = float(dcfg.get("min_picture_pts", 24))   # drop tiny marks/logos
@@ -655,6 +656,21 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                                                      (table_source == "auto" and complex_
                                                       and not has_span)):
                         pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                        # Real gap found 27-Jul: has_span relies on DOCLING's own
+                        # span metadata, which this exact class of dense multi-line
+                        # table can leave empty even though the source table genuinely
+                        # has merged cells (TableFormer's structure model garbles the
+                        # content instead of flagging a span). So has_span alone can
+                        # miss the case it exists to catch. Closing the loop on the
+                        # ACTUAL symptom instead: if pymupdf's own result comes out
+                        # ragged (chunk_tool.py's own repair-trigger detector), don't
+                        # accept it — escalate to vlm/local, which reads the true
+                        # rowspan structure directly (see unlimited_ocr.py's
+                        # _RowspanTableParser) instead of leaning on downstream LLM
+                        # repair to patch up a result we already know is ragged.
+                        if (table_source == "auto" and pmd_td is not None
+                                and _has_blank_continuation_rows(pmd_td.get("rows") or [])):
+                            pmd_td = None
                     use_pymupdf = pmd_td is not None
                     use_vlm = (not use_pymupdf) and bb and (
                         table_source == "vlm" or (table_source == "auto" and complex_))
@@ -738,11 +754,16 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 has_span = _table_has_span(item)
                 pmd_td = None
                 # See the main per-page loop's identical branch above for why
-                # spanning tables skip pymupdf in "auto" mode specifically.
+                # spanning tables skip pymupdf in "auto" mode specifically, and why
+                # a ragged pymupdf result is discarded rather than accepted (has_span
+                # alone can miss this exact class of table — see the comment there).
                 if fdoc is not None and bb and (table_source == "pymupdf" or
                                                  (table_source == "auto" and complex_
                                                   and not has_span)):
                     pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                    if (table_source == "auto" and pmd_td is not None
+                            and _has_blank_continuation_rows(pmd_td.get("rows") or [])):
+                        pmd_td = None
                 use_pymupdf = pmd_td is not None
                 use_vlm = (not use_pymupdf) and bb and (
                     table_source == "vlm" or (table_source == "auto" and complex_))

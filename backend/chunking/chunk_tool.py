@@ -496,6 +496,16 @@ def _try_extract_cad_title_chunk(block: dict, document_id: str | None, ref_fn) -
     if not ("drawing no" in text.lower() or "title block" in text.lower()):
         return None
 
+    # A CAD title block is a small metadata block, not a massive BOM or component list table.
+    # Exclude blocks that are large tables (more than 5 rows) or have extremely long text.
+    if block.get("type") == "table":
+        td = block.get("table_data") or {}
+        rows = td.get("rows") or []
+        if len(rows) > 5:
+            return None
+    elif len(text) > 2000 or _ntok(text) > 400:
+        return None
+
     source_ref = ref_fn(block.get("source_ref"))
     chunk_text = f"# CAD Drawing Title Block & Specifications\n\n{text}"
 

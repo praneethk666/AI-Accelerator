@@ -769,6 +769,13 @@ def agent_chat(req: AgentChatRequest):
         # sliding window, not summarization — see query.agent.max_history_messages
         history = history[-max_history:]
 
+    # Save user message immediately so it's persisted and visible if user switches/reloads
+    try:
+        store = get_conversation_store()
+        store.save_turn(req.session_id, "user", req.message)
+    except Exception:
+        logger.debug("agent user chat history save failed", exc_info=True)
+
     result = run_agent(
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
@@ -782,7 +789,6 @@ def agent_chat(req: AgentChatRequest):
         _agent_sessions[req.session_id] = _qa_only(result["messages"])
         try:
             store = get_conversation_store()
-            store.save_turn(req.session_id, "user", req.message)
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
                 metadata={
@@ -799,7 +805,6 @@ def agent_chat(req: AgentChatRequest):
         _agent_sessions[req.session_id] = _qa_only(result["messages"])
         try:
             store = get_conversation_store()
-            store.save_turn(req.session_id, "user", req.message)
             store.save_turn(req.session_id, "assistant",
                             result.get("question") or result.get("answer") or "")
         except Exception:

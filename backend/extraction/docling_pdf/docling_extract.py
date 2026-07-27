@@ -198,11 +198,67 @@ def _local_table_engine(config) -> bool:
 def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
     """Crop a table region and transcribe it via the self-hosted Unlimited-OCR server,
     returning {headers, rows} DIRECTLY (no markdown round trip) so the rowspan
-    denormalization survives intact — see backend/extraction/unlimited_ocr.py."""
+    denormalization survives intact — see backend/extraction/unlimited_ocr.py.
+
+    If the whole-table crop exhausts transcribe_table_local's own OOM retry ladder
+    (real finding, 27-Jul: some tables OOM regardless of base_size because the real
+    bottleneck is decoder/generation-length, not input resolution — a long, dense
+    table needs a long output sequence, and THAT's what runs out of memory, not the
+    vision encoder), split the region into top/bottom halves (with overlap so a row
+    straddling the seam is still whole in at least one half) and transcribe each
+    half separately — half the rows means half the output sequence length, which
+    directly targets THIS bottleneck in a way no input-side parameter can. Only
+    engaged as a last resort after the cheaper single-shot retries are exhausted."""
     from backend.vision.pdf_cropper import PDFCropper
     from backend.extraction.unlimited_ocr import transcribe_table_local
+    import httpx
     png = PDFCropper().crop_region(pdf_path, page_no, bbox)
-    return transcribe_table_local(png, config)
+    try:
+        return transcribe_table_local(png, config)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 503:
+            raise
+        logger.warning("docling: table crop still OOM after every base_size retry "
+                       "(page %s), splitting into row-halves", page_no)
+        top_bbox, bottom_bbox = _split_bbox_vertically(bbox)
+        top_png = PDFCropper().crop_region(pdf_path, page_no, top_bbox)
+        bottom_png = PDFCropper().crop_region(pdf_path, page_no, bottom_bbox)
+        top_td = transcribe_table_local(top_png, config)
+        bottom_td = transcribe_table_local(bottom_png, config)
+        return _merge_split_table_data(top_td, bottom_td)
+
+
+def _split_bbox_vertically(bbox: list[float], overlap_frac: float = 0.15) -> tuple[list[float], list[float]]:
+    """Split a [x0, y0, x1, y1] top-left-origin bbox into top/bottom halves with a
+    modest vertical overlap, so a row whose text sits right at the geometric
+    midpoint still lands fully inside at least one half instead of being cut
+    across both (which would corrupt or drop that row's content in either crop)."""
+    x0, y0, x1, y1 = bbox
+    height = y1 - y0
+    mid = y0 + height / 2
+    overlap = height * overlap_frac
+    top = [x0, y0, x1, min(y1, mid + overlap)]
+    bottom = [x0, max(y0, mid - overlap), x1, y1]
+    return top, bottom
+
+
+def _merge_split_table_data(top: dict | None, bottom: dict | None) -> dict | None:
+    """Combine two table_data dicts from a split-crop retry into one. Headers come
+    from whichever half has them (the top crop's header row, normally). Rows are
+    concatenated top-then-bottom; if the two halves' overlap band caused the SAME
+    row to be transcribed twice (once at the bottom of the top half, once at the
+    top of the bottom half), the exact-duplicate is dropped rather than shipping a
+    row twice."""
+    if top is None:
+        return bottom
+    if bottom is None:
+        return top
+    headers = top.get("headers") or bottom.get("headers") or []
+    top_rows = top.get("rows") or []
+    bottom_rows = bottom.get("rows") or []
+    if top_rows and bottom_rows and top_rows[-1] == bottom_rows[0]:
+        bottom_rows = bottom_rows[1:]
+    return {"headers": headers, "rows": top_rows + bottom_rows}
 
 
 def _table_has_span(table) -> bool:

@@ -38,6 +38,7 @@ Setup on the GPU box (merges both venvs' deps):
 
 Run via systemd (see ocr-server.service). Port 8008.
 """
+import gc
 import io
 import logging
 import os
@@ -227,6 +228,18 @@ async def infer(
             raise HTTPException(503, "cuda_oom") from e
         finally:
             os.unlink(tmp_path)
+            # Real finding, 27-Jul: within a single table's OWN retry sequence
+            # (whole crop -> base_size retries -> split-crop halves), GPU memory
+            # in use climbed from ~12.5GB to ~14.4GB in seconds -- a failed
+            # generate() call's already-allocated KV-cache/activation tensors stay
+            # reachable (kept alive by the exception's own traceback frame, or by
+            # `e` on the `except ... as e:` line above, which CPython keeps alive
+            # until the except block exits) for LONGER than this function's own
+            # scope, so plain empty_cache() alone -- which only releases memory
+            # PyTorch's allocator can already see as unreferenced -- doesn't get
+            # to reclaim it. gc.collect() first breaks those lingering references
+            # so empty_cache() actually has something real to release.
+            gc.collect()
             torch.cuda.empty_cache()  # release reserved-but-unallocated memory
 
     elapsed = time.time() - t0

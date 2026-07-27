@@ -5,8 +5,11 @@ vision_ocr.engine (whole-page rescue). See backend/extraction/unlimited_ocr.py.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from backend.extraction.docling_pdf.docling_extract import (
     _local_table_engine, _local_table, _table_has_span, _table_is_complex,
+    _split_bbox_vertically, _merge_split_table_data,
 )
 
 
@@ -47,6 +50,96 @@ def test_local_table_crops_the_region_and_delegates_to_the_local_transcriber():
     fake_crop.crop_region.assert_called_once_with("/fake/manual.pdf", 5, [10, 20, 30, 40])
     mock_local.assert_called_once_with(b"cropped-png-bytes", {"vision_ocr": {}})
     assert result == table_data
+
+
+# ── split-crop fallback: real finding, 27-Jul -- some tables OOM at every
+# base_size because the actual bottleneck is decoder/output-length, not input
+# resolution (confirmed live: identical "Tried to allocate" size regardless of
+# base_size). Splitting into row-halves means half the output sequence length,
+# which is the one thing that actually targets this bottleneck. ──────────────
+
+def test_split_bbox_vertically_splits_at_midpoint_with_overlap():
+    top, bottom = _split_bbox_vertically([0, 0, 100, 200], overlap_frac=0.15)
+    # midpoint is y=100; 15% of height (200) = 30pt overlap on each side
+    assert top == [0, 0, 100, 130]
+    assert bottom == [0, 70, 100, 200]
+
+
+def test_split_bbox_vertically_preserves_x_bounds():
+    top, bottom = _split_bbox_vertically([10, 0, 90, 200])
+    assert top[0] == 10 and top[2] == 90
+    assert bottom[0] == 10 and bottom[2] == 90
+
+
+def test_merge_split_table_data_concatenates_rows_in_order():
+    top = {"headers": ["Code", "Name"], "rows": [["F7H", "Motor error"]]}
+    bottom = {"headers": [], "rows": [["F8H", "Parameter error"]]}
+    merged = _merge_split_table_data(top, bottom)
+    assert merged["headers"] == ["Code", "Name"]
+    assert merged["rows"] == [["F7H", "Motor error"], ["F8H", "Parameter error"]]
+
+
+def test_merge_split_table_data_drops_an_exact_duplicate_seam_row():
+    # The overlap band means the row right at the seam can get transcribed by
+    # BOTH halves -- must not ship it twice.
+    top = {"headers": ["Code"], "rows": [["F7H"], ["F8H"]]}
+    bottom = {"headers": [], "rows": [["F8H"], ["F9H"]]}
+    merged = _merge_split_table_data(top, bottom)
+    assert merged["rows"] == [["F7H"], ["F8H"], ["F9H"]]
+
+
+def test_merge_split_table_data_handles_one_half_missing():
+    top = {"headers": ["Code"], "rows": [["F7H"]]}
+    assert _merge_split_table_data(top, None) == top
+    assert _merge_split_table_data(None, top) == top
+
+
+def test_local_table_falls_back_to_split_crop_when_whole_table_exhausts_retries():
+    fake_crop = MagicMock()
+    fake_crop.crop_region.side_effect = [
+        b"whole-crop-png", b"top-crop-png", b"bottom-crop-png",
+    ]
+    whole_table_oom = httpx.HTTPStatusError(
+        "503", request=MagicMock(), response=MagicMock(status_code=503))
+    top_td = {"headers": ["Code", "Name"], "rows": [["F7H", "Motor error"]]}
+    bottom_td = {"headers": [], "rows": [["F8H", "Parameter error"]]}
+
+    with patch("backend.vision.pdf_cropper.PDFCropper", return_value=fake_crop), \
+         patch("backend.extraction.unlimited_ocr.transcribe_table_local",
+               side_effect=[whole_table_oom, top_td, bottom_td]) as mock_local:
+        result = _local_table("/fake/manual.pdf", 59, [0, 0, 100, 200], {"vision_ocr": {}})
+
+    assert mock_local.call_count == 3
+    assert fake_crop.crop_region.call_count == 3
+    # second/third crop_region calls used the split (top/bottom) bboxes, not the
+    # original whole-table bbox again
+    whole_call, top_call, bottom_call = fake_crop.crop_region.call_args_list
+    assert whole_call.args[2] == [0, 0, 100, 200]
+    assert top_call.args[2] != [0, 0, 100, 200]
+    assert bottom_call.args[2] != [0, 0, 100, 200]
+    assert result == {
+        "headers": ["Code", "Name"],
+        "rows": [["F7H", "Motor error"], ["F8H", "Parameter error"]],
+    }
+
+
+def test_local_table_reraises_a_non_oom_http_error_without_splitting():
+    fake_crop = MagicMock()
+    fake_crop.crop_region.return_value = b"whole-crop-png"
+    non_oom_error = httpx.HTTPStatusError(
+        "500", request=MagicMock(), response=MagicMock(status_code=500))
+
+    with patch("backend.vision.pdf_cropper.PDFCropper", return_value=fake_crop), \
+         patch("backend.extraction.unlimited_ocr.transcribe_table_local",
+               side_effect=non_oom_error) as mock_local:
+        raised = False
+        try:
+            _local_table("/fake/manual.pdf", 59, [0, 0, 100, 200], {"vision_ocr": {}})
+        except httpx.HTTPStatusError:
+            raised = True
+
+    assert raised
+    mock_local.assert_called_once()  # no split attempt for a non-OOM error
 
 
 # ── _table_has_span: the real gap found 27-Jul on the servo manual's alarm table ──

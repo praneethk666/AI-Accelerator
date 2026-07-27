@@ -194,24 +194,55 @@ def det_to_blocks(raw: str, document_id: str, page: int, filename: str) -> list[
     return blocks
 
 
+def _call_ocr_server(png_bytes: bytes, cfg: dict, *, engine: str = "unlimited_ocr",
+                      extra_form: dict | None = None) -> str:
+    """POST an already-rendered PNG to scripts/ocr_server.py and return its raw text.
+    `cfg` must carry local_endpoint/local_api_key/local_timeout_s — both callers below
+    (whole-page rescue, table-crop escalation) point at the SAME physical server, so
+    they share this one connection block (vision_ocr.local_*) rather than duplicating
+    endpoint/key config per call site."""
+    endpoint = cfg.get("local_endpoint")
+    if not endpoint:
+        raise ValueError(
+            "engine is 'local' but local_endpoint is not set "
+            "(point it at scripts/ocr_server.py running on the GPU box)")
+    timeout = float(cfg.get("local_timeout_s", 90))
+    headers = {}
+    api_key = cfg.get("local_api_key")
+    if api_key:
+        headers["X-API-Key"] = api_key
+    data = {"engine": engine, **(extra_form or {})}
+    resp = httpx.post(endpoint, files={"image": ("page.png", png_bytes, "image/png")},
+                       data=data, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()["text"]
+
+
 def transcribe_page_local(page, config: dict) -> str:
     """Render `page` and send it to the self-hosted Unlimited-OCR inference server.
     Returns the raw <|det|>-tagged transcription (feed to det_to_blocks)."""
     from backend.extraction.orientation import upright_png
     cfg = config.get("vision_ocr") or {}
     dpi = int(cfg.get("dpi", 200))
-    endpoint = cfg.get("local_endpoint")
-    if not endpoint:
-        raise ValueError(
-            "vision_ocr.engine is 'local' but vision_ocr.local_endpoint is not set "
-            "(point it at scripts/ocr_server.py running on the GPU box)")
-    timeout = float(cfg.get("local_timeout_s", 90))
     png = upright_png(page, dpi, config)
-    headers = {}
-    api_key = cfg.get("local_api_key")
-    if api_key:
-        headers["X-API-Key"] = api_key
-    resp = httpx.post(endpoint, files={"image": ("page.png", png, "image/png")},
-                       headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()["text"]
+    return _call_ocr_server(png, cfg, engine="unlimited_ocr")
+
+
+def transcribe_table_local(png_bytes: bytes, config: dict) -> dict | None:
+    """Send an ALREADY-CROPPED table-region PNG (from PDFCropper) to the self-hosted
+    Unlimited-OCR server and return {headers, rows} directly — no markdown round trip,
+    so the rowspan-denormalized structure (backend/extraction/unlimited_ocr.py's whole
+    point) survives intact. Swap-in for docling_extract.py's _vlm_table() when
+    extraction.docling.table_engine == 'local'. Uses the SAME connection config as the
+    whole-page rescue path (vision_ocr.local_endpoint/local_api_key) since both hit the
+    same physical server."""
+    cfg = config.get("vision_ocr") or {}
+    raw = _call_ocr_server(png_bytes, cfg, engine="unlimited_ocr")
+    matches = list(_DET_RE.finditer(raw))
+    for idx, m in enumerate(matches):
+        if m.group("type").strip().lower() != "table":
+            continue
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
+        return _parse_html_table(raw[start:end].strip())
+    return None

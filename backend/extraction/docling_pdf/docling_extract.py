@@ -162,6 +162,28 @@ def _vlm_table(pdf_path, page_no, bbox, config) -> str:
     return describe_image(png, prompts.TABLE_TRANSCRIBE, vcfg).strip()
 
 
+def _local_table_engine(config) -> bool:
+    """True when hard digital tables should escalate to the self-hosted Unlimited-OCR
+    server (extraction.docling.table_engine: local) instead of the hosted VLM. Real
+    finding, 27-Jul: cropping just the hard table region (not the whole page) got a
+    dense nested table 100% correct where whole-page parsing dropped every value —
+    same server as vision_ocr's rescue path (vision_ocr.local_endpoint), different
+    escalation trigger (a specific table Docling/pymupdf can't handle, not a whole
+    scanned/garbled page)."""
+    dcfg = (config.get("extraction") or {}).get("docling") or {}
+    return (dcfg.get("table_engine") or "vlm") == "local"
+
+
+def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
+    """Crop a table region and transcribe it via the self-hosted Unlimited-OCR server,
+    returning {headers, rows} DIRECTLY (no markdown round trip) so the rowspan
+    denormalization survives intact — see backend/extraction/unlimited_ocr.py."""
+    from backend.vision.pdf_cropper import PDFCropper
+    from backend.extraction.unlimited_ocr import transcribe_table_local
+    png = PDFCropper().crop_region(pdf_path, page_no, bbox)
+    return transcribe_table_local(png, config)
+
+
 def _table_is_complex(table) -> bool:
     """Decide if a table is risky for TableFormer and should go to the VLM instead.
     Signals validated on the Argo/Mendoza corpus:
@@ -607,13 +629,23 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         td = pmd_td
                         md = _render_table_markdown(td)
                     elif use_vlm:
-                        try:
-                            md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                            td = None
-                        except Exception as e:
-                            logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
-                            source = "tableformer"
-                            md, td = _table_markdown(item, doc), _table_data(item, doc)
+                        td = None
+                        if _local_table_engine(config):
+                            try:
+                                td = _local_table(pdf_path, page_no, bb, config)
+                            except Exception as e:
+                                logger.warning("docling: local table engine failed (page %s): %s; "
+                                               "falling back to VLM", page_no, e)
+                            if td is not None:
+                                md = _render_table_markdown(td)
+                                source = "local"
+                        if td is None:
+                            try:
+                                md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                            except Exception as e:
+                                logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                                source = "tableformer"
+                                md, td = _table_markdown(item, doc), _table_data(item, doc)
                     else:
                         md, td = _table_markdown(item, doc), _table_data(item, doc)
                     if td is None:
@@ -678,13 +710,23 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     td = pmd_td
                     md = _render_table_markdown(td)
                 elif use_vlm:
-                    try:
-                        md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                        td = None
-                    except Exception as e:
-                        logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
-                        source = "tableformer"
-                        md, td = _table_markdown(item, doc), _table_data(item, doc)
+                    td = None
+                    if _local_table_engine(config):
+                        try:
+                            td = _local_table(pdf_path, page_no, bb, config)
+                        except Exception as e:
+                            logger.warning("docling: local table engine failed (page %s): %s; "
+                                           "falling back to VLM", page_no, e)
+                        if td is not None:
+                            md = _render_table_markdown(td)
+                            source = "local"
+                    if td is None:
+                        try:
+                            md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                        except Exception as e:
+                            logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                            source = "tableformer"
+                            md, td = _table_markdown(item, doc), _table_data(item, doc)
                 else:
                     md, td = _table_markdown(item, doc), _table_data(item, doc)
                 if td is None:

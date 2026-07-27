@@ -6,7 +6,7 @@ covers the exact shape this project's real data produces.
 """
 from unittest.mock import MagicMock, patch
 
-from backend.extraction.unlimited_ocr import det_to_blocks, transcribe_page_local
+from backend.extraction.unlimited_ocr import det_to_blocks, transcribe_page_local, transcribe_table_local
 from backend.extraction.vision_ocr import transcribe_page_blocks
 
 
@@ -200,3 +200,43 @@ def test_engine_local_routes_to_unlimited_ocr_and_never_touches_the_vlm():
     mock_local.assert_called_once()
     mock_vlm.assert_not_called()
     assert blocks[0]["text"] == "hi"
+
+
+# ── transcribe_table_local (per-table-crop escalation path) ────────────────────
+
+def test_transcribe_table_local_extracts_just_the_table_and_denormalizes_rowspan():
+    raw = (
+        "<|det|>header [1,1,2,2]<|/det|>TOYODA"
+        "<|det|>table [1,2,3,4]<|/det|>"
+        "<table><tr><td>Code</td><td>Name</td></tr>"
+        "<tr><td rowspan=\"2\">F7H</td><td>Motor error</td></tr>"
+        "<tr><td>Detect error.</td></tr></table>"
+        "<|det|>page_number [1,1,2,2]<|/det|>5-1"
+    )
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {"text": raw}
+    fake_resp.raise_for_status.return_value = None
+
+    with patch("httpx.post", return_value=fake_resp) as mock_post:
+        result = transcribe_table_local(b"crop-bytes", {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer", "local_api_key": "k"}
+        })
+
+    assert result["headers"] == ["Code", "Name"]
+    assert result["rows"] == [["F7H", "Motor error"], ["F7H", "Detect error."]]
+    # header/page_number furniture around the table must not leak into the result
+    _, kwargs = mock_post.call_args
+    assert kwargs["data"]["engine"] == "unlimited_ocr"
+
+
+def test_transcribe_table_local_returns_none_when_no_table_tag_present():
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {"text": "<|det|>text [1,2,3,4]<|/det|>not a table"}
+    fake_resp.raise_for_status.return_value = None
+
+    with patch("httpx.post", return_value=fake_resp):
+        result = transcribe_table_local(b"crop-bytes", {
+            "vision_ocr": {"local_endpoint": "http://gpu-box/infer"}
+        })
+
+    assert result is None

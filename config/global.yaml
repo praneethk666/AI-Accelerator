@@ -21,26 +21,23 @@
 #                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
 #   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
-  # ACTIVE (24-Jul, v4): z.ai GLM-4.5-flash (FREE) — swapped from glm-4.7-flash
-  # (v3) same day: the account's real concurrency limits (from z.ai's own console,
-  # 24-Jul) show glm-4.7-flash capped at concurrency=1, the worst tier available;
-  # glm-4.5-flash is concurrency=2. Confirmed live: glm-4.7-flash 429'd on a
-  # trivial "say hi" call while glm-4.5-flash answered in 1.0s in the same test.
-  # Higher tiers (glm-4.7-flashx, glm-4.6v, glm-ocr, etc., concurrency 3-20) all
-  # returned "Insufficient balance or no resource package" live — NOT actually
-  # free on this account despite being listed, so don't reach for them without
-  # adding a paid balance first. Gemini 2.5-flash (the 21-Jul v2 choice) got
-  # RETIRED by Google: every call now 404s "no longer available to new users"
-  # (confirmed live) — same root cause that took out vision/vision_ocr, which
-  # shared that key. agent stays on NVIDIA (unaffected by any of this).
+  # ACTIVE (27-Jul, v5): OpenAI gpt-4o-mini (PAID) — moved off z.ai GLM after this
+  # project's whole 24-Jul session got repeatedly blocked by its real concurrency
+  # ceiling (1-2 concurrent calls). Chose gpt-4o-mini specifically over any gpt-5
+  # family model: gpt-5 variants have a VERSION-DEPENDENT default reasoning_effort
+  # (some default to "medium" = real hidden-token cost, gpt-5.1 defaults to "none")
+  # — exactly the silent-waste trap this project already got burned by twice
+  # (Gemini 2.5 thinking mode, GLM thinking mode) — not worth the risk without a
+  # live test to confirm each specific version. gpt-4o-mini has no reasoning_effort
+  # parameter at all (not a reasoning-model family), so there's nothing to leak.
+  # Cheapest OpenAI option too ($0.15/$0.60 per 1M in/out, verified 27-Jul) — a full
+  # manual's ingestion should land well under $1 given this project's own prior
+  # measured vision-call costs at similar volume (~$0.02 for 259 calls elsewhere).
   provider: openai
-  model: glm-4.5-flash
-  answer_model: glm-4.5-flash
-  base_url: https://api.z.ai/api/paas/v4/
-  api_key: ${ZAI_API_KEY}
+  model: gpt-4o-mini
+  answer_model: gpt-4o-mini
+  api_key: ${OPENAI_API_KEY}
   temperature: 0.2
-  extra_body: { thinking: { type: disabled } }  # REQUIRED, not optional — GLM
-                             # returns EMPTY content with thinking left on default.
   # max_tokens:             # default completion cap; enrich_chunks sizes its own per batch
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
   # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul, then Google retired the model
@@ -80,42 +77,38 @@ categorization:
 vision:
   # ONE vision model for ALL vision tasks (categorize + figure captioning), matching
   # vision_ocr so cropping/grounding/transcription all use the same model.
-  # ACTIVE (24-Jul, v3): z.ai GLM-4.6V-Flash (FREE) — Gemini 2.5-flash (v2, below) got
-  # RETIRED by Google (404 "no longer available to new users", confirmed live — not
-  # a transient outage). Re-validated live 24-Jul on the SAME real manual's safety-
-  # warning icons: classification was accurate (correctly called small hazard icons
-  # real figures, not page furniture, with specific detail — "diamond with lightning
-  # bolt" = electrical hazard, "triangle with flame" = fire hazard). Known weakness
-  # is throughput under bulk load (429 "temporarily overloaded" needing retries on
-  # ~20 sequential calls, 24-Jul) — same pattern as the v2 note below. NVIDIA's
-  # nemotron-nano-12b-v2-vl was also tested 24-Jul: faster, but MISCLASSIFIED a real
-  # warning icon as page furniture in that same test — a real accuracy miss, not
-  # just a speed tradeoff, so it's not a clear upgrade despite being faster.
-  # Cerebras+Gemma4 (real vision support, ~1M tok/day free per Cerebras's own docs)
-  # is a promising untested option once a CEREBRAS_API_KEY exists — benchmark real
-  # RPM and accuracy before trusting it, same as every other provider claim here.
+  # ACTIVE (27-Jul, v4): OpenAI gpt-4o-mini (PAID) — matches the llm: block above
+  # (same move, same reason: z.ai's concurrency ceiling repeatedly blocked bulk
+  # ingestion). Not yet re-validated on this project's own real warning-icon
+  # classification test the way GLM-4.6V-Flash and NVIDIA's nemotron were on
+  # 24-Jul — do that before trusting icon-vs-figure classification blindly.
   # IMPORTANT FINDING (provider-independent, still true): on the Toyota GL32Mi-63
   # spec-table page, GENERAL VLM table transcription (the VLM-escalation path below,
   # extraction.by_kind.*.table_source) is structurally worse than pymupdf's ruled-line
   # extraction — confirmed on THREE different vision models (raw TableFormer,
   # GLM-4.6V-Flash, NVIDIA nemotron-nano-12b-v2-vl). Don't rely on any VLM for table
   # structure regardless of provider; general figure/photo captioning (this block's
-  # actual job) is a different, lower-precision task.
+  # actual job) is a different, lower-precision task. Self-hosted Unlimited-OCR
+  # (backend/extraction/unlimited_ocr.py) is the validated alternative for hard
+  # tables specifically — see extraction.docling.table_engine below.
   provider: openai
-  model: glm-4.6v-flash
-  base_url: https://api.z.ai/api/paas/v4/
-  api_key: ${ZAI_API_KEY}
-  extra_body: { thinking: { type: disabled } }
+  model: gpt-4o-mini
+  api_key: ${OPENAI_API_KEY}
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
-  # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul, then Google retired the model —
-  #           see above): provider: google  model: gemini-2.5-flash (or
+  # z.ai GLM-4.6V-Flash (FREE, real concurrency=1-2 ceiling — caused repeated 429s
+  #           under bulk load 24-Jul): provider: openai  model: glm-4.6v-flash
+  #           base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
+  #           extra_body: { thinking: { type: disabled } }
+  # Gemini 2.5-flash (PAID, RETIRED by Google 24-Jul — 404 "no longer available to
+  #           new users"): provider: google  model: gemini-2.5-flash (or
   #           gemini-flash-latest, an alias that won't suffer this exact failure
   #           again)  api_key: ${GOOGLE_API_KEY}
   # Gemma-4-31b-it on Google AI Studio (cheaper but 30 RPM/16K-TPM hard quota):
   #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
-  # NVIDIA Build API (fast, but see the 24-Jul accuracy miss above — verify before
-  #           trusting): provider: openai  model: nvidia/nemotron-nano-12b-v2-vl
-  #                      base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
+  # NVIDIA Build API (fast, but MISCLASSIFIED a real warning icon as page furniture
+  #           24-Jul — verify before trusting): provider: openai
+  #           model: nvidia/nemotron-nano-12b-v2-vl
+  #           base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
   # Cerebras + Gemma4 (untested — needs CEREBRAS_API_KEY, benchmark before trusting):
   #           provider: openai  model: gemma-4-31b  base_url: https://api.cerebras.ai/v1
   #           api_key: ${CEREBRAS_API_KEY}
@@ -166,17 +159,19 @@ vision_ocr:
                             # applies here too — if scanned-page ingestion gets too
                             # slow, drop this to "complex" so only flagged pages pay
                             # for a VLM call instead of every page.
-  # ACTIVE (24-Jul, v3): z.ai GLM-4.6V-Flash — matches the vision: block above (same
-  # provider swap, same reason: Gemini 2.5-flash got retired by Google, see there).
+  # ACTIVE (27-Jul, v4): OpenAI gpt-4o-mini — matches the vision: block above (same
+  # provider swap, same reason: z.ai's concurrency ceiling kept blocking bulk work).
   provider: openai
-  model: glm-4.6v-flash
-  base_url: https://api.z.ai/api/paas/v4/
-  api_key: ${ZAI_API_KEY}
-  extra_body: { thinking: { type: disabled } }
+  model: gpt-4o-mini
+  api_key: ${OPENAI_API_KEY}
   # ── Alternatives (swap provider/model above) ──────────────────────────────────
-  # Gemini 2.5-flash (PAID, ACTIVE 21-Jul -> 24-Jul — see vision: block above for why
-  #           it stopped working): provider: google  model: gemini-2.5-flash (or
-  #           gemini-flash-latest)  api_key: ${GOOGLE_API_KEY}
+  # z.ai GLM-4.6V-Flash (FREE, real concurrency=1-2 ceiling):
+  #           provider: openai  model: glm-4.6v-flash
+  #           base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
+  #           extra_body: { thinking: { type: disabled } }
+  # Gemini 2.5-flash (PAID, RETIRED by Google — see vision: block above):
+  #           provider: google  model: gemini-2.5-flash (or gemini-flash-latest)
+  #           api_key: ${GOOGLE_API_KEY}
   # Gemma-4-31b-it (cheaper but 30 RPM/16K-TPM hard quota, not worth it):
   #           provider: google  model: gemma-4-31b-it  api_key: ${GOOGLE_API_KEY}
   # NVIDIA Build API (fast, unverified accuracy — see vision: block above):
@@ -297,6 +292,18 @@ extraction:
     max_vlm_pages: 60
     device: auto              # auto | cpu | cuda | mps  (cuda on the GPU box)
     num_threads: 4
+    table_engine: vlm         # vlm (default, hosted) | local (self-hosted Unlimited-OCR
+                              # — see backend/extraction/unlimited_ocr.py). ONLY affects
+                              # per-table-crop escalation (table_source: vlm/auto+complex
+                              # below) — a DIFFERENT trigger than vision_ocr.engine, which
+                              # is whole-PAGE rescue for scanned/garbled pages. Real
+                              # finding, 27-Jul: whole-page parsing dropped every value
+                              # from a dense nested table on a real scanned invoice;
+                              # cropping just that table alone got them 100% correct —
+                              # this is the validated integration point, but needs the
+                              # GPU server (scripts/ocr_server.py) actually running, so
+                              # stays "vlm" until that's confirmed up for a given run.
+                              # Falls back to vlm automatically if the local call fails.
   # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
   # per-page VLM rescue); the tunable knob is TABLES:
   #   auto    -> TableFormer for simple tables; for COMPLEX ones (merged cells or

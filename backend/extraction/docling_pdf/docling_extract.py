@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
 from collections import defaultdict
 
@@ -184,10 +185,28 @@ def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
     return transcribe_table_local(png, config)
 
 
+def _table_has_span(table) -> bool:
+    """Merged/spanning cells (row_span/col_span > 1) specifically — a DIFFERENT kind
+    of complexity than list-heavy/tall-header cells, because it's structurally
+    incompatible with pymupdf's ruled-line reading, not just risky for TableFormer.
+    Real finding, 27-Jul: pymupdf reads each visually-separate ruled cell literally
+    — it has no notion of "this cell visually spans 3 rows" — so a rowspan table
+    that pymupdf CAN find ruled lines for still comes out ragged (the spanning
+    cell's value only appears once, blank in the rows below it). Since 'auto' tries
+    pymupdf first whenever it succeeds at all, this let real rowspan tables (e.g.
+    the servo manual's alarm-code table, F7H-FFH) skip vlm/local escalation
+    entirely even with table_engine: local configured — pymupdf "succeeded" at
+    finding ruled lines, just not at representing the actual structure. See
+    _table_is_complex's caller in extract_docling for how this changes routing."""
+    cells = getattr(getattr(table, "data", None), "table_cells", None) or []
+    return any((getattr(c, "col_span", 1) or 1) > 1 or (getattr(c, "row_span", 1) or 1) > 1
+               for c in cells)
+
+
 def _table_is_complex(table) -> bool:
     """Decide if a table is risky for TableFormer and should go to the VLM instead.
     Signals validated on the Argo/Mendoza corpus:
-      - merged/spanning cells (row_span/col_span > 1), or
+      - merged/spanning cells (row_span/col_span > 1) — see _table_has_span, or
       - a multi-line HEADER cell: bbox height >= ~2x the table's median cell height
         (these wrapped cells are where TableFormer clipped text), or
       - LIST-HEAVY DATA cells: several cells each packing multiple enumerated items
@@ -198,9 +217,8 @@ def _table_is_complex(table) -> bool:
     cells = getattr(getattr(table, "data", None), "table_cells", None) or []
     if not cells:
         return False
-    for c in cells:
-        if (getattr(c, "col_span", 1) or 1) > 1 or (getattr(c, "row_span", 1) or 1) > 1:
-            return True
+    if _table_has_span(table):
+        return True
     # List-heavy DATA cells: >=2 data cells that each hold multiple enumerated items or
     # a long wrapped paragraph. One such cell can be normal; several means the table is
     # a multi-line list grid TableFormer mis-segments across columns.
@@ -521,7 +539,8 @@ def _dedup_pic_jobs(pic_jobs: list[tuple]) -> list[tuple]:
 
 
 def extract_docling(pdf_path: str, document_id: str, config: dict,
-                    table_source: str = "docling", report: dict | None = None) -> list[dict]:
+                    table_source: str = "docling", report: dict | None = None,
+                    on_page=None) -> list[dict]:
     """Convert a PDF with Docling and emit NormalizedBlock dicts in reading order.
 
     table_source: who transcribes tables. 'docling' (default) = TableFormer
@@ -531,7 +550,10 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     whose tables come out wrong, e.g. some scans); 'auto' = TableFormer for simple
     tables, pymupdf for complex ones (merged cells/multi-line headers), VLM only if
     pymupdf finds no ruled table there (scanned/borderless).
-    report: optional dict mutated with decision counts (tables, figures) for tracking."""
+    report: optional dict mutated with decision counts (tables, figures) for tracking.
+    on_page: optional callback(page_no, total_pages, elapsed_s) fired after each
+    page finishes converting — real per-page progress for a long document, since
+    Docling converts one page at a time here specifically to bound memory."""
     from docling_core.types.doc import TextItem, TableItem, PictureItem
 
     dcfg = (config.get("extraction") or {}).get("docling") or {}
@@ -584,11 +606,14 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for pg_num in range(1, total_pages + 1):
             from backend.core.tool import check_cancelled
             check_cancelled(document_id)
+            _page_t0 = time.time()
             try:
                 res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
                 doc = res.document
             except Exception as e:
                 logger.warning("docling: failed to convert page %d of %s: %s", pg_num, filename, e)
+                if on_page is not None:
+                    on_page(pg_num, total_pages, time.time() - _page_t0)
                 continue
 
             for item, _level in doc.iterate_items():
@@ -617,9 +642,18 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         continue
 
                     complex_ = _table_is_complex(item)
+                    has_span = _table_has_span(item)
                     pmd_td = None
+                    # In "auto" mode, skip pymupdf for SPANNING tables specifically —
+                    # it reads each visually-separate ruled cell literally, with no
+                    # notion of a cell spanning multiple rows, so it "succeeds" at
+                    # finding ruled lines but still produces the ragged/blank-
+                    # continuation pattern. vlm/local can actually see the merge.
+                    # Explicit table_source: pymupdf is a deliberate override, not
+                    # subject to this — only "auto"'s smart-selection is affected.
                     if fdoc is not None and bb and (table_source == "pymupdf" or
-                                                     (table_source == "auto" and complex_)):
+                                                     (table_source == "auto" and complex_
+                                                      and not has_span)):
                         pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
                     use_pymupdf = pmd_td is not None
                     use_vlm = (not use_pymupdf) and bb and (
@@ -670,6 +704,9 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         blocks.append(None)
                         pic_jobs.append((idx, page_no, bb))
                         dfigs[int(page_no)].append(bb)
+
+            if on_page is not None:
+                on_page(pg_num, total_pages, time.time() - _page_t0)
     else:
         # Fallback to full conversion if page count could not be retrieved
         res = conv.convert(pdf_path)
@@ -698,9 +735,13 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     continue
 
                 complex_ = _table_is_complex(item)
+                has_span = _table_has_span(item)
                 pmd_td = None
+                # See the main per-page loop's identical branch above for why
+                # spanning tables skip pymupdf in "auto" mode specifically.
                 if fdoc is not None and bb and (table_source == "pymupdf" or
-                                                 (table_source == "auto" and complex_)):
+                                                 (table_source == "auto" and complex_
+                                                  and not has_span)):
                     pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
                 use_pymupdf = pmd_td is not None
                 use_vlm = (not use_pymupdf) and bb and (

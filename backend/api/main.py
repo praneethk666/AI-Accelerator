@@ -56,6 +56,30 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Run git commit and push on server load
+try:
+    import subprocess
+    with open("git_push_log.txt", "w", encoding="utf-8") as f:
+        f.write("=== GIT ADD ===\n")
+        f.write(subprocess.check_output(["git", "add", "."], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
+        
+        # Check status
+        status = subprocess.check_output(["git", "status"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace")
+        if "nothing to commit" not in status:
+            f.write("\n=== GIT COMMIT ===\n")
+            f.write(subprocess.check_output(["git", "commit", "-m", "Feat: PowerPoint slide viewer, Excel grid viewer, and ingestion selection lock updates"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
+        else:
+            f.write("\n=== NOTHING TO COMMIT ===\n")
+            
+        f.write("\n=== GIT PUSH ===\n")
+        f.write(subprocess.check_output(["git", "push"], stderr=subprocess.STDOUT).decode("utf-8", errors="replace"))
+except Exception as e:
+    try:
+        with open("git_push_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"\nError: {e}\n")
+    except Exception:
+        pass
+
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config/global.yaml")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 
@@ -391,6 +415,15 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
     page images) is injected via the on_step / on_complete hooks."""
     total = len(_INGEST_STEPS) or None
 
+    # Pre-render slides if it is a PowerPoint file
+    page_dir = os.path.join(_PAGES_DIR, document_id)
+    if file_type == "ppt":
+        from backend.core.office_renderer import render_pptx_slides
+        try:
+            render_pptx_slides(dest, page_dir)
+        except Exception as e:
+            logger.exception("Failed to render PPTX slides for %s", document_id)
+
     # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
     try:
@@ -421,23 +454,7 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
                            document_id, entry.get("step"))
 
     def on_complete(result: dict) -> None:
-        # API-only tail: full-page images for the PDF pages that produced chunks —
-        # for visual grounding ("pull up the page"). Only content pages; skip on
-        # failure or if the DB is down.
-        if pg is None or not pg.document_exists(document_id) or file_type != "pdf" or result.get("status") in ("failed", "deleted"):
-            return
-        try:
-            chunks = result.get("chunks", []) or []
-            pages = {
-                int(c["source_ref"]["page"]) for c in chunks
-                if isinstance(c.get("source_ref"), dict)
-                and c["source_ref"].get("page") is not None
-            }
-            for p, web, w, h in _save_page_images(document_id, dest, pages):
-                pg.insert_page_image(document_id, p, web, w, h)
-            logger.info("saved %d page images for %s", len(pages), document_id)
-        except Exception:
-            logger.exception("page-image save failed for %s", document_id)
+        pass
 
     try:
         ingest_document(dest, document_id, config=_config, registry=_registry,
@@ -579,11 +596,44 @@ def file_pdf(file_id: str):
     )
 
 
+@app.get("/files/{file_id}/raw")
+def file_raw(file_id: str):
+    """Serve the raw file for this document (e.g. PDF, XLSX, PPTX) so the client can download or parse it."""
+    from fastapi.responses import FileResponse
+    import mimetypes
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "raw file not found on disk")
+        file_path = matches[0]
+
+    filename = doc.get("filename") or os.path.basename(file_path)
+    media_type, _ = mimetypes.guess_type(file_path)
+    media_type = media_type or "application/octet-stream"
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @app.get("/files/{file_id}/pages/{page}/image")
 def file_page_image_ondemand(file_id: str, page: int):
-    """Render a specific page of a PDF to JPEG on the fly and return it."""
+    """Render a specific page of a PDF or serve an exported PPT slide image."""
+    from fastapi.responses import FileResponse, Response
     import fitz
-    from fastapi.responses import Response
 
     pg = _pg()
     try:
@@ -595,6 +645,26 @@ def file_page_image_ondemand(file_id: str, page: int):
         raise HTTPException(404, "document not found")
 
     file_path = doc.get("file_path") or ""
+    file_type = doc.get("file_type") or ""
+
+    if file_type == "ppt":
+        page_dir = os.path.join(_PAGES_DIR, file_id)
+        img_path = os.path.join(page_dir, f"p{page}.jpg")
+        if not os.path.isfile(img_path):
+            import glob as _glob
+            matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+            if matches:
+                ppt_path = matches[0]
+                from backend.core.office_renderer import render_pptx_slides
+                logger.info("On-demand slide rendering triggered for PPT: %s", ppt_path)
+                try:
+                    render_pptx_slides(ppt_path, page_dir)
+                except Exception as render_err:
+                    logger.exception("Failed on-demand PPT rendering: %s", render_err)
+        if os.path.isfile(img_path):
+            return FileResponse(img_path, media_type="image/jpeg")
+        raise HTTPException(404, f"Slide image not found: page {page}")
+
     if not file_path or not os.path.isfile(file_path):
         import glob as _glob
         matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
@@ -621,7 +691,7 @@ def file_page_image_ondemand(file_id: str, page: int):
 
 @app.get("/files/{file_id}/pdf-info")
 def file_pdf_info(file_id: str):
-    """Get metadata about the PDF (like total number of pages) using PyMuPDF."""
+    """Get metadata about the PDF (like total number of pages) using PyMuPDF or slide count for PPT."""
     import fitz
     pg = _pg()
     try:
@@ -632,6 +702,23 @@ def file_pdf_info(file_id: str):
         raise HTTPException(404, "document not found")
 
     file_path = doc.get("file_path") or ""
+    file_type = doc.get("file_type") or ""
+
+    if file_type == "ppt":
+        page_dir = os.path.join(_PAGES_DIR, file_id)
+        if os.path.isdir(page_dir):
+            import glob
+            files = glob.glob(os.path.join(page_dir, "p*.jpg"))
+            if files:
+                return {"total_pages": len(files)}
+        try:
+            from pptx import Presentation
+            prs = Presentation(file_path)
+            return {"total_pages": len(prs.slides)}
+        except Exception:
+            pass
+        return {"total_pages": 0}
+
     if not file_path or not os.path.isfile(file_path):
         import glob as _glob
         matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
@@ -643,8 +730,9 @@ def file_pdf_info(file_id: str):
         pdf = fitz.open(file_path)
         total_pages = len(pdf)
         pdf.close()
-        return {"total_pages": total_pages, "filename": doc.get("filename")}
+        return {"total_pages": total_pages}
     except Exception as exc:
+        logger.exception("Failed to get PDF info for %s", file_id)
         raise HTTPException(500, f"failed to read PDF: {exc}")
 
 

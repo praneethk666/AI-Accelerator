@@ -59,6 +59,9 @@ _session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "otel_session_id", default=None
 )
 
+_request_name_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "otel_request_name", default=None
+)
 
 def _resource() -> Resource:
     return Resource.create({
@@ -170,6 +173,7 @@ def traced_request(name: str, *, input: Any = None, metadata: dict | None = None
     start = time.perf_counter()
     status = "ok"
     token = _session_id_var.set(session_id) if session_id else None
+    req_token = _request_name_var.set(name)
     try:
         with tracer.start_as_current_span(name) as span:
             span.set_attribute("input_summary", _summarize(input))
@@ -181,6 +185,7 @@ def traced_request(name: str, *, input: Any = None, metadata: dict | None = None
             ctx = span.get_span_context()
             trace_id_hex = format(ctx.trace_id, "032x") if ctx and ctx.trace_id else None
             trace_info = {"trace_id": trace_id_hex}
+            logger.info("request %s starting, trace_id=%s", name, trace_id_hex)
             try:
                 yield trace_info
             except Exception as exc:
@@ -195,6 +200,7 @@ def traced_request(name: str, *, input: Any = None, metadata: dict | None = None
             _REQUEST_DURATION.record(elapsed_ms, {"request.name": name, "status": status})
         if token is not None:
             _session_id_var.reset(token)
+            _request_name_var.reset(req_token)
 
 
 @contextlib.contextmanager
@@ -209,6 +215,9 @@ def traced_tool(name: str, *, input: Any = None) -> Iterator[_SpanHandle]:
         session_id = _session_id_var.get()
         if session_id:
             otel_span.set_attribute("session_id", session_id)
+        request_name = _request_name_var.get()
+        if request_name:
+            otel_span.set_attribute("request_name", request_name)
 
         handle = _SpanHandle(otel_span)
         try:
@@ -225,8 +234,11 @@ def traced_tool(name: str, *, input: Any = None) -> Iterator[_SpanHandle]:
         finally:
             elapsed_ms = (time.perf_counter() - start) * 1000
             if _TOOL_CALLS is not None:
-                _TOOL_CALLS.add(1, {"tool.name": tool_name, "status": status})
-                _TOOL_DURATION.record(elapsed_ms, {"tool.name": tool_name, "status": status})
+                attrs = {"tool.name": tool_name, "status": status}
+                if request_name:
+                    attrs["request_name"] = request_name
+                _TOOL_CALLS.add(1, attrs)
+                _TOOL_DURATION.record(elapsed_ms, attrs)
 
 
 def record_llm_usage(component: str, input_tokens: int, output_tokens: int,

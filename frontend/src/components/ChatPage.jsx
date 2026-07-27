@@ -51,6 +51,46 @@ const relativeTime = (iso) => {
 const newSessionId = () =>
   crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+// Which viewer mode a citation's file should open in.
+const VIEWABLE_EXT_TYPE = {
+  pdf: 'pdf',
+  docx: 'docx', doc: 'docx',
+  pptx: 'ppt', ppt: 'ppt',
+  xlsx: 'excel', xls: 'excel', xlsm: 'excel',
+  png: 'image', jpg: 'image', jpeg: 'image', tif: 'image', tiff: 'image',
+};
+const fileTypeFromName = (filename) => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase();
+  return VIEWABLE_EXT_TYPE[ext] || null;
+};
+
+// Sources the right-side viewer panel can actually render: PDF pages and PPT
+// slides (both need a page/slide number, remapped from s.slide by
+// parseSources), docx (whole document, no page concept — matched to a
+// citation by snippet text at view time), excel (whole workbook, parsed
+// client-side — matched to a citation's sheet), and standalone images (whole
+// file, no pagination). Shared by both the auto-open-on-response path
+// (ChatPage.updatePageViewer) and the per-message "View Source" button
+// (MessageRow) so the two stay in sync.
+const buildViewableSources = (sources) => {
+  return (sources || [])
+    .map((s) => ({ ...s, fileType: fileTypeFromName(s.filename) }))
+    .filter((s) => {
+      if (!s.document_id) return false;
+      if (s.fileType === 'pdf') return s.page != null;
+      if (s.fileType === 'ppt') return s.page != null;
+      if (s.fileType === 'docx') return true;
+      if (s.fileType === 'excel') return true;
+      if (s.fileType === 'image') return true;
+      return false;
+    })
+    .filter((s, i, arr) => arr.findIndex((x) =>
+      x.document_id === s.document_id && x.page === s.page
+        && x.sheet === s.sheet && x.snippet === s.snippet
+    ) === i)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+};
+
 /**
  * Pre-render $$..$$ (display) and $..$  (inline) math with KaTeX before the
  * markdown parser sees the text. This avoids remark-math's paragraph-boundary
@@ -425,34 +465,15 @@ const ChatPage = () => {
   };
 
   // Extract page-level sources from a response and open/close the page viewer.
+  // Reuses parseSources (slide/sheet -> page remap) + buildViewableSources
+  // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
+  // per-message "View Source" button in MessageRow.
   const updatePageViewer = (data) => {
-    const toolCalls = data.tool_calls || [];
-    const allSources = [];
-    for (const call of toolCalls) {
-      if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
-      try {
-        const parsed = JSON.parse(call.result);
-        if (Array.isArray(parsed.sources)) allSources.push(...parsed.sources);
-      } catch { /* skip malformed */ }
-    }
-    const pageSources = allSources
-      .map(s => {
-        if (s.page == null && s.slide != null) {
-          return { ...s, page: s.slide };
-        }
-        if (s.page == null && s.sheet != null) {
-          return { ...s, page: s.sheet };
-        }
-        return s;
-      })
-      .filter(s => s.page != null && s.document_id)
-      // Deduplicate by (document_id, page)
-      .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
-      // Already sorted by score desc from backend, but re-sort just in case
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const allSources = parseSources(data.tool_calls || []);
+    const viewableSources = buildViewableSources(allSources);
 
-    if (pageSources.length > 0) {
-      setPageViewer({ pages: pageSources, activeIdx: 0 });
+    if (viewableSources.length > 0) {
+      setPageViewer({ pages: viewableSources, activeIdx: 0 });
     } else {
       setPageViewer(null);
     }
@@ -843,13 +864,17 @@ const ChatPage = () => {
 };
 
 // ── PageViewerPanel ───────────────────────────────────────────────────────────
-// Right-side panel that shows the PDF page image for the current page, or an Excel grid view.
-// Supports page navigation, button-based zoom, trackpad/mouse-wheel zoom, and Excel sheet tabs.
+// Right-side panel for a citation. Dispatches on fileType (set by
+// fileTypeFromName in buildViewableSources): pdf/ppt share a paginated page/
+// slide-image canvas with nav + zoom; docx renders the whole document as HTML
+// and scroll/highlights the cited snippet at view time (no fixed page
+// numbers); excel is parsed client-side from the raw file and shows the
+// cited sheet; image is a single whole-file image, no pagination.
 const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const { pages, activeIdx } = viewer;
   const active = pages[activeIdx];
-
-  const isExcel = active?.filename?.endsWith('.xlsx') || active?.filename?.endsWith('.xls') || active?.filename?.endsWith('.xlsm');
+  const fileType = active?.fileType;
+  const isPaginated = fileType === 'pdf' || fileType === 'ppt';
 
   const [currentPage, setCurrentPage] = useState(active?.page || 1);
   const [totalPages, setTotalPages] = useState(null);
@@ -858,25 +883,30 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const [scale, setScale] = useState(1);
   const containerRef = useRef(null);
 
-  // Excel Specific State
+  const [docxHtml, setDocxHtml] = useState(null);
+  const [docxLoading, setDocxLoading] = useState(false);
+  const [docxError, setDocxError] = useState(false);
+  const docxContainerRef = useRef(null);
+  const lastHighlightRef = useRef(null);
+
   const [workbook, setWorkbook] = useState(null);
-  const [sheetNames, setSheetNames] = useState([]);
-  const [activeSheet, setActiveSheet] = useState(null);
-  const [sheetData, setSheetData] = useState([]);
   const [excelLoading, setExcelLoading] = useState(false);
   const [excelError, setExcelError] = useState(false);
+  const [activeSheet, setActiveSheet] = useState(null);
 
-  // When active page changes from parent, sync currentPage and reset scale
+  // PDF/PPT: when active page changes from parent, sync currentPage and reset scale
   useEffect(() => {
-    if (active?.page) {
+    if (isPaginated && active?.page) {
       setCurrentPage(active.page);
       setScale(1);
     }
-  }, [activeIdx, active?.page]);
+  }, [fileType, activeIdx, active?.page]);
 
-  // Fetch total page count for active document (PDF/PPT only)
+  // PDF/PPT: fetch total page/slide count for active document.
+  // pdf-info dispatches on the doc's own file_type server-side, so the same
+  // endpoint returns a slide count for ppt and a page count for pdf.
   useEffect(() => {
-    if (!active?.document_id || isExcel) return;
+    if (!isPaginated || !active?.document_id) return;
     setTotalPages(null);
     fetch(`${API_BASE_URL}/files/${active.document_id}/pdf-info`)
       .then((res) => {
@@ -887,85 +917,179 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         setTotalPages(data.total_pages);
       })
       .catch((err) => {
-        console.error("Failed to load PDF info:", err);
+        console.error("Failed to load page info:", err);
       });
-  }, [active?.document_id, isExcel]);
+  }, [fileType, active?.document_id]);
 
-  // Excel loader
+  // PDF/PPT: reset image load status when current page changes
   useEffect(() => {
-    if (!active?.document_id || !isExcel) return;
+    if (!isPaginated) return;
+    setImgLoaded(false);
+    setImgError(false);
+  }, [fileType, currentPage, active?.document_id]);
 
-    setExcelLoading(true);
-    setExcelError(false);
+  // Docx: fetch the rendered HTML whenever the active document changes
+  useEffect(() => {
+    if (fileType !== 'docx' || !active?.document_id) return;
+    setDocxHtml(null);
+    setDocxError(false);
+    setDocxLoading(true);
+    lastHighlightRef.current = null;
+    fetch(`${API_BASE_URL}/files/${active.document_id}/docx-html`)
+      .then((res) => {
+        if (!res.ok) throw new Error();
+        return res.json();
+      })
+      .then((data) => setDocxHtml(data.html))
+      .catch((err) => {
+        console.error("Failed to load docx HTML:", err);
+        setDocxError(true);
+      })
+      .finally(() => setDocxLoading(false));
+  }, [fileType, active?.document_id]);
+
+  // Docx: once the HTML is in the DOM, scroll to + highlight this citation's
+  // snippet. Word has no fixed page numbers, so this is a view-time text
+  // match against the rendered HTML rather than a jump to a persisted
+  // page/paragraph number (see backend file_docx_html docstring for why).
+  useEffect(() => {
+    if (fileType !== 'docx' || !docxHtml || !docxContainerRef.current) return;
+    const container = docxContainerRef.current;
+
+    if (lastHighlightRef.current) {
+      lastHighlightRef.current.style.backgroundColor = '';
+      lastHighlightRef.current.style.transition = '';
+      lastHighlightRef.current = null;
+    }
+
+    const snippet = (active?.snippet || '').trim();
+    if (!snippet) return;
+
+    // Word's smart quotes/dashes survive into the docx run text and mammoth
+    // renders them verbatim, but the chunk text used for the snippet may have
+    // been normalized to plain ASCII somewhere upstream (or vice versa). Fold
+    // both sides to the same canonical form so a single curly quote doesn't
+    // silently sink an otherwise-good match.
+    const normalizeForMatch = (s) =>
+      (s || '')
+        .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
+    // Table chunks store text as markdown (df.to_markdown(): pipes and a
+    // "| --- | --- |" separator row — see schemas.py), but mammoth renders
+    // the same table as a real <table> with plain cell text. Strip the
+    // markdown scaffolding so a table citation's needle reduces to the same
+    // words the rendered cells contain, instead of characters that can never
+    // appear in the HTML.
+    const stripTableMarkdown = (s) =>
+      (s || '')
+        .split('\n')
+        .filter((line) => !/^[\s|:-]+$/.test(line))
+        .join(' ')
+        .replace(/\|/g, ' ');
+
+    const cleanedSnippet = normalizeForMatch(stripTableMarkdown(snippet));
+    if (!cleanedSnippet) return;
+
+    // Match against the whole document's text, not node-by-node. A needle can
+    // straddle multiple text nodes — e.g. a heading mammoth renders as its own
+    // <h2> immediately followed by the paragraph chunk_tool merged it with, or
+    // a sentence split across a bold/italic run or a hyperlink. Concatenate
+    // every text node into one normalized string (in DOM order), track which
+    // node each slice of that string came from, search the combined string,
+    // then map the match position back to the node(s) it falls in.
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodeRanges = []; // { node, start, end } offsets into fullText
+    let fullText = '';
+    let node;
+    while ((node = walker.nextNode())) {
+      const normalized = normalizeForMatch(node.textContent);
+      if (!normalized) continue;
+      // Keep a boundary space between nodes so words from adjacent elements
+      // (end of a heading, start of the next paragraph) don't fuse together,
+      // while still letting the needle span across the boundary.
+      if (fullText && !fullText.endsWith(' ') && !normalized.startsWith(' ')) {
+        fullText += ' ';
+      }
+      const start = fullText.length;
+      fullText += normalized;
+      nodeRanges.push({ node, start, end: fullText.length });
+    }
+
+    // Try progressively shorter windows of the cleaned snippet. A long window
+    // is more specific (less chance of matching the wrong passage) but is
+    // also more likely to snag on some remaining stray character; shrinking
+    // on failure trades specificity for resilience instead of giving up
+    // after one attempt.
+    let matchStart = -1;
+    let needleLen = 0;
+    for (const len of [80, 50, 30, 18]) {
+      const candidate = cleanedSnippet.slice(0, len).trim();
+      if (!candidate) continue;
+      const idx = fullText.indexOf(candidate);
+      if (idx !== -1) {
+        matchStart = idx;
+        needleLen = candidate.length;
+        break;
+      }
+    }
+
+    if (matchStart !== -1) {
+      const matchEnd = matchStart + needleLen;
+      const hit = nodeRanges.find((r) => r.start < matchEnd && r.end > matchStart);
+      const el = hit?.node.parentElement;
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.style.transition = 'background-color 0.3s ease';
+        el.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
+        lastHighlightRef.current = el;
+      }
+    }
+    // no match found at any window size — fall back to showing the doc from
+    // the top, no highlight
+  }, [fileType, docxHtml, activeIdx, active?.snippet]);
+
+  // Excel: fetch the raw workbook and parse it client-side (SheetJS) — there's
+  // no server-side HTML conversion for spreadsheets, just /raw bytes.
+  useEffect(() => {
+    if (fileType !== 'excel' || !active?.document_id) return;
     setWorkbook(null);
-    setSheetNames([]);
-    setActiveSheet(null);
-    setSheetData([]);
-
+    setExcelError(false);
+    setExcelLoading(true);
     fetch(`${API_BASE_URL}/files/${active.document_id}/raw`)
       .then((res) => {
-        if (!res.ok) throw new Error("Failed to fetch Excel raw file");
+        if (!res.ok) throw new Error();
         return res.arrayBuffer();
       })
-      .then((ab) => {
-        const wb = XLSX.read(ab, { type: 'array' });
-        setWorkbook(wb);
-        setSheetNames(wb.SheetNames);
-
-        let initialSheet = wb.SheetNames[0];
-        if (active?.sheet && wb.SheetNames.includes(active.sheet)) {
-          initialSheet = active.sheet;
-        } else if (active?.page && wb.SheetNames.includes(String(active.page))) {
-          initialSheet = String(active.page);
-        }
-
-        setActiveSheet(initialSheet);
-        let data = [];
-        try {
-          const ws = wb.Sheets[initialSheet];
-          if (ws) {
-            data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-          }
-        } catch (parseErr) {
-          console.error("SheetJS parsing failed:", parseErr);
-        }
-        setSheetData(data);
-        setExcelLoading(false);
-      })
+      .then((buf) => setWorkbook(XLSX.read(buf, { type: 'array' })))
       .catch((err) => {
-        console.error("Failed to load Excel workbook:", err);
+        console.error("Failed to load Excel file:", err);
         setExcelError(true);
-        setExcelLoading(false);
-      });
-  }, [active?.document_id, isExcel, active?.sheet, active?.page]);
+      })
+      .finally(() => setExcelLoading(false));
+  }, [fileType, active?.document_id]);
 
-  const handleSheetChange = (sheetName) => {
-    if (!workbook) return;
-    setActiveSheet(sheetName);
-    let data = [];
-    try {
-      const ws = workbook.Sheets[sheetName];
-      if (ws) {
-        data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-      }
-    } catch (err) {
-      console.error("Failed to parse worksheet on sheet change:", err);
-    }
-    setSheetData(data);
-  };
+  // Excel: pick the sheet this citation points at (falls back to the first
+  // sheet if the citation didn't carry one, or named a sheet that's since
+  // been renamed/removed).
+  useEffect(() => {
+    if (fileType !== 'excel' || !workbook) return;
+    const wanted = active?.sheet;
+    const match = wanted && workbook.SheetNames.includes(wanted)
+      ? wanted
+      : workbook.SheetNames[0];
+    setActiveSheet(match);
+  }, [fileType, workbook, activeIdx, active?.sheet]);
 
-  const getColumnLetter = (colIdx) => {
-    let temp = colIdx;
-    let letter = '';
-    while (temp >= 0) {
-      letter = String.fromCharCode((temp % 26) + 65) + letter;
-      temp = Math.floor(temp / 26) - 1;
-    }
-    return letter;
-  };
-
-  // Trap Ctrl + MouseWheel / trackpad pinch zooms on the viewer container
-  // to zoom the document internally and prevent the browser from zooming the dashboard.
+  // Trap Ctrl + MouseWheel / trackpad pinch zooms on the pdf/ppt/image canvas
+  // to zoom the document internally and prevent the browser from zooming the
+  // dashboard. Docx/excel scroll/zoom is native browser behavior. Re-runs
+  // whenever the visible fileType changes, since the canvas div (and its ref)
+  // only exists in the DOM for paginated/image citations.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -985,13 +1109,13 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     return () => {
       container.removeEventListener('wheel', handleWheel);
     };
-  }, []);
+  }, [fileType, active?.document_id]);
 
   const handlePageChange = (page) => {
+    // PDF/PPT only — jump by page/slide number and sync activeIdx if cited.
     setCurrentPage(page);
     setScale(1);
-    // If the new page is in our cited pages for the same document, update activeIdx in parent
-    const idx = pages.findIndex((p) => p.page === page && p.document_id === active?.document_id);
+    const idx = pages.findIndex((p) => p.page === page);
     if (idx !== -1) {
       onPageChange(idx);
     }
@@ -1001,32 +1125,32 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     setScale((prev) => (prev > 1.1 ? 1 : 1.8));
   };
 
-  // Reset image status when current page changes
-  useEffect(() => {
-    setImgLoaded(false);
-    setImgError(false);
-  }, [currentPage, active?.document_id]);
-
-  const imageUrl = active?.document_id && !isExcel
+  const imageUrl = (isPaginated && active?.document_id)
     ? `${API_BASE_URL}/files/${active.document_id}/pages/${currentPage}/image`
-    : null;
+    : (fileType === 'image' && active?.document_id)
+      ? `${API_BASE_URL}/files/${active.document_id}/original`
+      : null;
 
   const maxScore = Math.max(...pages.map((p) => p.score ?? 0), 0.001);
-  const multiPage = pages.length > 1;
+  const multiPage = isPaginated && pages.length > 1;
+
+  const sheetRows = (fileType === 'excel' && workbook && activeSheet)
+    ? XLSX.utils.sheet_to_json(workbook.Sheets[activeSheet], { header: 1, defval: '' })
+    : null;
 
   return (
     <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
       ? 'w-[40%] min-w-[40%] max-w-[40%]'
       : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>
-      {/* Header matching user request */}
+      {/* Header */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
         <span className="text-xs font-bold text-gray-200 truncate flex-1" title={active?.filename}>
           {active?.filename}
         </span>
 
-        {/* Navigation - Hidden for Excel */}
-        {!isExcel && (
+        {/* Navigation — pdf/ppt only, they're the only paginated types */}
+        {isPaginated && (
           <div className="flex items-center gap-3 select-none flex-shrink-0">
             <button
               onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
@@ -1052,8 +1176,8 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           </div>
         )}
 
-        {/* Zoom Controls - Hidden for Excel */}
-        {!isExcel && (
+        {/* Zoom Controls — pdf/ppt/image only */}
+        {(isPaginated || fileType === 'image') && (
           <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
             <button
               onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
@@ -1080,7 +1204,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
             </button>
 
             <button
-              onClick={() => setScale(1)}
+              onClick={handleToggleZoom}
               className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
               title="Reset Zoom to 100%"
             >
@@ -1099,25 +1223,23 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </button>
       </div>
 
-      {/* Page Badges — cited pages/sheets shown below header */}
+      {/* Page/Slide Badges — cited pages shown below header, pdf/ppt only */}
       {multiPage && (
         <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
           {pages.map((p, i) => {
             const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
-            const isActive = isExcel
-              ? (p.document_id === active?.document_id && p.page === activeSheet)
-              : (p.document_id === active?.document_id && p.page === currentPage);
+            const isActive = p.page === currentPage;
             return (
               <button
                 key={i}
-                onClick={() => onPageChange(i)}
+                onClick={() => handlePageChange(p.page)}
                 className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
                   ? 'bg-blue-600/20 border-blue-500 text-blue-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                   }`}
-                title={`${isExcel ? 'Sheet' : 'Page'} ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
+                title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
-                <span>{isExcel ? '' : 'P.'}{p.page}</span>
+                <span>P.{p.page}</span>
                 <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
                   <div
                     className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}
@@ -1130,96 +1252,87 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </div>
       )}
 
-      {/* Page Canvas — overflow:auto creates scrollbars when zoomed in */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto bg-slate-950 p-4 flex flex-col min-h-0"
-      >
-        {isExcel ? (
-          <div className="flex-1 flex flex-col min-h-0 bg-slate-900 rounded border border-slate-800 overflow-hidden">
-            {/* Sheet Tabs */}
-            <div className="flex bg-slate-950 border-b border-slate-850 px-3 py-1 overflow-x-auto gap-1 select-none flex-shrink-0 scrollbar-thin">
-              {sheetNames.map((name) => {
-                const isActive = name === activeSheet;
-                return (
-                  <button
-                    key={name}
-                    onClick={() => handleSheetChange(name)}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-t-lg border-t border-x transition-all flex-shrink-0 ${isActive
-                      ? 'bg-slate-900 border-slate-800 text-green-400 border-t-2 border-t-green-500'
-                      : 'bg-slate-950 border-transparent text-slate-500 hover:text-slate-200'
-                      }`}
-                  >
-                    {name}
-                  </button>
-                );
-              })}
-            </div>
+      {/* Sheet tabs — excel only */}
+      {fileType === 'excel' && workbook && workbook.SheetNames.length > 1 && (
+        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
+          {workbook.SheetNames.map((name) => (
+            <button
+              key={name}
+              onClick={() => setActiveSheet(name)}
+              className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${activeSheet === name
+                ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                }`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
 
-            {/* Grid Area */}
-            <div className="flex-1 overflow-auto p-2 scrollbar-thin">
-              {excelLoading && (
-                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs gap-2">
-                  <ArrowPathIcon className="h-5 w-5 animate-spin text-green-500" />
-                  <span>Loading spreadsheet...</span>
-                </div>
-              )}
-              {excelError && (
-                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
-                  <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
-                  <span>Failed to load spreadsheet.</span>
-                </div>
-              )}
-              {!excelLoading && !excelError && sheetData.length > 0 && (
-                <div className="w-full overflow-x-auto">
-                  <table className="border-collapse text-[11px] text-slate-350 min-w-full font-mono">
-                    <thead>
-                      <tr className="bg-slate-950">
-                        <th className="border border-slate-800 bg-slate-950 text-slate-500 px-2 py-1.5 sticky top-0 left-0 z-20 w-10 text-center select-none"></th>
-                        {Array.from({ length: Math.max(...sheetData.map(r => r.length), 1) }).map((_, colIdx) => (
-                          <th
-                            key={colIdx}
-                            className="border border-slate-800 bg-slate-950 text-slate-400 px-3 py-1 font-semibold text-center select-none sticky top-0 z-10 min-w-[100px]"
-                          >
-                            {getColumnLetter(colIdx)}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sheetData.map((row, rowIdx) => (
-                        <tr key={rowIdx} className="hover:bg-slate-850/40 transition-colors odd:bg-slate-900/40 even:bg-slate-900/10">
-                          <td className="border border-slate-800 bg-slate-950 text-slate-500 text-center font-semibold select-none sticky left-0 z-10 w-10 py-1">
-                            {rowIdx + 1}
-                          </td>
-                          {row.map((cell, colIdx) => (
-                            <td
-                              key={colIdx}
-                              className="border border-slate-800/80 px-3 py-1.5 whitespace-pre min-w-[100px] text-left align-top"
-                            >
-                              {cell !== null && cell !== undefined ? String(cell) : ""}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {!excelLoading && !excelError && sheetData.length === 0 && (
-                <div className="text-center py-12 text-slate-500 text-xs">
-                  Sheet is empty.
-                </div>
-              )}
+      {/* Content area */}
+      {fileType === 'docx' ? (
+        <div ref={docxContainerRef} className="flex-1 overflow-auto bg-white p-6">
+          {docxLoading && (
+            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+              <span>Loading document...</span>
             </div>
-          </div>
-        ) : (
-          imageUrl && (
+          )}
+          {docxError && (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 opacity-40" />
+              <span>Could not load this document.</span>
+            </div>
+          )}
+          {docxHtml && (
+            <div
+              className="docx-content text-slate-900 text-sm leading-relaxed max-w-2xl mx-auto"
+              dangerouslySetInnerHTML={{ __html: docxHtml }}
+            />
+          )}
+        </div>
+      ) : fileType === 'excel' ? (
+        <div className="flex-1 overflow-auto bg-white p-4">
+          {excelLoading && (
+            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+              <span>Loading spreadsheet...</span>
+            </div>
+          )}
+          {excelError && (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 opacity-40" />
+              <span>Could not load this spreadsheet.</span>
+            </div>
+          )}
+          {sheetRows && (
+            <table className="w-full text-xs border-collapse">
+              <tbody>
+                {sheetRows.map((row, r) => (
+                  <tr key={r} className={r === 0 ? 'bg-slate-100 font-semibold' : 'odd:bg-slate-50'}>
+                    {row.map((cell, c) => (
+                      <td key={c} className="border border-slate-200 px-2 py-1 text-slate-800 whitespace-nowrap">
+                        {String(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-auto bg-slate-950 p-4"
+        >
+          {imageUrl && (
             <div
               style={{
-                width: scale <= 1
-                  ? `${Math.round(scale * 100)}%`
-                  : `${Math.round(scale * 100)}%`,
+                /* Scale < 1 → shrink & center via auto margin.
+                   Scale > 1 → grow wider than panel → scrollbars appear. */
+                width: `${Math.round(scale * 100)}%`,
                 marginLeft: scale <= 1 ? 'auto' : '0',
                 marginRight: scale <= 1 ? 'auto' : '0',
                 transition: 'width 150ms ease-out',
@@ -1229,7 +1342,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               {!imgLoaded && !imgError && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
                   <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-                  <span>Rendering Page {currentPage}...</span>
+                  <span>{isPaginated ? `Rendering Page ${currentPage}...` : 'Loading image...'}</span>
                 </div>
               )}
               {imgError && (
@@ -1240,16 +1353,16 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               )}
               <img
                 src={imageUrl}
-                alt={`Page ${currentPage}`}
+                alt={isPaginated ? `Page ${currentPage}` : active?.filename}
                 onLoad={() => setImgLoaded(true)}
                 onError={() => { setImgError(true); setImgLoaded(true); }}
                 className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
                   }`}
               />
             </div>
-          )
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1439,11 +1552,9 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
 
-  // Page sources for the "View Source Pages" button — filtered + sorted by score
-  const pageSources = sources
-    .filter(s => s.page != null && s.document_id)
-    .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  // Sources for the "View Source" button — filtered + sorted by score.
+  // Covers PDF pages, docx (whole doc, snippet-matched), and images (whole file).
+  const pageSources = buildViewableSources(sources);
   const hasPageSources = pageSources.length > 0;
 
   return (
@@ -1681,7 +1792,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                     className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40 rounded-lg px-3 py-1.5 transition-all font-medium"
                   >
                     <DocumentIcon className="h-3.5 w-3.5" />
-                    View Source {pageSources.length > 1 ? `Pages (${pageSources.length})` : 'Page'}
+                    View Source{pageSources.length > 1 ? `s (${pageSources.length})` : ''}
                   </button>
                 </div>
               )}

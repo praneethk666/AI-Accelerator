@@ -12,6 +12,8 @@ Endpoints (match frontend/src/api.jsx):
     GET    /agent/sessions           list past agent-chat conversations (sidebar)
     GET    /agent/sessions/{id}      one conversation's full turn history
     DELETE /agent/sessions/{id}      delete a conversation
+    GET    /files/{id}/original      raw bytes of an image document, for direct <img> viewing
+    GET    /files/{id}/docx-html     docx converted to HTML, for in-panel viewing
     GET    /health         liveness
 
 Everything document-facing goes through the agent now — there is no direct
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import mimetypes
 import os
 import shutil
 import uuid
@@ -710,6 +713,89 @@ def file_pdf_info(file_id: str):
     except Exception as exc:
         logger.exception("Failed to get PDF info for %s", file_id)
         raise HTTPException(500, f"failed to read PDF: {exc}")
+
+
+@app.get("/files/{file_id}/original")
+def file_original(file_id: str):
+    """Stream the original file bytes for types that need no transformation to
+    view — currently just images. Browsers render image bytes natively, unlike
+    PDF (needs page rasterization, see file_pdf/file_page_image_ondemand above)
+    or docx (needs HTML conversion, see file_docx_html below)."""
+    from fastapi.responses import FileResponse
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    if doc.get("file_type") != "image":
+        raise HTTPException(400, "document is not an image")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "image file not found on disk")
+        file_path = matches[0]
+
+    filename = doc.get("filename") or os.path.basename(file_path)
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@app.get("/files/{file_id}/docx-html")
+def file_docx_html(file_id: str):
+    """Convert a docx to HTML for in-panel viewing.
+
+    Unlike PDF, Word has no fixed, ingest-time-knowable page number — pagination
+    is renderer-dependent (fonts/margins/zoom all shift it). So there's no
+    per-page endpoint here, and no page-image model: this returns the WHOLE
+    document as HTML, and the frontend (PageViewerPanel) matches a citation to
+    a location in it at VIEW TIME by searching for the citation's own snippet
+    text, rather than jumping to a persisted page/paragraph number. See
+    backend/extraction/word/tool.py for why paragraph_index is deliberately
+    NOT threaded into source_ref/tags for this — the team's existing
+    convention (see schemas.py's Excel cell_range note) keeps format-specific
+    locators out of the shared citation schema.
+    """
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    if doc.get("file_type") != "docx":
+        raise HTTPException(400, "document is not a docx")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "docx file not found on disk")
+        file_path = matches[0]
+
+    try:
+        import mammoth
+        with open(file_path, "rb") as f:
+            result = mammoth.convert_to_html(f)
+    except Exception as exc:
+        logger.exception("docx->html conversion failed for %s", file_id)
+        raise HTTPException(500, f"failed to convert docx to HTML: {exc}")
+
+    return {
+        "html": result.value,
+        "warnings": [str(w) for w in (result.messages or [])],
+        "filename": doc.get("filename"),
+    }
 
 
 @app.delete("/files/{file_id}")

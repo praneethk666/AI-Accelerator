@@ -96,6 +96,23 @@ SYSTEM_PROMPT = (
     "or search_documents followed by get_page_context on a fragmented result. "
     "Work step by step. Just don't repeat the SAME call with the same arguments.\n\n"
 
+    "## COMPLETION\n"
+
+    "For each user request:\n"
+
+    "1. Perform only the searches necessary to answer the request completely.\n"
+
+    "2. If the retrieved information is sufficient to answer all parts of the current request, STOP calling tools and produce the final answer.\n"
+
+    "3. Do not perform additional searches merely to restate, refine, or expand information you already have.\n"
+
+    "4. Use previous conversation only to resolve references or follow-up questions. Do not continue incomplete answers from previous turns unless the user explicitly asks you to continue.\n"
+    "5. Each user message is answered on its own merits. If it is unrelated to a "
+    "previous question in this conversation, answer ONLY the new question — do not "
+    "repeat, merge with, or re-summarize a prior answer just because it's visible "
+    "above. Only pull in prior conversation content when the new question explicitly "
+    "references it (e.g. 'and what about...', 'the second one you mentioned').\n\n"
+
     "## STYLE\n"
     "- Be direct and concise in your final answer; don't narrate tool mechanics.\n"
     "- Never say 'I don't have access to files' or 'please provide a file path' "
@@ -342,31 +359,137 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 _TOOL_MSG_MAX_CHARS = 2000
 
 
-def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """Cap large ToolMessage payloads to _TOOL_MSG_MAX_CHARS to prevent context bloat.
+# def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
+#     """Cap large ToolMessage payloads to _TOOL_MSG_MAX_CHARS to prevent context bloat.
 
-    Keeps SystemMessage / HumanMessage / AIMessage intact (they're small).
-    Only trims ToolMessages that carry large JSON search results — the agent
-    only needs the answer + a citation summary, not every raw snippet field.
+#     Keeps SystemMessage / HumanMessage / AIMessage intact (they're small).
+#     Only trims ToolMessages that carry large JSON search results — the agent
+#     only needs the answer + a citation summary, not every raw snippet field.
+#     """
+#     pruned = []
+#     for msg in messages:
+#         if isinstance(msg, ToolMessage) and len(msg.content) > _TOOL_MSG_MAX_CHARS:
+#             truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
+#             # Try to keep valid JSON by finding the last complete top-level value
+#             last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
+#             if last_brace > 0:
+#                 truncated = truncated[: last_brace + 1]
+#             truncated += "\n...[truncated for context efficiency]"
+#             # ToolMessage is immutable — create a copy with the shorter content
+#             msg = ToolMessage(
+#                 content=truncated,
+#                 tool_call_id=msg.tool_call_id,
+#                 name=getattr(msg, "name", None),
+#             )
+#         pruned.append(msg)
+#     return pruned
+
+def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Reduce ToolMessage payload size without losing answer or citations.
+
+    For JSON tool outputs:
+      - Keep only 'answer' and 'citations' when available.
+      - Remove heavy retrieval/debug fields.
+      - Fall back to truncation only if parsing fails.
     """
-    pruned = []
+
+    pruned: list[BaseMessage] = []
+
     for msg in messages:
-        if isinstance(msg, ToolMessage) and len(msg.content) > _TOOL_MSG_MAX_CHARS:
-            truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
-            # Try to keep valid JSON by finding the last complete top-level value
-            last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
+        if not isinstance(msg, ToolMessage):
+            pruned.append(msg)
+            continue
+
+        # Small messages don't need processing.
+        if len(msg.content) <= _TOOL_MSG_MAX_CHARS:
+            pruned.append(msg)
+            continue
+
+        new_content = msg.content
+
+        try:
+            data = json.loads(msg.content)
+
+            if isinstance(data, dict):
+                # If this looks like a search_documents result,
+                # preserve only the useful fields.
+                if "answer" in data:
+                    compact = {
+                        "answer": data.get("answer", ""),
+                        "citations": data.get("citations", []),
+                    }
+
+                    # Preserve useful optional fields if they exist.
+                    for key in (
+                        "sources",
+                        "source_documents",
+                        "references",
+                        "confidence",
+                    ):
+                        if key in data:
+                            compact[key] = data[key]
+
+                    new_content = json.dumps(
+                        compact,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+
+                else:
+                    # Unknown JSON format.
+                    # Remove commonly huge fields while preserving everything else.
+                    compact = dict(data)
+
+                    for key in (
+                        "chunks",
+                        "retrieval_debug",
+                        "retrieval_results",
+                        "matches",
+                        "documents",
+                        "raw_results",
+                        "scores",
+                        "embeddings",
+                        "metadata",
+                        "debug",
+                    ):
+                        compact.pop(key, None)
+
+                    new_content = json.dumps(
+                        compact,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+
+        except Exception:
+            # Not JSON -> use character truncation.
+            new_content = msg.content[:_TOOL_MSG_MAX_CHARS]
+
+            last_brace = max(
+                new_content.rfind("}"),
+                new_content.rfind("]"),
+            )
+
             if last_brace > 0:
-                truncated = truncated[: last_brace + 1]
-            truncated += "\n...[truncated for context efficiency]"
-            # ToolMessage is immutable — create a copy with the shorter content
-            msg = ToolMessage(
-                content=truncated,
+                new_content = new_content[: last_brace + 1]
+
+            new_content += "\n...[truncated for context efficiency]"
+
+        # Final safeguard.
+        if len(new_content) > _TOOL_MSG_MAX_CHARS:
+            new_content = (
+                new_content[:_TOOL_MSG_MAX_CHARS]
+                + "\n...[truncated for context efficiency]"
+            )
+
+        pruned.append(
+            ToolMessage(
+                content=new_content,
                 tool_call_id=msg.tool_call_id,
                 name=getattr(msg, "name", None),
             )
-        pruned.append(msg)
-    return pruned
+        )
 
+    return pruned
 
 def _extract_tool_calls(messages: list[BaseMessage]) -> list[dict]:
     """Pair each requested tool call with its result (if it ran), in call order."""
@@ -436,7 +559,18 @@ def run_agent(
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
     is_question = not _is_greeting(message)
     messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
-    messages += conversation_history or []
+    # messages += conversation_history or []
+    messages += [
+    m for m in (conversation_history or [])
+    if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
+]
+    if messages[1:]:  # there IS prior history for this session
+        messages.append(SystemMessage(
+        "Reminder: the next user message is a NEW request. Answer ONLY it. "
+        "Do not repeat, continue, or merge in your answer to any earlier question "
+        "above, unless this new message explicitly references it (e.g. 'the one you "
+        "just mentioned', 'and what about...')."
+    ))
     messages.append(HumanMessage(message))
 
     graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
@@ -511,16 +645,20 @@ def run_agent(
         # answer field, use it directly instead of making another LLM call.
         # This handles the common case where DeepSeek returns content="" on the
         # synthesis turn after the tool already returned a complete answer.
-        for msg in reversed(final_state["messages"]):
-            if isinstance(msg, ToolMessage):
+        search_answers = []
+        for m in final_state["messages"]:
+            if isinstance(m, ToolMessage):
                 try:
-                    tool_result = json.loads(msg.content)
-                    if isinstance(tool_result, dict) and tool_result.get("answer", "").strip():
-                        answer = tool_result["answer"]
-                        logger.info("Recovered answer from prior tool result (fast-path fallback)")
-                        break
+                    r = json.loads(m.content)
+                    if isinstance(r, dict) and r.get("answer", "").strip():
+                        search_answers.append(r["answer"])
                 except Exception:
                     pass
+
+        if len(search_answers) == 1:
+            answer = search_answers[0]
+            logger.info("Recovered answer from prior tool result (fast-path fallback)")
+        # else: len > 1 -> fall through to slow-path LLM synthesis below
 
         # Slow path: ask the LLM to synthesize from history without tools.
         if not answer.strip():

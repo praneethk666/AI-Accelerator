@@ -71,6 +71,37 @@ def test_ragged_rows_trigger_repair():
     assert "ragged_rows" in result["reasons"]
 
 
+def test_blank_continuation_rows_trigger_repair():
+    # Real shape produced by table_source=auto's pymupdf ruled-line extraction on a
+    # merged/rowspan source cell (validated live, 24-Jul, servo manual alarm table):
+    # every row has the SAME column count (so _has_ragged_rows misses it entirely),
+    # but rows after the first leave the identifying leading columns blank.
+    block = _table_block(
+        ["Alarm name", "Code", "Details", "Remarks"],
+        [
+            ["Motor model setting error", "F7H", "Setting inconsistency detected.", "SU"],
+            ["", "", "Detect error when motor code being set is wrong.", ""],
+            ["", "", "Clear by re-powering on.", ""],
+        ],
+    )
+    result = _classify_table_for_repair(block, "5.3 Alarm List", "")
+    assert result["needs_llm"] is True
+    assert "blank_continuation_rows" in result["reasons"]
+
+
+def test_table_with_a_genuinely_blank_first_column_header_is_not_flagged():
+    # A real, well-formed table can legitimately have a blank leading label column
+    # (e.g. a row-header-less matrix) as long as MOST rows aren't blank-leading —
+    # only a systematic pattern (>=15% of rows) should trigger repair.
+    block = _table_block(
+        ["", "Factor 1"],
+        [["Occurred on power-on.", "○"], ["Occurred on servo-on.", "○"],
+         ["Occurred after motor start.", "○"]],
+    )
+    result = _classify_table_for_repair(block, "", "")
+    assert "blank_continuation_rows" not in result["reasons"]
+
+
 def test_orphan_table_triggers_repair():
     block = _table_block(["a", "b"], [["1", "2"]])
     result = _classify_table_for_repair(block, "", "")

@@ -1,0 +1,15 @@
+[Unit]
+Description=Combined OCR inference server (Unlimited-OCR + Surya)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user
+Environment=UNLIMITED_OCR_API_KEY=REPLACE_WITH_YOUR_SHARED_SECRET
+ExecStart=/home/ec2-user/unlimited_ocr_test/bin/python /home/ec2-user/ocr_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

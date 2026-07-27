@@ -287,6 +287,22 @@ def markdown_to_blocks(md: str, document_id: str, page: int, filename: str) -> l
 
     return blocks
 
+def transcribe_page_blocks(page, config: dict, document_id: str, pg: int, filename: str) -> list[dict]:
+    """Rescue-transcribe one page into blocks, dispatching on `vision_ocr.engine`:
+      vlm (default)  -> hosted VLM markdown transcription (transcribe_page + markdown_to_blocks)
+      local          -> self-hosted Unlimited-OCR (see backend/extraction/unlimited_ocr.py)
+    Kept as a thin dispatcher so the existing VLM path (transcribe_page/markdown_to_blocks)
+    stays untouched for callers that don't go through here (e.g. large_format tiling)."""
+    cfg = config.get("vision_ocr") or {}
+    engine = cfg.get("engine", "vlm")
+    if engine == "local":
+        from backend.extraction.unlimited_ocr import det_to_blocks, transcribe_page_local
+        raw = transcribe_page_local(page, config)
+        return det_to_blocks(raw, document_id, pg, filename)
+    md = transcribe_page(page, config)
+    return markdown_to_blocks(md, document_id, pg, filename)
+
+
 def transcribe_page(page, config: dict) -> str:
     cfg = config.get("vision_ocr") or {}
     dpi = int(cfg.get("dpi", 200))
@@ -557,21 +573,21 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                     _set_route(report, pg, "kept_original", reason)
                     out.extend(pblocks)
                 continue
+            engine = ((config.get("vision_ocr") or {}).get("engine", "vlm"))
             try:
-                md = transcribe_page(doc[pg - 1], config)
-                new_blocks = markdown_to_blocks(md, document_id, pg, filename)
+                new_blocks = transcribe_page_blocks(doc[pg - 1], config, document_id, pg, filename)
                 out.extend(new_blocks + figs)
                 rescued += 1
-                _set_route(report, pg, "vlm_rescue", reason)
+                _set_route(report, pg, f"{engine}_rescue", reason)
                 if report is not None:
                     tbl_count = sum(1 for nb in new_blocks if nb.get("type") == "table")
                     if tbl_count:
                         report["tables"]["total"] += tbl_count
                         report["tables"]["vlm_escalated"] += tbl_count
-                    report["pages"]["rescued"].append({"page": pg, "via": "vlm", "reason": reason})
+                    report["pages"]["rescued"].append({"page": pg, "via": engine, "reason": reason})
             except Exception as e:
-                logger.warning("rescue: page %s VLM failed (%s); keeping originals", pg, e)
-                _set_route(report, pg, "vlm_failed", reason)
+                logger.warning("rescue: page %s %s rescue failed (%s); keeping originals", pg, engine, e)
+                _set_route(report, pg, f"{engine}_failed", reason)
                 out.extend(pblocks)
     finally:
         doc.close()

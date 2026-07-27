@@ -1,0 +1,17 @@
+[Unit]
+Description=PaddleOCR PP-Structure inference server (port 8083)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user
+Environment=UNLIMITED_OCR_API_KEY=REPLACE_WITH_YOUR_SHARED_SECRET
+ExecStart=/home/ec2-user/paddleocr_test/bin/python /home/ec2-user/paddleocr_server.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

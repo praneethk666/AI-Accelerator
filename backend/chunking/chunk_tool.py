@@ -711,6 +711,28 @@ def _has_ragged_rows(rows: list[list]) -> bool:
     return len(col_counts) > 1
 
 
+def _has_blank_continuation_rows(rows: list[list], min_fraction: float = 0.15) -> bool:
+    """A DIFFERENT raggedness pymupdf's ruled-line table extraction produces (found
+    live, 24-Jul, on the servo manual's alarm-list table via table_source: auto): every
+    row has the SAME column count (so _has_ragged_rows misses it), but a merged/
+    rowspan cell in the source table becomes several separate output rows where only
+    the FIRST carries the identifying value (e.g. alarm name/code) and the rest leave
+    those leading columns blank, relying on the row above for context. A chunk built
+    from one of those continuation rows alone has no identifying context in its own
+    cells — the exact fragmentation failure mode this repair step exists for."""
+    if len(rows) < 2:
+        return False
+    blank_leading = 0
+    for row in rows[1:]:
+        if not row:
+            continue
+        lead = row[: max(1, len(row) // 2)]
+        rest = row[len(lead):]
+        if all(not str(c).strip() for c in lead) and any(str(c).strip() for c in rest):
+            blank_leading += 1
+    return blank_leading / (len(rows) - 1) >= min_fraction
+
+
 def _is_orphan_table(rows: list[list]) -> bool:
     return len(rows) <= 2
 
@@ -747,6 +769,8 @@ def _classify_table_for_repair(block: dict, section_lead: str, preceding_text: s
         reasons.append("header_anomaly")
     if _has_ragged_rows(rows):
         reasons.append("ragged_rows")
+    if _has_blank_continuation_rows(rows):
+        reasons.append("blank_continuation_rows")
     if _is_orphan_table(rows):
         reasons.append("orphan_table")
     if _lacks_context_anchor(headers, rows, section_lead, preceding_text):

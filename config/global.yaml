@@ -184,6 +184,19 @@ vision_ocr:
   #           base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
   # Self-hosted Qwen3-VL:  provider: openai  model: qwen3-vl
   #                        base_url: http://<your-gpu-host>:8000/v1  api_key: ${VLLM_API_KEY}
+  engine: vlm               # vlm (default, above) | local (self-hosted Unlimited-OCR —
+                             # see backend/extraction/unlimited_ocr.py + scripts/ocr_server.py).
+                             # Live-tested 24-Jul on the real 105-page servo manual: zero
+                             # repetition across 7 diverse pages, correctly-structured
+                             # rowspan HTML tables, ~26-30s/page on a T4 GPU — a real fix
+                             # for z.ai's concurrency=1-2 rescue-path bottleneck, but NOT
+                             # yet tested on diagram/large-format tiled pages, so leave as
+                             # "vlm" until a GPU inference server is actually running.
+  # Public repo — the box IP is env-substituted, not hardcoded here (set both in
+  # your local .env, never commit real values):
+  local_endpoint: ${UNLIMITED_OCR_ENDPOINT}  # e.g. http://<gpu-box-ip>/unlimited-ocr/infer
+  local_api_key: ${UNLIMITED_OCR_API_KEY}    # shared secret, must match the server's env var
+  local_timeout_s: 90
   dpi: 150
   min_interval_s: 0.5       # MUST match vision.min_interval_s — both blocks call the
                              # same model through the same pacing.pace("vision", ...)

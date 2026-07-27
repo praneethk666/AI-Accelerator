@@ -1,9 +1,15 @@
 """Combined OCR inference server: Unlimited-OCR (structured document parsing) +
 Surya (fast raw text-line OCR), one process, one /infer endpoint, `engine` picks
-which model runs per request. Both models loaded once at startup — combined GPU
-footprint ~8.3GB (Unlimited-OCR ~6.6GB BF16 + Surya ~1.7GB, measured live on this
-box), comfortable on a 15GB T4. Replaces the two separate single-engine servers
-(unlimited_ocr_server.py, surya_server.py).
+which model runs per request. Models are LAZY-LOADED per engine on first use, NOT
+both loaded eagerly at startup — real finding, 27-Jul, live on a real 105-page
+extraction run: with both loaded (~10GB combined baseline, higher than the ~8.3GB
+originally measured on small test crops), a few large/dense table crops spiked
+Unlimited-OCR's attention computation enough to hit CUDA OOM (13.7GB used, only
+864MB free) and fail — while this project's pipeline NEVER actually calls
+engine="surya" at all (that's the OTHER project, NEI). Lazy-loading means Surya's
+~1.7GB is never allocated unless something actually requests it, permanently
+freeing that headroom for Unlimited-OCR here. Replaces the two separate
+single-engine servers (unlimited_ocr_server.py, surya_server.py).
 
 Real, validated finding (24-27 Jul) driving which engine to pick:
   - engine="unlimited_ocr": correct reading order + structured <table> HTML with
@@ -36,6 +42,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 import time
 
 import torch
@@ -56,38 +63,55 @@ if not API_KEY:
 
 app = FastAPI()
 _state: dict = {}
+_uo_lock = threading.Lock()
+_surya_lock = threading.Lock()
 
 
-@app.on_event("startup")
-def load_models():
-    t0 = time.time()
-    logger.info("Loading %s...", UNLIMITED_OCR_MODEL)
-    _state["uo_tokenizer"] = AutoTokenizer.from_pretrained(
-        UNLIMITED_OCR_MODEL, trust_remote_code=True)
-    # Try Flash Attention 2 first (20-40% speedup on Ampere/T4); fall back silently.
-    for fa2 in (True, False):
-        try:
-            kwargs = dict(trust_remote_code=True, use_safetensors=True, dtype=torch.bfloat16)
-            if fa2:
-                kwargs["attn_implementation"] = "flash_attention_2"
-            _state["uo_model"] = AutoModel.from_pretrained(
-                UNLIMITED_OCR_MODEL, **kwargs).eval().cuda()
-            logger.info("Unlimited-OCR loaded in %.1fs (flash_attn_2=%s)", time.time() - t0, fa2)
-            break
-        except Exception as e:
-            if not fa2:
-                raise
-            logger.warning("flash_attn_2 unavailable (%s), retrying without", e)
+def _ensure_unlimited_ocr_loaded() -> None:
+    """Load Unlimited-OCR on first use only (double-checked locking so concurrent
+    first-requests can't both start loading it)."""
+    if "uo_model" in _state:
+        return
+    with _uo_lock:
+        if "uo_model" in _state:  # someone else finished loading while we waited
+            return
+        t0 = time.time()
+        logger.info("Loading %s (first use)...", UNLIMITED_OCR_MODEL)
+        _state["uo_tokenizer"] = AutoTokenizer.from_pretrained(
+            UNLIMITED_OCR_MODEL, trust_remote_code=True)
+        # Try Flash Attention 2 first (20-40% speedup on Ampere/T4); fall back silently.
+        for fa2 in (True, False):
+            try:
+                kwargs = dict(trust_remote_code=True, use_safetensors=True, dtype=torch.bfloat16)
+                if fa2:
+                    kwargs["attn_implementation"] = "flash_attention_2"
+                _state["uo_model"] = AutoModel.from_pretrained(
+                    UNLIMITED_OCR_MODEL, **kwargs).eval().cuda()
+                logger.info("Unlimited-OCR loaded in %.1fs (flash_attn_2=%s)", time.time() - t0, fa2)
+                break
+            except Exception as e:
+                if not fa2:
+                    raise
+                logger.warning("flash_attn_2 unavailable (%s), retrying without", e)
 
-    t1 = time.time()
-    logger.info("Loading Surya OCR v0.17...")
-    from surya.detection import DetectionPredictor
-    from surya.recognition import RecognitionPredictor, FoundationPredictor
-    _state["surya_det"] = DetectionPredictor()
-    foundation = FoundationPredictor()
-    _state["surya_rec"] = RecognitionPredictor(foundation_predictor=foundation)
-    logger.info("Surya loaded in %.1fs", time.time() - t1)
-    logger.info("Both engines ready, total load time %.1fs", time.time() - t0)
+
+def _ensure_surya_loaded() -> None:
+    """Load Surya on first use only — NEVER triggered by this project's own
+    pipeline (which always sends engine="unlimited_ocr"), only if something else
+    (e.g. NEI) actually requests engine="surya" against this same server."""
+    if "surya_rec" in _state:
+        return
+    with _surya_lock:
+        if "surya_rec" in _state:
+            return
+        t0 = time.time()
+        logger.info("Loading Surya OCR v0.17 (first use)...")
+        from surya.detection import DetectionPredictor
+        from surya.recognition import RecognitionPredictor, FoundationPredictor
+        _state["surya_det"] = DetectionPredictor()
+        foundation = FoundationPredictor()
+        _state["surya_rec"] = RecognitionPredictor(foundation_predictor=foundation)
+        logger.info("Surya loaded in %.1fs", time.time() - t0)
 
 
 def _infer_unlimited_ocr(tmp_path: str, out_dir: str, crop_mode: bool, invoice_mode: bool) -> str:
@@ -132,13 +156,17 @@ async def infer(
 ):
     """engine: "unlimited_ocr" (structured <table> HTML + correct reading order,
     ~26-34s/page) or "surya" (flat unordered text lines, no table structure,
-    ~11s/page — validated to scramble row/column order on dense real tables)."""
+    ~11s/page — validated to scramble row/column order on dense real tables).
+    Whichever engine is requested is loaded on first use, not eagerly at startup —
+    see _ensure_unlimited_ocr_loaded/_ensure_surya_loaded."""
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(401, "missing/invalid X-API-Key")
-    if "uo_model" not in _state or "surya_rec" not in _state:
-        raise HTTPException(503, "models still loading")
     if engine not in ("unlimited_ocr", "surya"):
         raise HTTPException(400, f"unknown engine {engine!r}, expected 'unlimited_ocr' or 'surya'")
+    if engine == "surya":
+        _ensure_surya_loaded()
+    else:
+        _ensure_unlimited_ocr_loaded()
 
     data = await image.read()
     if not data:

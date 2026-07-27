@@ -177,11 +177,12 @@ def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
         llm=llm,
     )
 
-    # 3 loop iterations (the cap) + 1 extra fallback-synthesis call executor.py makes
-    # when the cap is hit with no answer yet, asking the LLM to explain what it did
-    # find instead of returning a bare canned message — not the loop continuing.
-    assert len(llm.invocations) == 4
-    assert result["status"] == "done"
+    # 3 loop iterations (the cap), no extra LLM call: executor.py's fallback now tries
+    # a fast path first — recovering the answer directly from the last tool result's
+    # own "answer" field (present here: _FakeSearchTool returns {"answer": "42", ...})
+    # — only falling to a slow-path LLM synthesis call if that's unavailable.
+    assert len(llm.invocations) == 3
+    assert result["answer"] == "42"  # recovered via the fast path, not re-synthesized
     assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
 
 

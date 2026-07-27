@@ -351,28 +351,98 @@ _TOOL_MSG_MAX_CHARS = 2000
 
 
 def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """Cap large ToolMessage payloads to _TOOL_MSG_MAX_CHARS to prevent context bloat.
+    """Prunes verbose JSON payloads from ToolMessages to minimize input context tokens
+    for the Agent LLM: search_documents-shaped results (answer + citations) get
+    reconstructed into a compact "Search Answer / Source Map" summary (relevance-sorted
+    citations, per-chunk-type snippet budgets) instead of the raw JSON — the agent only
+    needs the answer + a citation lookup, not every raw snippet field. Any ToolMessage
+    still over _TOOL_MSG_MAX_CHARS after that (or one that isn't answer/citations-shaped
+    at all, e.g. a different tool's raw output) gets hard character-truncated as a
+    safety net so a single oversized payload can't blow up context regardless of shape."""
+    import json
 
-    Keeps SystemMessage / HumanMessage / AIMessage intact (they're small).
-    Only trims ToolMessages that carry large JSON search results — the agent
-    only needs the answer + a citation summary, not every raw snippet field.
-    """
+    def truncate_on_word(text: str, max_chars: int) -> str:
+        text_strip = text.strip()
+        if len(text_strip) <= max_chars:
+            return text_strip
+        truncated = text_strip[:max_chars]
+        if ' ' in truncated:
+            return truncated.rsplit(' ', 1)[0].rstrip(".,| ") + "..."
+        return truncated + "..."
+
+    def _hard_truncate(msg: ToolMessage) -> ToolMessage:
+        if len(msg.content) <= _TOOL_MSG_MAX_CHARS:
+            return msg
+        truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
+        # Try to keep valid JSON by finding the last complete top-level value
+        last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
+        if last_brace > 0:
+            truncated = truncated[: last_brace + 1]
+        truncated += "\n...[truncated for context efficiency]"
+        return ToolMessage(content=truncated, tool_call_id=msg.tool_call_id,
+                            name=getattr(msg, "name", None))
+
     pruned = []
-    for msg in messages:
-        if isinstance(msg, ToolMessage) and len(msg.content) > _TOOL_MSG_MAX_CHARS:
-            truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
-            # Try to keep valid JSON by finding the last complete top-level value
-            last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
-            if last_brace > 0:
-                truncated = truncated[: last_brace + 1]
-            truncated += "\n...[truncated for context efficiency]"
-            # ToolMessage is immutable — create a copy with the shorter content
-            msg = ToolMessage(
-                content=truncated,
-                tool_call_id=msg.tool_call_id,
-                name=getattr(msg, "name", None),
-            )
-        pruned.append(msg)
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            try:
+                data = json.loads(m.content)
+                if isinstance(data, dict) and "answer" in data:
+                    answer = data.get("answer") or ""
+                    citations = data.get("citations") or []
+
+                    # Sort citations explicitly by score descending (highest-relevance
+                    # first) so our character budget goes to the most useful sources.
+                    def get_score(cit):
+                        try:
+                            return float(cit.get("score") or 0.0)
+                        except Exception:
+                            return 0.0
+
+                    sorted_citations = sorted(citations, key=get_score, reverse=True)
+
+                    source_lines = []
+                    total_snippet_chars = 0
+                    max_total_snippet_chars = 3000
+
+                    for idx, c in enumerate(sorted_citations):
+                        fname = c.get("filename")
+                        page = c.get("page")
+                        doc_id = c.get("document_id")
+                        snippet = c.get("snippet") or ""
+                        chunk_type = c.get("chunk_type")
+
+                        if fname:
+                            # 1-based index to match inline document citation indices
+                            page_suffix = f" (page {page})" if page is not None else ""
+                            id_suffix = f" [id: {doc_id}]" if doc_id else ""
+
+                            snippet_suffix = ""
+                            if snippet:
+                                is_special = chunk_type in ("warning", "alarm", "troubleshooting_row")
+                                max_len = 450 if is_special else 200
+
+                                truncated_snippet = truncate_on_word(snippet, max_len)
+                                if truncated_snippet and total_snippet_chars + len(truncated_snippet) <= max_total_snippet_chars:
+                                    snippet_suffix = f" | Snippet: {truncated_snippet}"
+                                    total_snippet_chars += len(truncated_snippet)
+
+                            source_lines.append(f"  [{idx + 1}] = {fname}{page_suffix}{id_suffix}{snippet_suffix}")
+
+                    pruned_content = f"Search Answer: {answer}\n"
+                    if source_lines:
+                        pruned_content += "Source Map:\n" + "\n".join(source_lines)
+
+                    pruned.append(_hard_truncate(ToolMessage(
+                        content=pruned_content,
+                        tool_call_id=m.tool_call_id,
+                        name=m.name,
+                    )))
+                    continue
+            except Exception:
+                pass
+            m = _hard_truncate(m)
+        pruned.append(m)
     return pruned
 
 

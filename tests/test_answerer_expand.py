@@ -3,7 +3,12 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
-from backend.retrieval.answerer import _is_thin, _expand_thin_chunks
+from backend.retrieval.answerer import _is_thin, _expand_thin_chunks, _THIN_TOKEN_FLOOR
+
+# Derived from the real threshold rather than hardcoded — a hardcoded "not thin"
+# token count silently went stale here once already when _THIN_TOKEN_FLOOR was
+# raised 20 -> 120 (fixtures using 40 tokens flipped from not-thin to thin).
+_NOT_THIN_TOKENS = _THIN_TOKEN_FLOOR + 30
 
 
 def _chunk(chunk_id, text, token_count, summary=None, document_id="doc-1", page=61):
@@ -22,7 +27,7 @@ def test_chunk_without_summary_is_thin():
 
 
 def test_chunk_with_summary_and_enough_tokens_is_not_thin():
-    assert _is_thin(_chunk("c1", "a real paragraph " * 10, 40, summary="A real summary.")) is False
+    assert _is_thin(_chunk("c1", "a real paragraph " * 30, _NOT_THIN_TOKENS, summary="A real summary.")) is False
 
 
 def test_short_token_count_is_thin_even_with_a_summary():
@@ -38,7 +43,7 @@ def _fake_store(blocks):
 
 def test_expand_replaces_thin_chunk_text_with_full_page():
     thin = _chunk("c1", "Alarm code\n11H", 5)
-    fine = _chunk("c2", "a real paragraph " * 10, 40, summary="ok", page=99)
+    fine = _chunk("c2", "a real paragraph " * 30, _NOT_THIN_TOKENS, summary="ok", page=99)
     blocks = [
         {"block_id": "b1", "type": "heading", "text": "Alarm code\n11H",
          "source_ref": {"page": 61}},
@@ -56,7 +61,7 @@ def test_expand_replaces_thin_chunk_text_with_full_page():
 
 
 def test_no_thin_chunks_returns_original_list_untouched():
-    fine = _chunk("c2", "a real paragraph " * 10, 40, summary="ok")
+    fine = _chunk("c2", "a real paragraph " * 30, _NOT_THIN_TOKENS, summary="ok")
     out = _expand_thin_chunks([fine])
     assert out == [fine]
 

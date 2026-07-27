@@ -73,15 +73,34 @@ def detect_file_type(file_path: str) -> str:
         return 'unknown'
 
 
-def _match_keywords(filename_or_text: str, keywords: list[str]) -> bool:
+def _count_keyword_hits(filename_or_text: str, keywords: list[str]) -> int:
     hay = (filename_or_text or "").lower()
-    return any(re.search(rf"\b{re.escape(k.lower())}\b", hay) for k in keywords)
+    return sum(1 for k in keywords if re.search(rf"\b{re.escape(k.lower())}\b", hay))
+
+
+# A single hit isn't enough evidence — real finding (27-Jul): "automotive"'s own
+# keyword list includes generic mechanical terms (torque, chassis, engine,
+# transmission, vehicle) that occur naturally in ANY industrial equipment manual,
+# not just automotive ones. Live-tested on a real Toyoda grinding-machine manual:
+# first-match-wins picked "automotive" off "torque" alone (18 occurrences) while
+# zero manufacturing keywords matched at all — a real false positive, not a
+# hypothetical one. Requiring 2+ DISTINCT keyword types (not just occurrences of
+# one) and scoring every industry instead of stopping at the first match fixes
+# both failure modes at once.
+_MIN_DISTINCT_KEYWORD_HITS = 2
 
 
 def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]) -> Optional[str]:
+    hay = (text or "").lower()
+    best_industry, best_score = None, 0
     for industry, kws in industry_keywords.items():
-        if _match_keywords(text, kws):
-            return industry
+        if not kws:
+            continue
+        distinct_hits = _count_keyword_hits(hay, kws)
+        if distinct_hits > best_score:
+            best_industry, best_score = industry, distinct_hits
+    if best_score >= _MIN_DISTINCT_KEYWORD_HITS:
+        return best_industry
     return None
 
 
@@ -568,8 +587,11 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             industry = vision_industry
             reasoning_parts.append(f"Industry inferred from content (vision/text-LLM): '{industry}'.")
         else:
-            text_first_3 = extract_text(file_path, max_pages=3)
-            industry = _score_industry_from_text(text_first_3, industry_kw)
+            # 3 pages found ZERO signal on a real 105-page manual (title/TOC/safety
+            # pages don't carry industry vocabulary) — widened to 30. Free: native
+            # PDF text extraction, no LLM call, so more pages costs time, not money.
+            text_sample = extract_text(file_path, max_pages=30)
+            industry = _score_industry_from_text(text_sample, industry_kw)
             if industry:
                 reasoning_parts.append(f"Industry inferred from extracted text: '{industry}'.")
             else:

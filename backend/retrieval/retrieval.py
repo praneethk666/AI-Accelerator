@@ -186,25 +186,34 @@ def _hybrid_rerank(query, cfg, full_config, filters):
     if not candidates:
         return []
 
-    reranker = get_reranker(full_config)
-    scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
-    ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    try:
+        reranker = get_reranker(full_config)
+        scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
+        ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
 
-    # Optional relevance gate: drop candidates below a calibrated cross-encoder score
-    # so an all-wrong-doc result returns nothing (answerer then refuses) instead of
-    # forcing 5 irrelevant chunks in. Unset by default — bge-reranker scores are
-    # logits (can be negative); calibrate on real queries before enabling.
-    min_score = cfg.get("rerank_min_score")
-    if min_score is not None:
-        ranked = [(s, c) for s, c in ranked if s >= min_score]
+        # Optional relevance gate: drop candidates below a calibrated cross-encoder score
+        # so an all-wrong-doc result returns nothing (answerer then refuses) instead of
+        # forcing 5 irrelevant chunks in. Unset by default — bge-reranker scores are
+        # logits (can be negative); calibrate on real queries before enabling.
+        min_score = cfg.get("rerank_min_score")
+        if min_score is not None:
+            ranked = [(s, c) for s, c in ranked if s >= min_score]
 
-    # Stamp the reranker score so it overrides the RRF _score from _hybrid.
-    result = []
-    for score, chunk in ranked[:rerank_top_k]:
-        c = dict(chunk)
-        c["_score"] = float(score)
-        result.append(c)
-    return result
+        # Stamp the reranker score so it overrides the RRF _score from _hybrid.
+        result = []
+        for score, chunk in ranked[:rerank_top_k]:
+            c = dict(chunk)
+            c["_score"] = float(score)
+            result.append(c)
+        return result
+    except Exception as exc:
+        logger.warning(
+            "Reranker failed (rate limited or API error), falling back to standard hybrid RRF results: %s",
+            exc,
+        )
+        fallback_limit = cfg.get("top_n", 20)
+        return candidates[:fallback_limit]
+
 
 
 def _hyde(query, cfg, full_config, filters):

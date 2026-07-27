@@ -162,7 +162,11 @@ const ChatPage = () => {
   const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState({});
+  const loading = !!loadingSessions[sessionId];
+  const setSessionLoading = (sessId, val) => {
+    setLoadingSessions((prev) => ({ ...prev, [sessId]: val }));
+  };
   const [error, setError] = useState(null);
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
@@ -404,7 +408,7 @@ const ChatPage = () => {
       ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
       { role: 'user', content: optionText },
     ]);
-    setLoading(true);
+    setSessionLoading(reqSession, true);
     setError(null);
     try {
       const res = await sendAgentChat(optionText, reqSession, false);
@@ -416,7 +420,7 @@ const ChatPage = () => {
       console.error('Clarify error:', err);
       if (sessionIdRef.current === reqSession) setError(err.message);
     } finally {
-      setLoading(false);
+      setSessionLoading(reqSession, false);
     }
   };
 
@@ -477,14 +481,14 @@ const ChatPage = () => {
       )
     );
 
+    const reqSession = sessionId;
     setMessages((prev) => [...prev, { role: 'user', content: displayText }]);
     setInput('');
     setAttachedFile(null);
-    setLoading(true);
+    setSessionLoading(reqSession, true);
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
-    const reqSession = sessionId;
     try {
       const res = await sendAgentChat(sentText, reqSession, false);
       // Drop the reply if the user switched conversations while it was in flight —
@@ -506,7 +510,7 @@ const ChatPage = () => {
       ]);
       setError(err.message);
     } finally {
-      setLoading(false);
+      setSessionLoading(reqSession, false);
     }
   };
 
@@ -516,8 +520,8 @@ const ChatPage = () => {
       setMessages((prev) => prev.map((m, i) => (i === msgIdx ? { ...m, status: 'declined' } : m)));
       return;
     }
-    setLoading(true);
     const reqSession = sessionId;
+    setSessionLoading(reqSession, true);
     try {
       const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || []);
       if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
@@ -530,7 +534,7 @@ const ChatPage = () => {
       console.error('Approval error:', err);
       if (sessionIdRef.current === reqSession) setError(err.message);
     } finally {
-      setLoading(false);
+      setSessionLoading(reqSession, false);
     }
   };
 

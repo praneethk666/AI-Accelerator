@@ -542,9 +542,9 @@ def _try_extract_cad_title_chunk(block: dict, document_id: str | None, ref_fn) -
     return chunk
 
 
-def _try_extract_cad_component_chunks(block: dict, document_id: str | None, ref_fn) -> list[dict] | None:
+def _try_extract_cad_component_chunks(block: dict, document_id: str | None, ref_fn, size: int = 400) -> list[dict] | None:
     """If a block or table represents CAD component specifications (Steel Pipe, Hose, Copper Pipe, Tube),
-    unify the matrix into 1 complete self-contained table chunk per component type."""
+    unify the matrix into 1 complete self-contained table chunk per component type, or split it if it exceeds target size."""
     text = (block.get("text") or "").strip()
     grid = _extract_grid_from_block(block)
     full_str = f"{text} " + (" ".join(" ".join(r) for r in grid) if grid else "")
@@ -570,23 +570,71 @@ def _try_extract_cad_component_chunks(block: dict, document_id: str | None, ref_
         rows = grid[1:]
         md_table = _rebuild_markdown(headers, rows)
         chunk_text = f"# Material Specifications - {comp_title}\n\n{md_table}"
+        
+        # If it fits within target size, return single chunk
+        if _ntok(chunk_text) <= size:
+            return [{
+                "chunk_id": str(uuid.uuid4()),
+                "document_id": block.get("document_id") or document_id,
+                "text": chunk_text,
+                "token_count": _ntok(chunk_text),
+                "source_ref": source_ref,
+                "tags": {
+                    "document_type": "cad",
+                    "chunk_type": "cad_component_table",
+                    "component": component_type,
+                    "has_table": True,
+                },
+            }]
+            
+        # Split by row-groups using the row splitter
+        groups = _split_table_rows(headers, rows, size)
+        out = []
+        row_cursor = 0
+        for i, group in enumerate(groups):
+            sub_ref = dict(source_ref)
+            sub_ref["table_part"] = i + 1
+            sub_ref["table_parts"] = len(groups)
+            sub_ref["table_row_range"] = f"{row_cursor + 1}-{row_cursor + len(group)}"
+            row_cursor += len(group)
+            
+            md = _rebuild_markdown(headers, group)
+            sub_chunk_text = f"# Material Specifications - {comp_title}\n\n{md}"
+            
+            if _ntok(sub_chunk_text) > size * 6:
+                units, join = _units(sub_chunk_text)
+                sub_chunk_text = join(units[: size * 6]) + " …[truncated, oversized row]"
+                
+            out.append({
+                "chunk_id": str(uuid.uuid4()),
+                "document_id": block.get("document_id") or document_id,
+                "text": sub_chunk_text,
+                "token_count": _ntok(sub_chunk_text),
+                "source_ref": sub_ref,
+                "tags": {
+                    "document_type": "cad",
+                    "chunk_type": "cad_component_table",
+                    "component": component_type,
+                    "has_table": True,
+                },
+            })
+        return out
     else:
         chunk_text = f"# Material Specifications - {comp_title}\n\n{text}"
+        return [{
+            "chunk_id": str(uuid.uuid4()),
+            "document_id": block.get("document_id") or document_id,
+            "text": chunk_text,
+            "token_count": _ntok(chunk_text),
+            "source_ref": source_ref,
+            "tags": {
+                "document_type": "cad",
+                "chunk_type": "cad_component_table",
+                "component": component_type,
+                "has_table": True,
+            },
+        }]
 
-    chunk = {
-        "chunk_id": str(uuid.uuid4()),
-        "document_id": block.get("document_id") or document_id,
-        "text": chunk_text,
-        "token_count": _ntok(chunk_text),
-        "source_ref": source_ref,
-        "tags": {
-            "document_type": "cad",
-            "chunk_type": "cad_component_table",
-            "component": component_type,
-            "has_table": True,
-        },
-    }
-    return [chunk]
 
 
 def _rebuild_markdown(headers: list, rows: list[list]) -> str:
@@ -1087,7 +1135,7 @@ def chunk_blocks(
             chunks.append(cad_title)
             continue
 
-        cad_comp = _try_extract_cad_component_chunks(block, document_id, _ref)
+        cad_comp = _try_extract_cad_component_chunks(block, document_id, _ref, size)
         if cad_comp:
             flush()
             chunks.extend(cad_comp)

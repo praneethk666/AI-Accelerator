@@ -98,6 +98,26 @@ def _block(document_id, page, filename, btype, text, table_data=None, bbox=None)
 _HEADING_LABELS = {"section_header", "title", "subtitle_level_1"}
 _DROP_LABELS = {"page_header", "page_footer"}
 
+_RUNNING_HEADER_GAP_RE = re.compile(r" {15,}")
+
+
+def _is_running_header_leak(text: str, bbox: list[float] | None) -> bool:
+    """A running page-header Docling didn't label page_header/page_footer (so
+    _DROP_LABELS never catches it) — real finding, 27-Jul, on the servo manual:
+    a two-column running header (chapter number on the left, chapter title on the
+    right, joined by a run of literal spaces spanning most of the page width)
+    surfaced as ordinary body TEXT on 23 of 105 pages, producing a near-empty
+    noise chunk whenever it happened to sit right before a table/figure that
+    forced a flush. Generic signature, not tied to this document's specific
+    chapter titles: near the top margin AND an abnormally large single run of
+    literal spaces relative to how little real content there is — a genuine
+    sentence doesn't have 15+ consecutive spaces in the middle of it."""
+    if not bbox or bbox[1] > 60:
+        return False
+    if not _RUNNING_HEADER_GAP_RE.search(text):
+        return False
+    return len(" ".join(text.split())) < 80
+
 
 def _block_page(b: dict):
     ref = b.get("source_ref") or {}
@@ -626,6 +646,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     _, bbox = _prov(item)
                     page_no = pg_num
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                    if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):
+                        continue
                     btype = "heading" if label in _HEADING_LABELS else "text"
                     blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
                     page_text.setdefault(page_no, []).append(text)
@@ -735,6 +757,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     continue
                 page_no, bbox = _prov(item)
                 bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):
+                    continue
                 btype = "heading" if label in _HEADING_LABELS else "text"
                 blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
                 page_text.setdefault(page_no, []).append(text)

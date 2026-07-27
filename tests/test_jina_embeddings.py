@@ -30,7 +30,8 @@ def test_jina_embeddings_client_single_query():
             },
             json={
                 "model": "jina-embeddings-v3",
-                "input": ["hello world"]
+                "input": ["hello world"],
+                "truncate": True
             },
             timeout=30
         )

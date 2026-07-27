@@ -141,6 +141,7 @@ class JinaEmbeddingsAPIClient:
             data = {
                 "model": self.model_name,
                 "input": chunk,
+                "truncate": True,
             }
             response = requests.post(self.url, headers=headers, json=data, timeout=30)
             response.raise_for_status()

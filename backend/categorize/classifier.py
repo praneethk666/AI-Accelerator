@@ -73,11 +73,6 @@ def detect_file_type(file_path: str) -> str:
         return 'unknown'
 
 
-def _count_keyword_hits(filename_or_text: str, keywords: list[str]) -> int:
-    hay = (filename_or_text or "").lower()
-    return sum(1 for k in keywords if re.search(rf"\b{re.escape(k.lower())}\b", hay))
-
-
 # A single hit isn't enough evidence — real finding (27-Jul): "automotive"'s own
 # keyword list includes generic mechanical terms (torque, chassis, engine,
 # transmission, vehicle) that occur naturally in ANY industrial equipment manual,
@@ -90,15 +85,28 @@ def _count_keyword_hits(filename_or_text: str, keywords: list[str]) -> int:
 _MIN_DISTINCT_KEYWORD_HITS = 2
 
 
-def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]) -> Optional[str]:
+def _industry_keyword_evidence(text: str, industry_keywords: Dict[str, list[str]]) -> Dict[str, list[str]]:
+    """Every industry's DISTINCT matched keywords (not just the winner) — used both
+    to pick a fallback industry and, separately, as grounding evidence fed into the
+    vision prompt so the LLM can weigh real document-wide keyword signal alongside
+    what it actually sees on the rendered pages (see categorize() below)."""
     hay = (text or "").lower()
-    best_industry, best_score = None, 0
+    evidence: Dict[str, list[str]] = {}
     for industry, kws in industry_keywords.items():
         if not kws:
             continue
-        distinct_hits = _count_keyword_hits(hay, kws)
-        if distinct_hits > best_score:
-            best_industry, best_score = industry, distinct_hits
+        hits = [k for k in kws if re.search(rf"\b{re.escape(k.lower())}\b", hay)]
+        if hits:
+            evidence[industry] = hits
+    return evidence
+
+
+def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]) -> Optional[str]:
+    evidence = _industry_keyword_evidence(text, industry_keywords)
+    best_industry, best_score = None, 0
+    for industry, hits in evidence.items():
+        if len(hits) > best_score:
+            best_industry, best_score = industry, len(hits)
     if best_score >= _MIN_DISTINCT_KEYWORD_HITS:
         return best_industry
     return None
@@ -382,9 +390,8 @@ def categorize(
         vision_industry: Optional[str] = None
 
         # Industries the classifier may choose from (config-driven; falls back to general).
-        known_industries = list(
-            (config.get("categorization", {}).get("industry_keywords", {}) or {}).keys()
-        ) or ["general"]
+        industry_kw = config.get("categorization", {}).get("industry_keywords", {}) or {}
+        known_industries = list(industry_kw.keys()) or ["general"]
 
         # ---- Get something vision can look at ----
         # PDFs: render+stitch pages 1-3. Images: read the raw bytes directly.
@@ -397,12 +404,21 @@ def categorize(
         image_bytes: Optional[bytes] = None
         toc_text = ""
         verify_text = ""
+        keyword_evidence: Dict[str, list[str]] = {}
         if file_type == "pdf":
             toc_text = extract_toc_text(file_path, max_pages=2)
             image_bytes = _render_pdf_pages_to_stitched_image_bytes(file_path, [0, 1, 2])
             # Text used to verify a claimed industry actually has grounding in the
             # doc (TOC + first pages) — separate from the image sent to vision.
             verify_text = f"{toc_text}\n{extract_text(file_path, max_pages=3)}"
+            # WIDER scan (free — native PDF text extraction, no LLM call) fed into the
+            # prompt below as grounding: vision only SEES pages 1-3, but a real industry
+            # signal appearing later in a long manual (spec/procedure pages) is still
+            # meaningful even if invisible on the pages shown. Real finding, 27-Jul: a
+            # 105-page manual's genuine industry vocabulary (circuit/voltage/signal)
+            # only showed up past page 3 — the title/TOC/safety front matter had none.
+            keyword_evidence = _industry_keyword_evidence(
+                extract_text(file_path, max_pages=30), industry_kw)
         elif file_type == "image":
             with open(file_path, "rb") as f:
                 image_bytes = f.read()
@@ -424,6 +440,19 @@ def categorize(
                 extra_context += (
                     f"\nFILENAME / FOLDER (a HINT only — the page content shown is the "
                     f"primary signal; ignore it if it conflicts):\n{path_hint}"
+                )
+            if keyword_evidence:
+                ev_lines = "\n".join(
+                    f"  - {industry}: {', '.join(hits)}"
+                    for industry, hits in sorted(keyword_evidence.items(),
+                                                  key=lambda kv: -len(kv[1]))
+                )
+                extra_context += (
+                    f"\nKEYWORD EVIDENCE (from a scan of the WHOLE document's text, not "
+                    f"just the pages shown — a real signal even if not visible here; "
+                    f"weigh it alongside what you actually see, don't just copy the top "
+                    f"one blindly — a single generic term isn't strong evidence, look "
+                    f"for multiple specific terms for one industry):\n{ev_lines}"
                 )
 
             industries_line = ", ".join(known_industries)
@@ -472,11 +501,22 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                     evidence = (result.get("industry_evidence") or "").strip()
                     MIN_VERIFY_TEXT_CHARS = 40  # if less than this, we can't verify the model's claimed evidence
                     if vi in known_industries and vi != "general":
-                        # Branches are MUTUALLY EXCLUSIVE: either we can't verify (short
-                        # text -> confidence-only, higher bar) OR we require the evidence
-                        # phrase to appear. Previously both ran, so a low-confidence pick
-                        # could still slip through on a coincidental evidence match.
-                        if len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
+                        kw_hits = keyword_evidence.get(vi, [])
+                        # Branches are MUTUALLY EXCLUSIVE, in trust order: (1) independently
+                        # corroborated by the document-wide keyword scan — strongest, doesn't
+                        # depend on the model quoting a verbatim phrase from just the 1-3
+                        # pages it was shown; (2) we can't verify at all (short text ->
+                        # confidence-only, higher bar); (3) require the evidence phrase to
+                        # appear in what vision actually saw. Previously (2)/(3) both could
+                        # run, so a low-confidence pick could still slip through on a
+                        # coincidental evidence match.
+                        if len(kw_hits) >= _MIN_DISTINCT_KEYWORD_HITS:
+                            vision_industry = vi
+                            reasoning_parts.append(
+                                f"Industry '{vi}' corroborated by document-wide keyword "
+                                f"evidence ({len(kw_hits)} distinct terms: {', '.join(kw_hits)})."
+                            )
+                        elif len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
                             # Nothing to verify against (pure-visual content, e.g. CAD/vector
                             # drawings) — trust the model's own confidence, with a HIGHER bar.
                             if conf >= 0.75:
@@ -576,8 +616,6 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             best["route"] = type_to_route.get(doc_type, "text_default")
 
         # ---- Industry detection (content-only, 2 signals order) ----
-        industry_kw = config.get("categorization", {}).get("industry_keywords", {})
-
         # Signal order: vision/text-LLM read (already comes from actual content,
         # whichever branch above ran, and passed the evidence check) > embedded-text
         # keyword scan > configured default. No filename signal at all — same

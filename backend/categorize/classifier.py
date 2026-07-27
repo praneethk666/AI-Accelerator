@@ -73,41 +73,48 @@ def detect_file_type(file_path: str) -> str:
         return 'unknown'
 
 
-# A single hit isn't enough evidence — real finding (27-Jul): "automotive"'s own
-# keyword list includes generic mechanical terms (torque, chassis, engine,
-# transmission, vehicle) that occur naturally in ANY industrial equipment manual,
-# not just automotive ones. Live-tested on a real Toyoda grinding-machine manual:
-# first-match-wins picked "automotive" off "torque" alone (18 occurrences) while
-# zero manufacturing keywords matched at all — a real false positive, not a
-# hypothetical one. Requiring 2+ DISTINCT keyword types (not just occurrences of
-# one) and scoring every industry instead of stopping at the first match fixes
-# both failure modes at once.
-_MIN_DISTINCT_KEYWORD_HITS = 2
+# Weighted, tiered scoring — real finding (27-Jul): a flat keyword list let 3 WEAK
+# automotive terms (torque, chassis, transmission — generic mechanical vocabulary
+# shared with any industrial manual) cluster together and false-positive even past
+# a naive "2 distinct hits" threshold. Each industry's keywords are now tiered in
+# config: strong (brand names, acronyms — genuinely exclusive to that domain; ONE
+# hit is real evidence) vs weak (plausible but shared with adjacent domains; needs
+# more corroboration). Score = 2x per strong hit + 1x per weak hit; a single strong
+# hit (score=2) qualifies, so does 2+ weak hits, but one weak hit alone (score=1)
+# correctly does not.
+_STRONG_WEIGHT = 2
+_WEAK_WEIGHT = 1
+_MIN_INDUSTRY_SCORE = 2
 
 
-def _industry_keyword_evidence(text: str, industry_keywords: Dict[str, list[str]]) -> Dict[str, list[str]]:
-    """Every industry's DISTINCT matched keywords (not just the winner) — used both
-    to pick a fallback industry and, separately, as grounding evidence fed into the
-    vision prompt so the LLM can weigh real document-wide keyword signal alongside
-    what it actually sees on the rendered pages (see categorize() below)."""
+def _industry_keyword_evidence(text: str, industry_keywords: Dict[str, dict]) -> Dict[str, dict]:
+    """Every industry's matched keywords, tier-separated, with a weighted score —
+    used both to pick a fallback industry and, separately, as grounding evidence fed
+    into the vision prompt so the LLM can weigh real document-wide keyword signal
+    alongside what it actually sees on the rendered pages (see categorize() below).
+    Returns {industry: {"strong": [...], "weak": [...], "score": int}}."""
     hay = (text or "").lower()
-    evidence: Dict[str, list[str]] = {}
-    for industry, kws in industry_keywords.items():
-        if not kws:
+    evidence: Dict[str, dict] = {}
+    for industry, tiers in industry_keywords.items():
+        if not isinstance(tiers, dict):
             continue
-        hits = [k for k in kws if re.search(rf"\b{re.escape(k.lower())}\b", hay)]
-        if hits:
-            evidence[industry] = hits
+        strong_hits = [k for k in (tiers.get("strong") or [])
+                       if re.search(rf"\b{re.escape(k.lower())}\b", hay)]
+        weak_hits = [k for k in (tiers.get("weak") or [])
+                     if re.search(rf"\b{re.escape(k.lower())}\b", hay)]
+        if strong_hits or weak_hits:
+            score = _STRONG_WEIGHT * len(strong_hits) + _WEAK_WEIGHT * len(weak_hits)
+            evidence[industry] = {"strong": strong_hits, "weak": weak_hits, "score": score}
     return evidence
 
 
-def _score_industry_from_text(text: str, industry_keywords: Dict[str, list[str]]) -> Optional[str]:
+def _score_industry_from_text(text: str, industry_keywords: Dict[str, dict]) -> Optional[str]:
     evidence = _industry_keyword_evidence(text, industry_keywords)
     best_industry, best_score = None, 0
-    for industry, hits in evidence.items():
-        if len(hits) > best_score:
-            best_industry, best_score = industry, len(hits)
-    if best_score >= _MIN_DISTINCT_KEYWORD_HITS:
+    for industry, ev in evidence.items():
+        if ev["score"] > best_score:
+            best_industry, best_score = industry, ev["score"]
+    if best_score >= _MIN_INDUSTRY_SCORE:
         return best_industry
     return None
 
@@ -404,7 +411,7 @@ def categorize(
         image_bytes: Optional[bytes] = None
         toc_text = ""
         verify_text = ""
-        keyword_evidence: Dict[str, list[str]] = {}
+        keyword_evidence: Dict[str, dict] = {}
         if file_type == "pdf":
             toc_text = extract_toc_text(file_path, max_pages=2)
             image_bytes = _render_pdf_pages_to_stitched_image_bytes(file_path, [0, 1, 2])
@@ -426,6 +433,28 @@ def categorize(
             # source for a raw image — may legitimately be empty.
             verify_text = extract_text(file_path)
 
+        # Resolve industry from the keyword scan FIRST when it's strong enough, before
+        # even looking at what vision says — empirically more reliable for this
+        # specific sub-field (live-tested 27-Jul: 3 real runs, keyword scan correct
+        # all 3 times; vision's own industry pick right ~1/3, otherwise defaulting to
+        # "general"). Vision is still asked below (still needed for document_type,
+        # which genuinely benefits from visual judgment), but its industry answer is
+        # only consulted if the keyword scan didn't already resolve this — free,
+        # deterministic, and doesn't depend on the vision call succeeding at all.
+        _top_kw_industry, _top_kw_score = None, 0
+        for _industry, _ev in keyword_evidence.items():
+            if _ev["score"] > _top_kw_score:
+                _top_kw_industry, _top_kw_score = _industry, _ev["score"]
+        if _top_kw_score >= _MIN_INDUSTRY_SCORE:
+            vision_industry = _top_kw_industry
+            _kw = keyword_evidence[_top_kw_industry]
+            reasoning_parts.append(
+                f"Industry '{_top_kw_industry}' resolved from document-wide keyword "
+                f"evidence (score={_top_kw_score}: strong={_kw['strong']}, "
+                f"weak={_kw['weak']}) before vision was asked — more reliable for "
+                f"this field per live testing."
+            )
+
         if image_bytes is not None:
             # ---- Vision-first (and vision-final) ----
             stitched_bytes = image_bytes
@@ -441,21 +470,49 @@ def categorize(
                     f"\nFILENAME / FOLDER (a HINT only — the page content shown is the "
                     f"primary signal; ignore it if it conflicts):\n{path_hint}"
                 )
-            if keyword_evidence:
+            # Only include keyword evidence in the prompt (and ask about industry at
+            # all) if the keyword scan DIDN'T already resolve it above — no point
+            # burdening the prompt/output with a question we're not going to use the
+            # answer to.
+            ask_industry = vision_industry is None
+            if ask_industry and keyword_evidence:
                 ev_lines = "\n".join(
-                    f"  - {industry}: {', '.join(hits)}"
-                    for industry, hits in sorted(keyword_evidence.items(),
-                                                  key=lambda kv: -len(kv[1]))
+                    f"  - {industry}: strong={ev['strong'] or '-'}, weak={ev['weak'] or '-'}"
+                    for industry, ev in sorted(keyword_evidence.items(),
+                                                key=lambda kv: -kv[1]["score"])
                 )
                 extra_context += (
                     f"\nKEYWORD EVIDENCE (from a scan of the WHOLE document's text, not "
                     f"just the pages shown — a real signal even if not visible here; "
                     f"weigh it alongside what you actually see, don't just copy the top "
-                    f"one blindly — a single generic term isn't strong evidence, look "
-                    f"for multiple specific terms for one industry):\n{ev_lines}"
+                    f"one blindly — a single generic ('weak') term isn't strong evidence, "
+                    f"look for multiple weak terms or one strong term for one "
+                    f"industry):\n{ev_lines}"
                 )
 
             industries_line = ", ".join(known_industries)
+
+            # Only ask about industry when the keyword scan didn't already resolve it
+            # (see ask_industry above) — saves output tokens and avoids vision
+            # potentially disagreeing with an already-reliable free signal.
+            if ask_industry:
+                industry_fields = f"""- "industry": "general", one of the KNOWN industries: {industries_line},
+  OR — only if genuinely justified and none of the known ones fit — a SHORT new
+  industry name not in that list (e.g. "aerospace", "construction"). Propose a new
+  one only when the visible content clearly, specifically indicates a domain none
+  of the known industries cover; this is rare, not a way to avoid picking a known
+  one. Choose a KNOWN specific industry if the visible pages contain clear,
+  specific terminology tied to it, or the KEYWORD EVIDENCE section below (if
+  present) shows real support for one. Default to "general" when nothing supports
+  a specific industry, or the content is genuinely generic/cross-industry
+  (templates, flow charts, etc.) — not just because it looks technical/professional.
+- "industry_evidence": if industry is not "general", quote the EXACT short phrase
+  (2-6 words) of VISIBLE text that justifies it. REQUIRED for a NEW industry name
+  not in the known list — a proposal with no quotable evidence will be discarded.
+  Use "" if industry is "general".
+"""
+            else:
+                industry_fields = ""
 
             prompt = f"""Classify this document by its DOMINANT content across the pages shown.
 
@@ -465,15 +522,7 @@ DOCUMENT TYPES:
 Return ONLY a JSON object with these exact keys:
 - "document_type": EXACTLY ONE value from the list above — a single token (e.g. "invoice").
   Never return a list, never join multiple with "/", never copy a whole line.
-- "industry": "general" OR exactly one of: {industries_line}. Only choose a
-  specific industry if the visible content contains clear, specific
-  terminology tied to that industry — not just because the document looks
-  technical or professional. Default to "general" for generic diagrams,
-  architecture/flow charts, templates, or cross-industry content.
-- "industry_evidence": if industry is not "general", quote the EXACT short
-  phrase (2-6 words) of VISIBLE text that justifies the industry choice.
-  Use "" if industry is "general".
-- "confidence": a float 0-1 reflecting how strongly the visible evidence supports it
+{industry_fields}- "confidence": a float 0-1 reflecting how strongly the visible evidence supports it
 - "reasoning": one short sentence citing the visual evidence you used
 
 Document context:{extra_context}
@@ -495,50 +544,68 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                     doc_type = _coerce_doctype(doc_type, supported_types)
                     conf = float(result.get("confidence", 0.0) or 0.0)
                     reasoning = result.get("reasoning", "Vision classification completed.")
-                    # Keep only a recognized industry; ignore "general"/unknown so the
-                    # downstream cascade can still try filename/text before defaulting.
-                    vi = (result.get("industry") or "").strip().lower()
-                    evidence = (result.get("industry_evidence") or "").strip()
                     MIN_VERIFY_TEXT_CHARS = 40  # if less than this, we can't verify the model's claimed evidence
-                    if vi in known_industries and vi != "general":
-                        kw_hits = keyword_evidence.get(vi, [])
-                        # Branches are MUTUALLY EXCLUSIVE, in trust order: (1) independently
-                        # corroborated by the document-wide keyword scan — strongest, doesn't
-                        # depend on the model quoting a verbatim phrase from just the 1-3
-                        # pages it was shown; (2) we can't verify at all (short text ->
-                        # confidence-only, higher bar); (3) require the evidence phrase to
-                        # appear in what vision actually saw. Previously (2)/(3) both could
-                        # run, so a low-confidence pick could still slip through on a
-                        # coincidental evidence match.
-                        if len(kw_hits) >= _MIN_DISTINCT_KEYWORD_HITS:
-                            vision_industry = vi
-                            reasoning_parts.append(
-                                f"Industry '{vi}' corroborated by document-wide keyword "
-                                f"evidence ({len(kw_hits)} distinct terms: {', '.join(kw_hits)})."
-                            )
-                        elif len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
-                            # Nothing to verify against (pure-visual content, e.g. CAD/vector
-                            # drawings) — trust the model's own confidence, with a HIGHER bar.
-                            if conf >= 0.75:
+                    if not ask_industry:
+                        pass  # already resolved from the keyword scan before this call
+                    else:
+                        # Keep only a recognized/proposed industry; ignore "general" so the
+                        # downstream cascade can still try filename/text before defaulting.
+                        vi = (result.get("industry") or "").strip().lower()
+                        evidence = (result.get("industry_evidence") or "").strip()
+                        if vi and vi in known_industries and vi != "general":
+                            # NOTE: no keyword-corroboration branch here — if the keyword
+                            # scan's TOP score had cleared _MIN_INDUSTRY_SCORE, pre-resolution
+                            # above would have already fired and we'd never reach this code
+                            # (ask_industry would be False). So by construction, every
+                            # industry's keyword score is BELOW threshold whenever we get
+                            # here — verification must come from what vision actually saw.
+                            if len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
+                                # Nothing to verify against (pure-visual content, e.g. CAD/vector
+                                # drawings) — trust the model's own confidence, with a HIGHER bar.
+                                if conf >= 0.75:
+                                    vision_industry = vi
+                                    reasoning_parts.append(
+                                        f"No extractable text to verify industry evidence "
+                                        f"(len={len(verify_text.strip())}); accepted '{vi}' on "
+                                        f"confidence={conf:.2f} alone."
+                                    )
+                                else:
+                                    reasoning_parts.append(
+                                        f"No extractable text to verify industry evidence and "
+                                        f"confidence={conf:.2f} too low to accept '{vi}' unverified."
+                                    )
+                            elif _evidence_supported(evidence, verify_text):
+                                vision_industry = vi
+                            else:
+                                reasoning_parts.append(
+                                    f"Vision claimed industry='{vi}' but evidence '{evidence}' "
+                                    f"wasn't found in extractable text; discarding (falling through "
+                                    f"to keyword scan/default)."
+                                )
+                        elif vi and vi != "general":
+                            # NOVEL industry — not in our configured taxonomy, so no keyword
+                            # list exists to corroborate it. No shortcut available: require
+                            # BOTH a verified quote from what vision actually saw AND high
+                            # confidence. Accepted, but flagged distinctly in the reasoning so
+                            # a human can decide whether to promote it into the permanent
+                            # config (with its own keyword list) rather than it silently
+                            # becoming a one-off unofficial category.
+                            if (len(verify_text.strip()) >= MIN_VERIFY_TEXT_CHARS
+                                    and _evidence_supported(evidence, verify_text)
+                                    and conf >= 0.75):
                                 vision_industry = vi
                                 reasoning_parts.append(
-                                    f"No extractable text to verify industry evidence "
-                                    f"(len={len(verify_text.strip())}); accepted '{vi}' on "
-                                    f"confidence={conf:.2f} alone."
+                                    f"NEW industry candidate '{vi}' (not in the configured "
+                                    f"list) — verified evidence '{evidence}', "
+                                    f"confidence={conf:.2f}. Flagged for human review before "
+                                    f"promoting to a permanent category."
                                 )
                             else:
                                 reasoning_parts.append(
-                                    f"No extractable text to verify industry evidence and "
-                                    f"confidence={conf:.2f} too low to accept '{vi}' unverified."
+                                    f"Vision proposed new industry '{vi}' (not in the "
+                                    f"configured list) but evidence/confidence wasn't strong "
+                                    f"enough to accept unverified; discarding."
                                 )
-                        elif _evidence_supported(evidence, verify_text):
-                            vision_industry = vi
-                        else:
-                            reasoning_parts.append(
-                                f"Vision claimed industry='{vi}' but evidence '{evidence}' "
-                                f"wasn't found in extractable text; discarding (falling through "
-                                f"to keyword scan/default)."
-                            )
                 else:
                     # Fallback if JSON extraction fails
                     doc_type = "unknown"

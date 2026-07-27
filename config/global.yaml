@@ -554,17 +554,45 @@ categorization:
   confidence_thresholds:
     categorization_low_confidence: 0.5
 
+  # Each industry: strong (a single hit is real evidence -- brand names, acronyms,
+  # terms genuinely exclusive to that domain) vs weak (plausible but shared with
+  # adjacent domains -- needs more corroboration). Real finding, 27-Jul: a flat list
+  # let 3 WEAK automotive terms (torque, chassis, transmission) cluster together and
+  # false-positive on a non-automotive industrial manual even past a 2-hit threshold
+  # -- weighted scoring (strong=2, weak=1, need score>=2) fixes this: 3 weak hits
+  # alone score 3 and still pass (real corroboration), but so does 1 strong hit,
+  # while 1 weak hit alone (score=1) correctly does NOT. See _score_industry_from_text.
   industry_keywords:
-    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
-    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
-    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
-    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
-    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
-    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
-    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
-    general:      []
+    automotive:
+      strong: [toyota, ford, bmw, honda, "vehicle identification number", odometer, dealership, "catalytic converter", "spark plug"]
+      weak: [automotive, vehicle, sedan, hatchback, "trim level", "curb weight", "fuel economy", windshield, airbag, powertrain]
+    electronics:
+      strong: [pcb, semiconductor, oscilloscope, microcontroller]
+      weak: [circuit, schematic, voltage, resistor, capacitor, signal, "servo motor", actuator, amplifier]
+    manufacturing:
+      strong: [bom, "bill of materials", "approved manufacturer list"]
+      weak: [assembly, drawing, tolerance, weld, machining, fixture, jig, "part number", "cycle time", "production line", changeover, "work order", "standard operating procedure"]
+    finance:
+      strong: ["balance sheet", "financial statement", gaap, "cash flow statement"]
+      weak: [revenue, profit, ledger, audit, fiscal, equity, "accounts payable", "accounts receivable", "quarterly earnings"]
+    legal:
+      strong: [plaintiff, defendant, arbitration, indemnity, "force majeure"]
+      weak: [contract, agreement, clause, liability, jurisdiction, "governing law", litigation, "intellectual property"]
+    healthcare:
+      strong: [diagnosis, "clinical trial", "informed consent", "icd-10", prescription]
+      weak: [patient, clinical, pharma, dosage, trial, medical, drug, therapy, "adverse event"]
+    retail_ecommerce:
+      strong: [order id, add to cart, sku, cart total]
+      weak: [delivery address, shipped, return policy, mrp]
+    travel_transport:
+      strong: [pnr, boarding point, coach number]
+      weak: [seat number, departure time, ticket number, passenger name, bus operator]
+    entertainment_media:
+      strong: [showtime, movie ticket, multiplex, cinema hall]
+      weak: [screen number, booking id, seat no, show timing]
+    general:
+      strong: []
+      weak: []
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.

@@ -52,7 +52,39 @@ def _make_node(tool: Tool, raw_config: dict):
         with traced_tool(f"step:{tool.name}", input=trace_input) as span:
             try:
                 check_cancelled(state.get("document_id"))
-                result = tool.run(state, raw_config)
+                
+                is_extractor = tool.name in (
+                    "docling_pdf", "pymupdf_pdf", "excel_extraction", 
+                    "ppt_extraction", "word_extraction", "image_extraction", "cad_extract"
+                )
+                cached_blocks = None
+                if is_extractor:
+                    from backend.storage.postgres_store import PostgresStore
+                    pg = PostgresStore()
+                    try:
+                        cached_blocks = pg.get_blocks(state.get("document_id"))
+                    except Exception:
+                        pass
+                    finally:
+                        pg.close()
+
+                if is_extractor and cached_blocks:
+                    logger.info("Using cached blocks for %s (skipping extraction tool run)", state.get("document_id"))
+                    result = dict(state)
+                    result["blocks"] = cached_blocks
+                else:
+                    result = tool.run(state, raw_config)
+                    # Cache blocks immediately if this is an extractor
+                    if is_extractor and result and result.get("blocks"):
+                        from backend.storage.postgres_store import PostgresStore
+                        pg = PostgresStore()
+                        try:
+                            pg.write_blocks(state.get("document_id"), result["blocks"])
+                            logger.info("Cached %d blocks immediately for %s", len(result["blocks"]), state.get("document_id"))
+                        except Exception:
+                            logger.exception("Failed to write immediate blocks to DB")
+                        finally:
+                            pg.close()
             except IngestionCancelledError:
                 raise
             except Exception as exc:  # one tool must not kill the run

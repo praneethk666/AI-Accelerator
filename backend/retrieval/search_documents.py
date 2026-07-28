@@ -202,9 +202,13 @@ def _build_sources(citations: list[dict]) -> list[dict[str, Any]]:
             "snippet":     citation.get("snippet"),
             "image_path":  citation.get("image_path"),
         }
+        # Include slide and sheet in the deduplication key so that citations from different
+        # slides or sheets are not collapsed down to a single generic (document_id, None) entry.
         key = (
             source["document_id"],
             source["page"],
+            source["slide"],
+            source["sheet"],
         )
         if key in seen:
             continue

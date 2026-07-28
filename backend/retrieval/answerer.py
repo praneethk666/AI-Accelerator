@@ -97,28 +97,30 @@ def _is_thin(chunk: dict) -> bool:
 
 def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     """Auto-Merging Retrieval: a chunk too thin or fragmented to be a useful standalone answer
-    source (see _is_thin, or multiple chunks from the same page) is replaced with its FULL PAGE content from
+    source (see _is_thin, or multiple chunks from the same page/slide/sheet) is replaced with its FULL PAGE content from
     document_blocks — same escape hatch the get_page_context agent tool offers,
     but applied automatically rather than depending on an LLM to notice a
     citation looks fragmented and decide to ask for it.
 
-    Caps how many DISTINCT pages get fetched (max_pages) to bound DB round
+    Caps how many DISTINCT pages/slides/sheets get fetched (max_pages) to bound DB round
     trips when many candidate chunks happen to be thin, and dedupes by
-    (document_id, page) since several thin chunks often share one page."""
-    # Count how many retrieved chunks come from each page to detect fragmented pages
+    (document_id, page/slide/sheet) since several thin chunks often share one page."""
+    # Count how many retrieved chunks come from each page/slide/sheet to detect fragmented pages
     page_counts: dict[tuple, int] = {}
     for c in chunks:
         ref = c.get("source_ref") or {}
-        doc_id, page = c.get("document_id"), ref.get("page")
-        if doc_id and page is not None:
-            key = (str(doc_id), page)
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        if doc_id and page_val is not None:
+            key = (str(doc_id), page_val)
             page_counts[key] = page_counts.get(key, 0) + 1
 
     thin_ids = set()
     for c in chunks:
         ref = c.get("source_ref") or {}
-        doc_id, page = c.get("document_id"), ref.get("page")
-        key = (str(doc_id), page) if doc_id and page is not None else None
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        key = (str(doc_id), page_val) if doc_id and page_val is not None else None
         if _is_thin(c) or (key and page_counts.get(key, 0) > 1):
             thin_ids.add(c["chunk_id"])
 
@@ -134,12 +136,13 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
             if chunk["chunk_id"] not in thin_ids or len(cache) >= max_pages:
                 continue
             ref = chunk.get("source_ref") or {}
-            doc_id, page = chunk.get("document_id"), ref.get("page")
-            if not doc_id or page is None:
+            doc_id = chunk.get("document_id")
+            page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+            if not doc_id or page_val is None:
                 continue
             doc_id = str(doc_id)  # psycopg returns uuid.UUID for this column; keep
                                   # the cache key + get_blocks() param a plain str
-            key = (doc_id, page)
+            key = (doc_id, page_val)
             if key in cache:
                 continue
             if store is None:
@@ -147,12 +150,16 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
             try:
                 blocks = store.get_blocks(doc_id)
             except Exception:
-                logger.exception("get_blocks failed expanding thin chunk (doc %s, page %s)",
-                                 doc_id, page)
+                logger.exception("get_blocks failed expanding thin chunk (doc %s, page/slide/sheet %s)",
+                                 doc_id, page_val)
                 continue
             page_blocks = [
                 b for b in blocks
-                if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") == page
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_val or
+                    b["source_ref"].get("slide") == page_val or
+                    b["source_ref"].get("sheet") == page_val
+                )
             ]
             parts = [b.get("text") for b in page_blocks if (b.get("text") or "").strip()]
             if parts:
@@ -168,7 +175,8 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     for chunk in chunks:
         ref = chunk.get("source_ref") or {}
         doc_id = chunk.get("document_id")
-        key = (str(doc_id) if doc_id else doc_id, ref.get("page"))
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        key = (str(doc_id) if doc_id else doc_id, page_val)
         if chunk["chunk_id"] in thin_ids and key in cache:
             c = dict(chunk)
             c["text"] = cache[key]

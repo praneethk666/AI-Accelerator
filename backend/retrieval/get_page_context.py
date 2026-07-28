@@ -53,10 +53,14 @@ class GetPageContextTool:
     def run(self, document_id: str = "", page: int | str | None = None) -> dict[str, Any]:
         if not document_id or page is None:
             return {"error": "document_id and page are both required."}
+        
+        # Try to parse numeric page/slide number; otherwise keep as string (for sheet name)
+        is_numeric = False
         try:
             page_no = int(page)
+            is_numeric = True
         except (TypeError, ValueError):
-            return {"error": f"page must be an integer, got {page!r}."}
+            page_no = str(page).strip()
 
         from backend.storage.postgres_store import PostgresStore
 
@@ -73,18 +77,33 @@ class GetPageContextTool:
                          "check search_documents' citations for the correct document_id."
             }
 
-        page_blocks = [
-            b for b in blocks
-            if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") == page_no
-        ]
+        if is_numeric:
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_no or
+                    b["source_ref"].get("slide") == page_no
+                )
+            ]
+        else:
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("sheet") == page_no
+            ]
+
         if not page_blocks:
-            pages_seen = sorted({
-                b["source_ref"].get("page") for b in blocks
-                if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") is not None
-            })
+            # Reconstruct list of pages/slides/sheets for informative error message
+            available = []
+            for b in blocks:
+                ref = b.get("source_ref")
+                if isinstance(ref, dict):
+                    val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+                    if val is not None and val not in available:
+                        available.append(val)
+            
             return {
-                "error": f"No content found on page {page_no} of this document.",
-                "pages_available": pages_seen[:20],
+                "error": f"No content found on page/slide/sheet {page_no} of this document.",
+                "pages_available": sorted(available)[:20],
             }
 
         parts = [b.get("text") for b in page_blocks if (b.get("text") or "").strip()]

@@ -219,7 +219,7 @@ def build_pipeline(registry: ToolRegistry, config: PipelineConfig):
         return route in allowed
 
     def _conditional(step: str) -> bool:
-        # skippable -> a branch point precedes it (route gate or extractor dispatch)
+        # skippable -> a branch point precedes it (route gate, extractor dispatch)
         return step in gates or _is_extractor(step)
 
     sg = StateGraph(PipelineState)

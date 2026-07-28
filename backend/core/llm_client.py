@@ -119,6 +119,13 @@ def get_llm(config: dict, max_tokens: int | None = None,
         # OpenAI-compatible provider is configured.
         if llm_cfg.get("extra_body"):
             kw["extra_body"] = llm_cfg["extra_body"]
+        if llm_cfg.get("top_p") is not None:
+            kw["top_p"] = llm_cfg["top_p"]
+        if "streaming" in llm_cfg:
+            kw["streaming"] = llm_cfg["streaming"]
+        elif "stream" in llm_cfg:
+            kw["streaming"] = llm_cfg["stream"]
+        kw["timeout"] = 30.0  # Set standard 30s timeout to protect against indefinite hangs
         llm = ChatOpenAI(model=model, **_with_key(kw, "api_key", api_key))
         # Structured Outputs: if a json_schema is configured and we're on a native OpenAI
         # endpoint (no base_url = not vLLM/OpenRouter), bind the schema so the model is

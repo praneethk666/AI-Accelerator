@@ -8,7 +8,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
-  patchAgentSession, stageFile, getFile, API_BASE_URL,
+  patchAgentSession, stageFile, getFile, API_BASE_URL, getFiles,
 } from '../api';
 import {
   PaperAirplaneIcon,
@@ -219,6 +219,16 @@ const ChatPage = () => {
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
   const [showChatScrollDown, setShowChatScrollDown] = useState(false);
+  const [allFiles, setAllFiles] = useState([]);
+
+  const loadFiles = async () => {
+    try {
+      const res = await getFiles();
+      setAllFiles(res.data || []);
+    } catch (err) {
+      console.error('Failed to load files:', err);
+    }
+  };
 
   const checkChatScroll = () => {
     const el = chatContainerRef.current;
@@ -282,7 +292,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(); }, []);
+  useEffect(() => { loadSessions(); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {
@@ -463,13 +473,36 @@ const ChatPage = () => {
       setSessionLoading(reqSession, false);
     }
   };
-
   // Extract page-level sources from a response and open/close the page viewer.
   // Reuses parseSources (slide/sheet -> page remap) + buildViewableSources
   // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
   // per-message "View Source" button in MessageRow.
   const updatePageViewer = (data) => {
     const allSources = parseSources(data.tool_calls || []);
+
+    const toolCalls = data.tool_calls || [];
+    for (const call of toolCalls) {
+      if (call.name === 'excel_tst_tool') {
+        const filenameOrId = call.args?.filename_or_id;
+        const sheetName = call.args?.sheet_name;
+        if (filenameOrId) {
+          const matched = allFiles.find(
+            f => f.id === filenameOrId || f.document_id === filenameOrId ||
+                 f.filename === filenameOrId || f.filename?.toLowerCase() === filenameOrId.toLowerCase()
+          );
+          if (matched) {
+            allSources.push({
+              document_id: matched.document_id || matched.id,
+              filename: matched.filename,
+              page: sheetName || 1,
+              sheet: sheetName || null,
+              score: 1.0
+            });
+          }
+        }
+      }
+    }
+
     const viewableSources = buildViewableSources(allSources);
 
     if (viewableSources.length > 0) {
@@ -1598,62 +1631,90 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
               {/* Tool calls this turn (reads that ran, or a blocked write) */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {msg.toolCalls.map((call, i) => {
-                    const isSearch = call.name === 'search_documents';
-                    const isList = call.name === 'list_documents';
+                  {(() => {
+                    const grouped = msg.toolCalls.reduce((acc, call) => {
+                      const existing = acc.find(g => g.name === call.name);
+                      if (existing) {
+                        existing.count += 1;
+                        existing.calls.push(call);
+                      } else {
+                        acc.push({ name: call.name, count: 1, calls: [call] });
+                      }
+                      return acc;
+                    }, []);
 
-                    if (isSearch && sources.length > 0) {
+                    return grouped.map((group, i) => {
+                      const isSearch = group.name === 'search_documents';
+                      const isList = group.name === 'list_documents';
+
+                      if (isSearch && sources.length > 0) {
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              setIsSearchExpanded(!isSearchExpanded);
+                              setIsListExpanded(false); // collapse other
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                          >
+                            <WrenchScrewdriverIcon className="h-3 w-3" />
+                            <span className="font-mono">{group.name}</span>
+                            {group.count > 1 && (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {group.count}
+                              </span>
+                            )}
+                            {isSearchExpanded ? (
+                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                            ) : (
+                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                            )}
+                          </button>
+                        );
+                      }
+
+                      if (isList) {
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              setIsListExpanded(!isListExpanded);
+                              setIsSearchExpanded(false); // collapse other
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                          >
+                            <WrenchScrewdriverIcon className="h-3 w-3" />
+                            <span className="font-mono">{group.name}</span>
+                            {group.count > 1 && (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {group.count}
+                              </span>
+                            )}
+                            {isListExpanded ? (
+                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                            ) : (
+                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                            )}
+                          </button>
+                        );
+                      }
+
                       return (
-                        <button
+                        <span
                           key={i}
-                          onClick={() => {
-                            setIsSearchExpanded(!isSearchExpanded);
-                            setIsListExpanded(false); // collapse other
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                          className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
                         >
-                          <WrenchScrewdriverIcon className="h-3 w-3" />
-                          <span className="font-mono">{call.name}</span>
-                          {isSearchExpanded ? (
-                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                          ) : (
-                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                          <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
+                          <span className="font-mono">{group.name}</span>
+                          {group.count > 1 && (
+                            <span className="text-[10px] text-blue-300 bg-blue-500/10 border border-blue-500/10 px-1.5 py-0.5 rounded font-sans font-medium">
+                              x{group.count}
+                            </span>
                           )}
-                        </button>
+                        </span>
                       );
-                    }
-
-                    if (isList) {
-                      return (
-                        <button
-                          key={i}
-                          onClick={() => {
-                            setIsListExpanded(!isListExpanded);
-                            setIsSearchExpanded(false); // collapse other
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
-                        >
-                          <WrenchScrewdriverIcon className="h-3 w-3" />
-                          <span className="font-mono">{call.name}</span>
-                          {isListExpanded ? (
-                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                          ) : (
-                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
-                          )}
-                        </button>
-                      );
-                    }
-
-                    return (
-                      <span
-                        key={i}
-                        className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
-                      >
-                        <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
-                        <span className="font-mono">{call.name}</span>
-                      </span>
-                    );
-                  })}
+                    });
+                  })()}
                 </div>
               )}
 

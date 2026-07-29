@@ -290,7 +290,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                         "options": args.get("options") or [],
                     }
                 tool_messages.append(ToolMessage(
-                    content="awaiting user selection", tool_call_id=call_id,
+                    content="awaiting user selection", tool_call_id=call_id, name=name,
                 ))
                 continue
 
@@ -302,7 +302,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 tool_messages.append(ToolMessage(
                     content="blocked: this action writes data and needs human "
                             "approval before it can run.",
-                    tool_call_id=call_id,
+                    tool_call_id=call_id, name=name,
                 ))
                 continue
 
@@ -325,7 +325,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                         )
                 span["output"] = result
             tool_messages.append(ToolMessage(
-                content=json.dumps(result, default=str), tool_call_id=call_id,
+                content=json.dumps(result, default=str), tool_call_id=call_id, name=name,
             ))
 
         return {"messages": tool_messages, "pending_approval": pending or None,
@@ -413,8 +413,16 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
             pruned.append(msg)
             continue
 
+        tool_name = getattr(msg, "name", None)
+        if tool_name == "list_documents":
+            max_chars = 15000
+        elif tool_name == "get_page_context":
+            max_chars = 25000
+        else:
+            max_chars = _TOOL_MSG_MAX_CHARS
+
         # Small messages don't need processing.
-        if len(msg.content) <= _TOOL_MSG_MAX_CHARS:
+        if len(msg.content) <= max_chars:
             pruned.append(msg)
             continue
 
@@ -452,6 +460,7 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
                     # Unknown JSON format.
                     # Remove commonly huge fields while preserving everything else.
                     compact = dict(data)
+                    tool_name = getattr(msg, "name", None)
 
                     for key in (
                         "chunks",
@@ -465,6 +474,8 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
                         "metadata",
                         "debug",
                     ):
+                        if key == "documents" and tool_name == "list_documents":
+                            continue
                         compact.pop(key, None)
 
                     new_content = json.dumps(
@@ -475,7 +486,7 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
 
         except Exception:
             # Not JSON -> use character truncation.
-            new_content = msg.content[:_TOOL_MSG_MAX_CHARS]
+            new_content = msg.content[:max_chars]
 
             last_brace = max(
                 new_content.rfind("}"),
@@ -488,9 +499,9 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
             new_content += "\n...[truncated for context efficiency]"
 
         # Final safeguard.
-        if len(new_content) > _TOOL_MSG_MAX_CHARS:
+        if len(new_content) > max_chars:
             new_content = (
-                new_content[:_TOOL_MSG_MAX_CHARS]
+                new_content[:max_chars]
                 + "\n...[truncated for context efficiency]"
             )
 

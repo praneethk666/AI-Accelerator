@@ -94,6 +94,187 @@ os.makedirs(_PAGES_DIR, exist_ok=True)
 app.mount("/pages", StaticFiles(directory=_PAGES_DIR), name="pages")
 
 
+def get_unique_path(directory: str, filename: str) -> str:
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    unique_path = os.path.join(directory, filename)
+    while os.path.exists(unique_path):
+        unique_path = os.path.join(directory, f"{base}_{counter}{ext}")
+        counter += 1
+    return unique_path
+
+
+def auto_ingestion_loop() -> None:
+    import time
+    logger.info("Auto-ingestion watcher thread loop started.")
+    while True:
+        try:
+            # Note: _config is reloaded in-place by _reload_pipeline()
+            cfg = _config.get("auto_ingestion") or {}
+            enabled = cfg.get("enabled", False)
+            
+            if enabled:
+                watch_dir_raw = cfg.get("watch_dir", "auto_ingest")
+                poll_interval = cfg.get("poll_interval", 10)
+                on_success = cfg.get("on_success", "move")
+                on_failure = cfg.get("on_failure", "move")
+                
+                # Resolve watch_dir relative to the project root
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                watch_dir = os.path.abspath(watch_dir_raw) if os.path.isabs(watch_dir_raw) else os.path.abspath(os.path.join(base_dir, watch_dir_raw))
+                
+                if not os.path.exists(watch_dir):
+                    try:
+                        os.makedirs(watch_dir, exist_ok=True)
+                        logger.info("Created watch directory: %s", watch_dir)
+                    except Exception as e:
+                        logger.error("Failed to create watch directory %s: %s", watch_dir, e)
+                        time.sleep(poll_interval)
+                        continue
+                
+                # Ensure destination folders for move operations exist
+                processed_dir = os.path.join(watch_dir, "processed")
+                failed_dir = os.path.join(watch_dir, "failed")
+                if on_success == "move":
+                    os.makedirs(processed_dir, exist_ok=True)
+                if on_failure == "move":
+                    os.makedirs(failed_dir, exist_ok=True)
+                
+                # Scan watch directory for files
+                for item in sorted(os.listdir(watch_dir)):
+                    src_path = os.path.join(watch_dir, item)
+                    
+                    # Skip subdirectories (like processed/failed)
+                    if os.path.isdir(src_path):
+                        continue
+                    
+                    # Skip hidden files
+                    if item.startswith("."):
+                        continue
+                    
+                    # Wait for copy to complete (file size must be stable)
+                    try:
+                        initial_size = os.path.getsize(src_path)
+                        time.sleep(2)
+                        current_size = os.path.getsize(src_path)
+                        if initial_size != current_size or current_size == 0:
+                            continue
+                    except Exception:
+                        continue  # File might have been renamed or deleted
+                    
+                    # Map to known file type
+                    file_type = _file_type(item)
+                    if file_type == "unknown":
+                        logger.warning("Auto-ingestion: Unsupported file type for %s. Moving/Deleting file.", item)
+                        if on_failure == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(failed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move unsupported file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to remove unsupported file %s: %s", item, e)
+                        continue
+                    
+                    logger.info("Auto-ingestion: Processing file %s...", item)
+                    document_id = str(uuid.uuid4())
+                    print(f"\n=== Auto-Ingestion: Starting Ingestion of '{item}' (doc: {document_id}) ===", flush=True)
+                    t0 = time.time()
+                    
+                    dest = os.path.join(UPLOAD_DIR, f"{document_id}_{item}")
+                    os.makedirs(UPLOAD_DIR, exist_ok=True)
+                    
+                    try:
+                        shutil.copy2(src_path, dest)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to copy %s to upload dir: %s", item, e)
+                        print(f"=== Auto-Ingestion: Failed to copy '{item}' to upload dir ===\n", flush=True)
+                        continue
+                    
+                    # Insert record into DB as processing
+                    pg = PostgresStore()
+                    try:
+                        pg.insert_document(document_id, item, file_type, dest)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to insert document record for %s: %s", item, e)
+                        print(f"=== Auto-Ingestion: Failed to record database entry for '{item}' ===\n", flush=True)
+                        pg.close()
+                        if os.path.exists(dest):
+                            try:
+                                os.remove(dest)
+                            except Exception:
+                                pass
+                        continue
+                    finally:
+                        pg.close()
+                    
+                    # Run the ingestion synchronously in this thread
+                    try:
+                        _run_ingestion(document_id, dest, file_type, item)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Exception while ingesting %s: %s", item, e)
+                    
+                    # Check final ingestion status from database
+                    status = "failed"
+                    pg = PostgresStore()
+                    try:
+                        doc = pg.get_document(document_id)
+                        if doc:
+                            status = doc.get("status", "failed")
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to check final status of %s: %s", item, e)
+                    finally:
+                        pg.close()
+                    
+                    elapsed = time.time() - t0
+                    if status == "ready":
+                        logger.info("Auto-ingestion: Ingested %s successfully.", item)
+                        print(f"=== Auto-Ingestion: Ingested '{item}' successfully in {elapsed:.1f}s ===\n", flush=True)
+                        if on_success == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(processed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move successful file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to delete successful file %s: %s", item, e)
+                    else:
+                        logger.error("Auto-ingestion: Failed to ingest %s (status=%s).", item, status)
+                        print(f"=== Auto-Ingestion: Failed to ingest '{item}' in {elapsed:.1f}s (status: {status}) ===\n", flush=True)
+                        if on_failure == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(failed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move failed file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to delete failed file %s: %s", item, e)
+            
+        except Exception as e:
+            logger.exception("Error in auto-ingestion loop: %s", e)
+        
+        # Determine poll interval from config or default to 10
+        try:
+            cfg = _config.get("auto_ingestion") or {}
+            poll_interval = int(cfg.get("poll_interval", 10))
+        except Exception:
+            poll_interval = 10
+            
+        time.sleep(max(1, poll_interval))
+
+
+def start_auto_ingestion_watcher() -> None:
+    import threading
+    t = threading.Thread(target=auto_ingestion_loop, name="AutoIngestionWatcher", daemon=True)
+    t.start()
+
+
 @app.on_event("startup")
 def on_startup():
     """Verify connections and auto-initialize database schema if missing."""
@@ -157,6 +338,12 @@ def on_startup():
         logger.info("Qdrant connection verified successfully (Endpoint: %s)!", qdrant_url)
     except Exception as e:
         logger.error("Qdrant connection failed: %s", e)
+
+    # 3. Start Auto-Ingestion watch thread
+    try:
+        start_auto_ingestion_watcher()
+    except Exception as e:
+        logger.error("Failed to start auto-ingestion watcher: %s", e)
 
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
@@ -274,6 +461,12 @@ _SETTINGS_MAP = {
     "embeddings_dense_model": ["embeddings", "dense_model"],
     "embeddings_reranker_provider": ["embeddings", "reranker_provider"],
     "embeddings_reranker_model": ["embeddings", "reranker_model"],
+    # auto-ingestion
+    "auto_ingestion_enabled": ["auto_ingestion", "enabled"],
+    "auto_ingestion_watch_dir": ["auto_ingestion", "watch_dir"],
+    "auto_ingestion_poll_interval": ["auto_ingestion", "poll_interval"],
+    "auto_ingestion_on_success": ["auto_ingestion", "on_success"],
+    "auto_ingestion_on_failure": ["auto_ingestion", "on_failure"],
 }
 
 # Optional model-override fields: a BLANK value means "inherit the global llm block",
@@ -413,6 +606,11 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
                          document_id)
 
     def on_step(entry: dict, snapshot: dict) -> None:
+        # Print to stdout console for live visibility
+        ms = entry.get("ms")
+        dur = f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "?"
+        print(f"  · {entry.get('step'):<24} {entry.get('status'):<8} {dur}", flush=True)
+
         if pg is None:
             return
         metrics = snapshot.get("metrics", []) or []

@@ -621,3 +621,8 @@ database:
   postgres_url: ${POSTGRES_URL}
   qdrant_url: ${QDRANT_URL}
   qdrant_collection: chunks
+
+auto_ingestion:
+  enabled: true
+  watch_dir: auto_ingest
+  poll_interval: 10

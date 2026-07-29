@@ -359,6 +359,34 @@ const SettingsPage = () => {
               </section>
             </div>
 
+            {/* Auto Ingestion */}
+            <section className="mt-8 pt-6 border-t border-slate-700/60">
+              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Auto Ingestion (Directory Watcher)</h2>
+              <div className="grid md:grid-cols-2 gap-x-8">
+                <div>
+                  <Field label="Enable Auto Ingestion" hint="Watch a local folder and automatically process any supported files dropped into it.">
+                    <Toggle value={!!s.auto_ingestion_enabled} onChange={(v) => set('auto_ingestion_enabled', v)} on="Enabled" off="Disabled" />
+                  </Field>
+                  <Field label="Watch Directory Path" hint="Folder path to monitor (absolute path, or relative to project root).">
+                    <input className={inputCls} placeholder="e.g. auto_ingest" value={s.auto_ingestion_watch_dir ?? ''} onChange={(e) => set('auto_ingestion_watch_dir', e.target.value)} />
+                  </Field>
+                </div>
+                <div>
+                  <Field label="Poll Interval (seconds)" hint="How often to scan the folder for new files.">
+                    <input type="number" className={inputCls} value={s.auto_ingestion_poll_interval ?? ''} onChange={(e) => set('auto_ingestion_poll_interval', e.target.value === '' ? null : Number(e.target.value))} />
+                  </Field>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="On Success" hint="Action after successful ingest.">
+                      <Select value={s.auto_ingestion_on_success || 'move'} onChange={(v) => set('auto_ingestion_on_success', v)} options={['move', 'delete']} />
+                    </Field>
+                    <Field label="On Failure" hint="Action after failed ingest.">
+                      <Select value={s.auto_ingestion_on_failure || 'move'} onChange={(v) => set('auto_ingestion_on_failure', v)} options={['move', 'delete']} />
+                    </Field>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             {/* Embeddings & Reranking */}
             <section className="mt-8 pt-6 border-t border-slate-700/60">
               <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Embeddings & Reranking</h2>

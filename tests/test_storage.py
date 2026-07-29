@@ -45,7 +45,7 @@ def _qdrant_up() -> bool:
 
         from backend.storage.qdrant_store import url_from_env
 
-        QdrantClient(url=url_from_env()).get_collections()
+        QdrantClient(url=url_from_env(), api_key=os.getenv("QDRANT_API_KEY")).get_collections()
         return True
     except Exception:
         return False

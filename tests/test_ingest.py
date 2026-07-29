@@ -159,7 +159,7 @@ def _stack_up() -> bool:
         from backend.storage.postgres_store import dsn_from_env
         from backend.storage.qdrant_store import url_from_env
         psycopg.connect(dsn_from_env(), connect_timeout=2).close()
-        QdrantClient(url=url_from_env()).get_collections()
+        QdrantClient(url=url_from_env(), api_key=os.getenv("QDRANT_API_KEY")).get_collections()
         return True
     except Exception:
         return False

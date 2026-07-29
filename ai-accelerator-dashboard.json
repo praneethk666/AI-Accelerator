@@ -3262,7 +3262,7 @@
                       "width": 12,
                       "height": 8,
                       "element": {
-                        "kind": "ElementReference",
+                        "kind": "ElementReference", 
                         "name": "panel-75"
                       }
                     }

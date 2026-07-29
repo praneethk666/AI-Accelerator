@@ -1456,6 +1456,55 @@ const parseSources = (toolCalls) => {
   return sources;
 };
 
+// Best-effort: list_documents' tool result is a JSON string of
+// {count, returned, documents:[{filename, ...}], note?}. Pull out the
+// returned filenames and counts so the UI can render what was actually listed.
+const parseListedDocuments = (toolCalls) => {
+  const documents = [];
+  let note = "";
+  let totalCount = 0;
+  let returnedCount = 0;
+
+  for (const call of toolCalls || []) {
+    if (call.name !== 'list_documents' || typeof call.result !== 'string') continue;
+    try {
+      const parsed = JSON.parse(call.result);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.count === 'number' && Number.isFinite(parsed.count)) {
+          totalCount = Math.max(totalCount, parsed.count);
+        }
+        if (typeof parsed.returned === 'number' && Number.isFinite(parsed.returned)) {
+          returnedCount = Math.max(returnedCount, parsed.returned);
+        }
+        if (Array.isArray(parsed.documents)) {
+          documents.push(...parsed.documents);
+        }
+        if (!note && typeof parsed.note === 'string') {
+          note = parsed.note;
+        }
+      }
+    } catch {
+      // not JSON (e.g. a blocked/error string) - nothing to show
+    }
+  }
+
+  const seen = new Set();
+  const uniqueDocuments = [];
+  for (const doc of documents) {
+    const key = `${doc?.document_id || ""}::${doc?.filename || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueDocuments.push(doc);
+  }
+
+  return {
+    documents: uniqueDocuments,
+    note,
+    totalCount: totalCount || uniqueDocuments.length,
+    returnedCount: returnedCount || uniqueDocuments.length,
+  };
+};
+
 const CustomCodeBlock = ({ language, value }) => {
   const [copied, setCopied] = useState(false);
   const [showScrollDown, setShowScrollDown] = useState(false);
@@ -1609,6 +1658,12 @@ const CustomCodeBlock = ({ language, value }) => {
 const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls) : [];
+  const listedDocuments = !isUser ? parseListedDocuments(msg.toolCalls) : {
+    documents: [],
+    note: "",
+    totalCount: 0,
+    returnedCount: 0,
+  };
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
 
@@ -1701,6 +1756,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                       }
 
                       if (isList) {
+                        const listCount = listedDocuments.totalCount || listedDocuments.returnedCount || listedDocuments.documents.length;
                         return (
                           <button
                             key={i}
@@ -1709,10 +1765,14 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                               setIsSearchExpanded(false); // collapse other
                             }}
                             className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
-                          >
+                            >
                             <WrenchScrewdriverIcon className="h-3 w-3" />
                             <span className="font-mono">{group.name}</span>
-                            {group.count > 1 && (
+                            {listCount > 0 ? (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {listCount}
+                              </span>
+                            ) : group.count > 1 && (
                               <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
                                 {group.count}
                               </span>
@@ -1748,19 +1808,22 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
               {/* Inline citation list (expanded from list_documents) */}
               {isListExpanded && (
                 <div className="mt-3 space-y-1.5 max-w-md bg-slate-900/40 border border-slate-800 rounded-xl p-3">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Cited Documents</p>
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Listed Documents</p>
                   {(() => {
-                    const uniqueFiles = Array.from(new Set(sources.map(s => s.filename)));
-                    if (uniqueFiles.length === 0) {
-                      return <p className="text-xs text-gray-500 italic p-1">No documents were cited in this search query.</p>;
+                    const docs = listedDocuments.documents || [];
+                    if (docs.length === 0) {
+                      return <p className="text-xs text-gray-500 italic p-1">No documents were returned by list_documents.</p>;
                     }
-                    return uniqueFiles.map((filename, idx) => (
+                    return docs.map((doc, idx) => (
                       <div key={idx} className="flex items-center gap-2.5 text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded px-3 py-2">
                         <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
-                        <span className="font-medium truncate">{filename}</span>
+                        <span className="font-medium truncate">{doc.filename || doc.document_id || 'Untitled document'}</span>
                       </div>
                     ));
                   })()}
+                  {listedDocuments.note && (
+                    <p className="text-[10px] text-gray-500 mt-2">{listedDocuments.note}</p>
+                  )}
                 </div>
               )}
 

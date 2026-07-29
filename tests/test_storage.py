@@ -77,6 +77,13 @@ def test_chunk_round_trips_through_both_stores():
     chunk_id = str(uuid.uuid4())
     pg = PostgresStore()
     vectors = QdrantStore(DIM, collection="chunks_test")  # throwaway collection
+    # Create payload index for 'industry' (required by strict Qdrant Cloud setups for filtering)
+    from qdrant_client.models import PayloadSchemaType
+    vectors.client.create_payload_index(
+        collection_name="chunks_test",
+        field_name="industry",
+        field_schema=PayloadSchemaType.KEYWORD
+    )
     chunk = {
         "chunk_id": chunk_id,
         "document_id": doc_id,

@@ -7,7 +7,7 @@ import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import {
-  sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
+  sendAgentChat, streamAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
   patchAgentSession, stageFile, getFile, API_BASE_URL, getFiles,
 } from '../api';
 import {
@@ -268,6 +268,16 @@ const ChatPage = () => {
   const sessionIdRef = useRef(sessionId);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
+  const streamControllerRef = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+
   // Close dropdown on click outside (uses document listener, no shared ref)
   useEffect(() => {
     const handler = (e) => {
@@ -461,25 +471,245 @@ const ChatPage = () => {
   // next message so the agent proceeds scoped to that choice.
   const handleClarify = async (optionText, msgIdx) => {
     const reqSession = sessionId;
-    // Mark the originating prompt answered so its option buttons go inert (otherwise
-    // they stay clickable and a stray click re-fires the choice as a whole new turn).
     setMessages((prev) => [
       ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
       { role: 'user', content: optionText },
     ]);
     setSessionLoading(reqSession, true);
     setError(null);
+
+    const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Add empty placeholder assistant message
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        pending: [],
+        question: null,
+        options: [],
+        tokenUsage: null,
+        traceId: null,
+        messageId,
+        isStreaming: true,
+        originalText: optionText,
+      },
+    ]);
+
     try {
-      const res = await sendAgentChat(optionText, reqSession, false);
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, optionText)]);
-      updatePageViewer(res.data);
-      loadSessions();
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        optionText,
+        reqSession,
+        messageId,
+        false,
+        null,
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: m.content + text } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: text,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [{ name, args: {}, status: 'running' }],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: (m.toolCalls || []).map((t) =>
+                          t.name === name ? { ...t, status: 'completed' } : t
+                        ),
+                      }
+                    : m
+                );
+              } else {
+                return prev;
+              }
+            });
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              loadSessions();
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: fullText,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: false,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            loadSessions();
+          },
+          onMetadata: (metadata) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        status: metadata.status,
+                        content: metadata.answer,
+                        toolCalls: metadata.tool_calls || [],
+                        tokenUsage: metadata.token_usage || null,
+                        traceId: metadata.trace_id || null,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    status: metadata.status,
+                    content: metadata.answer,
+                    toolCalls: metadata.tool_calls || [],
+                    tokenUsage: metadata.token_usage || null,
+                    traceId: metadata.trace_id || null,
+                    messageId,
+                    isStreaming: false,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            updatePageViewer(metadata);
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        content: `Error: ${errMsg}`,
+                        isError: true,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: `Error: ${errMsg}`,
+                    isError: true,
+                    isStreaming: false,
+                    messageId,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            setError(errMsg);
+          },
+        }
+      );
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Clarify error:', err);
-      if (sessionIdRef.current === reqSession) setError(err.message);
-    } finally {
+      if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setError(err.message);
     }
   };
   // Extract page-level sources from a response and open/close the page viewer.
@@ -552,28 +782,245 @@ const ChatPage = () => {
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
+    // Generate messageId for de-duplication and state mapping
+    const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Add empty placeholder assistant message
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        pending: [],
+        question: null,
+        options: [],
+        tokenUsage: null,
+        traceId: null,
+        messageId,
+        isStreaming: true,
+        originalText: sentText,
+        isIngesting: !!attachedFile,
+      },
+    ]);
+
     try {
-      const res = await sendAgentChat(sentText, reqSession, false);
-      // Drop the reply if the user switched conversations while it was in flight —
-      // it's already persisted server-side under reqSession.
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, sentText)]);
-      updatePageViewer(res.data);
-      loadSessions();
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        sentText,
+        reqSession,
+        messageId,
+        false,
+        null,
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: m.content + text } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: text,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [{ name, args: {}, status: 'running' }],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: (m.toolCalls || []).map((t) =>
+                          t.name === name ? { ...t, status: 'completed' } : t
+                        ),
+                      }
+                    : m
+                );
+              } else {
+                return prev;
+              }
+            });
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              loadSessions();
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: fullText,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: false,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            loadSessions();
+          },
+          onMetadata: (metadata) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        status: metadata.status,
+                        content: metadata.answer,
+                        toolCalls: metadata.tool_calls || [],
+                        tokenUsage: metadata.token_usage || null,
+                        traceId: metadata.trace_id || null,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    status: metadata.status,
+                    content: metadata.answer,
+                    toolCalls: metadata.tool_calls || [],
+                    tokenUsage: metadata.token_usage || null,
+                    traceId: metadata.trace_id || null,
+                    messageId,
+                    isStreaming: false,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            updatePageViewer(metadata);
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        content: `Error: ${errMsg}`,
+                        isError: true,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: `Error: ${errMsg}`,
+                    isError: true,
+                    isStreaming: false,
+                    messageId,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            setError(errMsg);
+          },
+        }
+      );
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Chat error:', err);
       if (sessionIdRef.current !== reqSession) return;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
-          isError: true,
-        },
-      ]);
-      setError(err.message);
-    } finally {
       setSessionLoading(reqSession, false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setError(err.message);
     }
   };
 
@@ -585,17 +1032,126 @@ const ChatPage = () => {
     }
     const reqSession = sessionId;
     setSessionLoading(reqSession, true);
+
+    // Re-use the existing messageId or generate one if not present
+    const messageId = msg.messageId || (crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    // Reset this message state to prepare for streaming approval response
+    setMessages((prev) =>
+      prev.map((m, i) =>
+        i === msgIdx
+          ? {
+              ...m,
+              content: '',
+              toolCalls: [],
+              pending: [],
+              question: null,
+              options: [],
+              tokenUsage: null,
+              traceId: null,
+              messageId,
+              isStreaming: true,
+            }
+          : m
+      )
+    );
+
     try {
-      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || []);
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) =>
-        prev.map((m, i) => (i === msgIdx ? agentMessageFromResponse(res.data, msg.originalText) : m))
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        msg.originalText,
+        reqSession,
+        messageId,
+        true,
+        msg.pending || [],
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId ? { ...m, content: m.content + text } : m
+              )
+            );
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                    }
+                  : m
+              )
+            );
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      toolCalls: (m.toolCalls || []).map((t) =>
+                        t.name === name ? { ...t, status: 'completed' } : t
+                      ),
+                    }
+                  : m
+              )
+            );
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              loadSessions();
+              return;
+            }
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+              )
+            );
+            loadSessions();
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      content: `Error: ${errMsg}`,
+                      isError: true,
+                      isStreaming: false,
+                    }
+                  : m
+              )
+            );
+            setError(errMsg);
+          },
+        }
       );
-      updatePageViewer(res.data);
-      loadSessions();
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Approval error:', err);
-      if (sessionIdRef.current === reqSession) setError(err.message);
+      if (sessionIdRef.current !== reqSession) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to execute approved actions.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setError(err.message);
     } finally {
       setSessionLoading(reqSession, false);
     }
@@ -796,23 +1352,22 @@ const ChatPage = () => {
                 onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })} />
             ))}
 
-            {loading && (() => {
-              let text = 'Thinking...';
-              if (messages.length > 0) {
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg.role === 'assistant' && lastMsg.pending?.some(p => p.name === 'ingest_document')) {
-                  text = 'Ingesting...';
-                } else if (lastMsg.role === 'user' && (lastMsg.content?.includes('📎') || lastMsg.content?.includes('[Attached file:'))) {
-                  text = 'Ingesting...';
-                }
-              }
-              return (
-                <div className="flex items-center gap-2 text-gray-500 text-sm py-4">
-                  <ArrowPathIcon className="h-4 w-4 animate-spin" />
-                  {text}
+            {loading && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
+              <div className="py-3 flex justify-start">
+                <div className="max-w-full w-full">
+                  <div className="flex gap-3">
+                    <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center text-slate-400 text-sm py-1">
+                        <span className="font-medium">
+                          Thinking<span className="animate-dots"></span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              );
-            })()}
+              </div>
+            )}
 
             <div ref={messagesEndRef} />
           </div>
@@ -1683,6 +2238,16 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
           <div className="flex gap-3">
             <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
             <div className="min-w-0 flex-1">
+              {!msg.content && (
+                <div className="flex items-center text-slate-400 text-sm py-1">
+                  <span className="font-medium">
+                    {msg.isIngesting
+                      ? 'Ingesting'
+                      : 'Thinking'}
+                    <span className="animate-dots"></span>
+                  </span>
+                </div>
+              )}
               {msg.content && (
                 <div
                   className={`prose prose-invert prose-sm max-w-none leading-relaxed w-full overflow-x-auto ${msg.isError ? 'text-red-300' : 'text-gray-100'

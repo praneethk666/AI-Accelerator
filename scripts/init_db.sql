@@ -111,4 +111,45 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc       ON chunks (document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_img       ON chunks (image_path) WHERE image_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_tokens    ON chunks (document_id, token_count);
 CREATE INDEX IF NOT EXISTS idx_conversations    ON conversations (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_session_created ON conversations (session_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_conversations_session_role_created ON conversations (session_id, role, created_at, id) WHERE role = 'user';
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status);
+
+-- ── Guardrails (v5 Tables) ──────────────────────────────────────────────────
+-- Operational guardrail events log (all events)
+CREATE TABLE IF NOT EXISTS guardrail_events (
+    id                    BIGSERIAL PRIMARY KEY,
+    ts                    TIMESTAMPTZ DEFAULT NOW(),
+    session_id            TEXT,
+    stage                 TEXT NOT NULL,
+    event_type            TEXT NOT NULL,
+    policy                TEXT NOT NULL,
+    risk_score            INTEGER,
+    session_cumulative    INTEGER,
+    allowed               BOOLEAN NOT NULL,
+    bypassed              BOOLEAN DEFAULT FALSE,
+    hard_block            BOOLEAN DEFAULT FALSE,
+    rule_id               TEXT,
+    guardrail_version     TEXT,
+    latency_ms            REAL,
+    detail                JSONB
+);
+
+-- Security audit log (BLOCK and injection events only)
+-- TODO (before production): REVOKE UPDATE, DELETE ON security_audit_log FROM app role
+CREATE TABLE IF NOT EXISTS security_audit_log (
+    id                    BIGSERIAL PRIMARY KEY,
+    ts                    TIMESTAMPTZ DEFAULT NOW(),
+    session_id            TEXT,
+    event_type            TEXT NOT NULL,
+    risk_score            INTEGER,
+    rule_id               TEXT,
+    guardrail_version     TEXT,
+    detail                JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_guardrail_events_session ON guardrail_events (session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_guardrail_events_type    ON guardrail_events (event_type, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_guardrail_bypass         ON guardrail_events (bypassed, ts DESC) WHERE bypassed = TRUE;
+CREATE INDEX IF NOT EXISTS idx_security_audit_session   ON security_audit_log (session_id, ts DESC);
+

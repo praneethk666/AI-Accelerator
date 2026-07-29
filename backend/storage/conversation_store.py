@@ -23,6 +23,11 @@ class ConversationStore(Protocol):
         """Append one turn to the conversation history."""
         ...
 
+    def save_stream_turn(self, session_id: str, message_id: str, role: str, content: str,
+                         metadata: dict) -> None:
+        """Upsert one streamed assistant turn by message_id."""
+        ...
+
     def load_history(self, session_id: str, n: int = 10) -> list[dict]:
         """Return the last n turns as [{"role", "content", "metadata"}, ...]."""
         ...
@@ -79,6 +84,41 @@ class PostgresConversationStore:
                 "CREATE INDEX IF NOT EXISTS idx_conversations "
                 "ON conversations (session_id, created_at)"
             )
+            pg.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversations_session_created "
+                "ON conversations (session_id, created_at, id)"
+            )
+            pg.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversations_session_role_created "
+                "ON conversations (session_id, role, created_at, id) "
+                "WHERE role = 'user'"
+            )
+
+            # Advisory lock wrapper to serialize index check/creation across replicas.
+            # pg.conn is autocommit=True by default, so CREATE INDEX CONCURRENTLY runs safely.
+            pg.conn.execute("SELECT pg_advisory_lock(hashtext('idx_conversations_message_id'))")
+            try:
+                row = pg.conn.execute(
+                    """
+                    SELECT i.indisvalid FROM pg_class c
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    WHERE c.relname = 'idx_conversations_message_id'
+                    """
+                ).fetchone()
+                
+                if row is None:
+                    pg.conn.execute(
+                        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_conversations_message_id "
+                        "ON conversations ((metadata->>'message_id'))"
+                    )
+                elif not row[0]: # Index exists but is INVALID
+                    pg.conn.execute("DROP INDEX IF EXISTS idx_conversations_message_id")
+                    pg.conn.execute(
+                        "CREATE UNIQUE INDEX CONCURRENTLY idx_conversations_message_id "
+                        "ON conversations ((metadata->>'message_id'))"
+                    )
+            finally:
+                pg.conn.execute("SELECT pg_advisory_unlock(hashtext('idx_conversations_message_id'))")
             pg.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -179,31 +219,36 @@ class PostgresConversationStore:
         try:
             rows = pg.conn.execute(
                 """
-                SELECT c.session_id, MIN(c.created_at) AS started_at,
-                       MAX(c.created_at) AS last_active,
-                       s.pinned, s.title AS custom_title
-                FROM conversations c
-                LEFT JOIN sessions s ON s.session_id = c.session_id
-                GROUP BY c.session_id, s.pinned, s.title
-                ORDER BY COALESCE(s.pinned, FALSE) DESC, MAX(c.created_at) DESC
-                LIMIT %s
+                WITH top_sessions AS (
+                    SELECT s.session_id, s.created_at AS started_at, s.updated_at AS last_active, s.pinned, s.title
+                    FROM sessions s
+                    WHERE EXISTS (
+                        SELECT 1 FROM conversations c WHERE c.session_id = s.session_id
+                    )
+                    ORDER BY COALESCE(s.pinned, FALSE) DESC, s.updated_at DESC
+                    LIMIT %s
+                ),
+                first_messages AS (
+                    SELECT DISTINCT ON (c.session_id) c.session_id, LEFT(c.content, 60) AS content
+                    FROM conversations c
+                    JOIN top_sessions ts ON ts.session_id = c.session_id
+                    WHERE c.role = 'user'
+                    ORDER BY c.session_id, c.created_at ASC, c.id ASC
+                )
+                SELECT ts.session_id, ts.started_at, ts.last_active,
+                       ts.pinned, ts.title AS custom_title, fm.content AS first_message
+                FROM top_sessions ts
+                LEFT JOIN first_messages fm ON fm.session_id = ts.session_id
+                ORDER BY COALESCE(ts.pinned, FALSE) DESC, ts.last_active DESC
                 """,
                 (limit,),
             ).fetchall()
             sessions = []
-            for session_id, started_at, last_active, pinned, custom_title in rows:
+            for session_id, started_at, last_active, pinned, custom_title, first_message in rows:
                 if custom_title:
                     title = custom_title[:60]
                 else:
-                    title_row = pg.conn.execute(
-                        """
-                        SELECT content FROM conversations
-                        WHERE session_id = %s AND role = 'user'
-                        ORDER BY created_at ASC, id ASC LIMIT 1
-                        """,
-                        (session_id,),
-                    ).fetchone()
-                    title = (title_row[0][:60] if title_row and title_row[0] else "New chat")
+                    title = (first_message[:60] if first_message else "New chat")
                 sessions.append({
                     "session_id": session_id,
                     "title": title,
@@ -212,6 +257,22 @@ class PostgresConversationStore:
                     "last_active": last_active.isoformat() if last_active else None,
                 })
             return sessions
+        finally:
+            pg.close()
+
+    def save_stream_turn(self, session_id: str, message_id: str, role: str, content: str, metadata: dict) -> None:
+        pg = PostgresStore()
+        try:
+            # Atomic upsert using standard ON CONFLICT syntax on unique expression index
+            pg.conn.execute(
+                """
+                INSERT INTO conversations (session_id, role, content, metadata)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT ((metadata->>'message_id'))
+                DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata
+                """,
+                (session_id, role, content, _Json(metadata))
+            )
         finally:
             pg.close()
 

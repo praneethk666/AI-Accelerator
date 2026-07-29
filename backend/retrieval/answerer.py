@@ -41,8 +41,8 @@ from backend.core.tracing import record_handled_error
 logger = logging.getLogger(__name__)
 
 _ANSWER_SYSTEM = (
-    "You are a precise document-intelligence assistant for technical and enterprise "
-    "documents (service manuals, datasheets, reports).\n"
+    "You are a precise document-intelligence assistant for enterprise documents "
+    "(manuals, reports, contracts, invoices, spreadsheets, presentations, and other technical or office documents).\n"
     "Rules:\n"
     "- Answer using ONLY the provided context passages. Never use outside knowledge "
     "or guess.\n"
@@ -76,6 +76,54 @@ _REFUSAL_MARKERS = (
 def _looks_like_refusal(answer: str) -> bool:
     a = (answer or "").lower()
     return any(m in a for m in _REFUSAL_MARKERS)
+
+
+def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
+    """
+    Parse the LLM's answer to identify which sources were actually cited.
+    Returns only the citations that match bracketed index numbers or filenames.
+    """
+    import re
+    
+    # 1. Extract all text content within brackets, e.g. [1], [2, p.3], [Vinod-Nerella.pdf, p.1]
+    brackets = re.findall(r'\[([^\]]+)\]', answer)
+    if not brackets:
+        # If the LLM did not generate any citations, fall back to returning all retrieved chunks
+        return citations
+        
+    cited_indices = set()
+    cited_filenames = set()
+    
+    for content in brackets:
+        # Extract individual integers (index references like [1], [1, 2])
+        for num_str in re.findall(r'\b\d+\b', content):
+            cited_indices.add(int(num_str))
+            
+        # Match by filename or cleaned filename (case-insensitive)
+        for cit in citations:
+            fname = cit.get("filename") or ""
+            if fname and fname.lower() in content.lower():
+                cited_filenames.add(fname.lower())
+                
+    # 2. Filter the citation list
+    filtered = []
+    for idx, cit in enumerate(citations, start=1):
+        is_cited = False
+        
+        # Check if cited by index [i]
+        if idx in cited_indices:
+            is_cited = True
+            
+        # Check if cited by filename reference
+        elif cit.get("filename") and cit["filename"].lower() in cited_filenames:
+            is_cited = True
+            
+        if is_cited:
+            filtered.append(cit)
+            
+    # 3. Fallback: if parsing failed to extract any valid citation matches, 
+    # keep all retrieved chunks to ensure the sources list is not empty.
+    return filtered if filtered else citations
 
 
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
@@ -203,6 +251,7 @@ class AnswererTool:
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         query:   str         = state["query"]
+        standalone_query: str = state.get("standalone_query") or query
         chunks:  list[Chunk] = state["retrieved_chunks"] or []
         session_id: str      = state["session_id"]
         turn:    int         = len(state["conversation_history"] or []) + 1
@@ -237,7 +286,7 @@ class AnswererTool:
             user_msg = (
                 "Context:\n\n"
                 + "\n\n".join(context_blocks)
-                + f"\n\nQuestion: {query}"
+                + f"\n\nQuestion: {standalone_query}"
             )
 
             # answering is reasoning-heavy. Resolution: query.answerer.model ->
@@ -280,6 +329,8 @@ class AnswererTool:
             # Don't attach a source list to a 'not found' answer — it drew on nothing.
             if _looks_like_refusal(answer_text):
                 citations = []
+            else:
+                citations = _filter_cited_citations(answer_text, citations)
 
             state["answer"]    = answer_text
             state["citations"] = citations

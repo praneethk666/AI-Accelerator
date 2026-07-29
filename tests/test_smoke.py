@@ -21,7 +21,7 @@ class EchoTool:
 def test_pipeline_runs():
     tools = {"echo": EchoTool()}
     config = {"steps": ["echo"]}
-    out = run_pipeline(tools, {"document_id": "d1"}, config)
+    out = run_pipeline(tools, {"document_id": "default"}, config)
     assert out["blocks"][0]["text"] == "hello"
     assert out["errors"] == []
 

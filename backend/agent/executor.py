@@ -32,7 +32,35 @@ from backend.core import usage
 from backend.core.llm_client import get_llm, get_llm_for, clean_message_content, resolve_model_provider
 from backend.core.tracing import traced_request, traced_tool, record_handled_error
 
+from backend.guardrails.config_schema import validate_guardrail_config
+from backend.guardrails.input_guard import check_input
+from backend.guardrails.output_guard import mask_output
+from backend.guardrails.policy_engine import get_engine
+from backend.guardrails.session_risk import get_accumulator
+from backend.guardrails.event_logger import log_event
+from backend.guardrails.guard_decision import GuardDecision, GuardEvidence, PolicyDecision, SAFE_REPLY_MESSAGE
+from backend.guardrails.rollout import should_apply_guard
+from backend.guardrails.retrieval_guard import scan_tool_output_async
+
 logger = logging.getLogger(__name__)
+
+def add_evidences(left: list[dict] | None, right: list[dict] | None) -> list[dict]:
+    """LangGraph reducer to accumulate guard evidences across nodes."""
+    return (left or []) + (right or [])
+
+class AgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], add_messages]
+    iterations: int
+    pending_approval: list[dict] | None
+    approved_writes: bool
+    approved_calls: list[dict] | None
+    clarification: dict | None
+    # guardrail fields
+    guard_blocked: bool
+    safe_answer: str | None
+    guard_evidences: Annotated[list[dict], add_evidences]
+    guard_risk_score: int
+    guard_policy: str | None
 
 SYSTEM_PROMPT = (
     "You are a document intelligence assistant. Your job is to answer questions "
@@ -242,6 +270,69 @@ def _invoke_with_retry(llm_with_tools, messages, attempts: int = 2):
     raise last_exc
 
 
+async def _ainvoke_with_retry(llm_with_tools, messages, attempts: int = 2):
+    import re
+    import uuid
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await llm_with_tools.ainvoke(messages)
+        except Exception as exc:
+            msg = str(exc)
+            if "tool_use_failed" not in msg and "Failed to call a function" not in msg:
+                raise
+
+            # Intercept and recover raw tool call format if parsed successfully
+            match = re.search(r'<function=(\w+)\(?(.*?)\)?\s*</function>', msg)
+            if match:
+                name = match.group(1)
+                args_str = match.group(2).strip()
+                if args_str.endswith('>'):
+                    args_str = args_str[:-1].strip()
+                if args_str.startswith('(') and args_str.endswith(')'):
+                    args_str = args_str[1:-1].strip()
+
+                args = None
+                try:
+                    clean_str = args_str.strip().strip("'").strip('"')
+                    args = json.loads(clean_str)
+                except Exception:
+                    try:
+                        args = json.loads(clean_str.replace("'", '"').replace("None", "null"))
+                    except Exception:
+                        pass
+
+                if args is None:
+                    kwargs = {}
+                    for k, v in re.findall(r'(\w+)\s*=\s*("[^"]*"|\'[^\']*\'|[^,\s\)]+)', args_str):
+                        val = v.strip().strip("'").strip('"')
+                        if val.lower() in ('none', 'null'):
+                            val = None
+                        elif val.lower() == 'true':
+                            val = True
+                        elif val.lower() == 'false':
+                            val = False
+                        kwargs[k] = val
+                    if kwargs:
+                        args = kwargs
+
+                if args is not None:
+                    logger.info("agent LLM tool call successfully parsed from raw generation string for tool: %s", name)
+                    return AIMessage(
+                        content="",
+                        tool_calls=[{
+                            "name": name,
+                            "args": args,
+                            "id": f"call_{uuid.uuid4().hex}",
+                            "type": "tool_call"
+                        }]
+                    )
+
+            last_exc = exc
+            logger.warning("agent LLM malformed tool call (attempt %d/%d): %s", attempt + 1, attempts, msg[:200])
+    raise last_exc
+
+
 _GREETINGS = {"hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye", "good morning", "good evening"}
 
 
@@ -252,20 +343,112 @@ def _is_greeting(text: str) -> bool:
 
 def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
                   clarify_tools: set[str], max_iterations: int, is_question: bool,
-                  config: dict, agent_cfg: dict):
+                  config: dict, agent_cfg: dict, session_id: str = ""):
     llm_auto = llm.bind_tools(tool_schemas)
     try:
         llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
     except Exception:
         llm_required = llm_auto
 
+    g_cfg = config.get("guardrails") or {}
+
+    def input_guard_node(state: AgentState) -> dict:
+        if not g_cfg.get("enabled", True):
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        rollout_pct = g_cfg.get("rollout", {}).get("input_guard_pct", 100)
+        if not should_apply_guard(rollout_pct, session_id):
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        raw_msg = ""
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                raw_msg = msg.content
+                break
+
+        if not raw_msg:
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        version = g_cfg.get("version", "1.0.0")
+        decision: GuardDecision = check_input(
+            raw_msg, config=config, session_id=session_id, version=version
+        )
+        log_event(decision, session_id=session_id, config=config)
+
+        accum = get_accumulator(config)
+        session_risk_pct = g_cfg.get("rollout", {}).get("session_risk_pct", 20)
+        should_block_session = False
+        cumulative_score = decision.risk_score
+        
+        if should_apply_guard(session_risk_pct, session_id):
+            should_block_session, cumulative_score = accum.add_and_check(session_id, decision.risk_score)
+            if should_block_session:
+                logger.warning("Session %s blocked due to cumulative multi-turn risk", session_id)
+
+        ev = GuardEvidence(
+            stage="input",
+            risk_score=decision.risk_score,
+            events=[decision.event_type] if decision.event_type else [],
+            rule_ids=[decision.rule_id] if decision.rule_id else [],
+            latency_ms=decision.latency_ms,
+            bypassed=decision.bypassed,
+            hard_block=decision.hard_block or should_block_session,
+        )
+
+        engine = get_engine(config)
+        policy_decision = engine.evaluate([ev])
+
+        if policy_decision == PolicyDecision.BLOCK or should_block_session:
+            blocked_msg = AIMessage(
+                content="Your request contains triggers that violate our safety policies."
+            )
+            return {
+                "messages": [blocked_msg],
+                "guard_blocked": True,
+                "guard_evidences": [ev.__dict__],
+                "guard_risk_score": decision.risk_score,
+                "guard_policy": policy_decision.value,
+                "safe_answer": blocked_msg.content,
+            }
+
+        ret_dict = {
+            "guard_blocked": False,
+            "guard_evidences": [ev.__dict__],
+            "guard_risk_score": decision.risk_score,
+            "guard_policy": policy_decision.value,
+        }
+
+        if decision.sanitized_value:
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HumanMessage):
+                    redacted_human_msg = HumanMessage(
+                        content=decision.sanitized_value,
+                        id=msg.id,
+                    )
+                    ret_dict["messages"] = [redacted_human_msg]
+                    break
+
+        return ret_dict
+
     def agent_node(state: AgentState) -> dict:
         iters = state.get("iterations", 0)
-        # On iteration 0 for non-greetings, FORCE the model to call a tool (tool_choice="required").
-        # On iteration 1+ (after a tool has returned its data), allow auto choice to synthesize text.
         active_llm = llm_required if (iters == 0 and is_question) else llm_auto
         
-        # Prune verbose tool messages to save input context tokens for the agent LLM
         pruned_messages = _prune_messages_for_llm(state["messages"])
         response = _invoke_with_retry(active_llm, pruned_messages)
 
@@ -278,11 +461,11 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         tool_messages: list[ToolMessage] = []
         pending: list[dict] = []
         clarification: dict | None = None
+        new_evidences: list[dict] = []
+
         for call in getattr(last, "tool_calls", None) or []:
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
 
-            # Control tool: the agent is asking the USER to choose. Pause the loop and
-            # surface it as needs_clarification instead of dispatching anything.
             if name in clarify_tools:
                 if clarification is None:
                     clarification = {
@@ -294,7 +477,6 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 ))
                 continue
 
-            # Write gate: run ONLY if the human approved a call with the same name+args.
             if name in write_tools and not (
                 state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
             ):
@@ -307,59 +489,464 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 continue
 
             tool = registry.get(name)
-            # Each tool dispatch gets its own child span under the request's root
-            # trace (see traced_request in run_agent below) — this is what lets a
-            # single Grafana trace show every tool the agent called for this
-            # request, not just isolated per-call traces.
             with traced_tool(f"tool:{name}", input=args) as span:
                 if tool is None:
                     result: Any = {"error": f"unknown tool {name!r}"}
                 else:
                     try:
                         result = tool.run(**args)
-                    except Exception as exc:  # a bad tool call must not kill the loop
+                    except Exception as exc:
                         logger.warning("agent tool %s failed: %s", name, exc)
                         result = {"error": str(exc)}
                         record_handled_error(
                             "tool_failure", str(exc), **{"tool.name": name}
                         )
-                span["output"] = result
+                
+                version = g_cfg.get("version", "1.0.0")
+                from backend.guardrails.retrieval_guard import scan_tool_output
+                scan_decision = scan_tool_output(
+                    result, config=config, session_id=session_id, version=version
+                )
+                log_event(scan_decision, session_id=session_id, config=config)
+
+                if scan_decision.risk_score > 0 or scan_decision.bypassed:
+                    ev = GuardEvidence(
+                        stage="retrieval",
+                        risk_score=scan_decision.risk_score,
+                        events=[scan_decision.event_type] if scan_decision.event_type else [],
+                        rule_ids=[scan_decision.rule_id] if scan_decision.rule_id else [],
+                        latency_ms=scan_decision.latency_ms,
+                        bypassed=scan_decision.bypassed,
+                        hard_block=scan_decision.hard_block,
+                    )
+                    new_evidences.append(ev.__dict__)
+
+                cleaned_result = scan_decision.sanitized_value if scan_decision.sanitized_value is not None else result
+                span["output"] = cleaned_result
+                
             tool_messages.append(ToolMessage(
-                content=json.dumps(result, default=str), tool_call_id=call_id, name=name,
+                content=json.dumps(cleaned_result, default=str), tool_call_id=call_id, name=name,
             ))
 
-        return {"messages": tool_messages, "pending_approval": pending or None,
-                "clarification": clarification}
+        return {
+            "messages": tool_messages,
+            "pending_approval": pending or None,
+            "clarification": clarification,
+            "guard_evidences": new_evidences,
+        }
+
+    def output_guard_node(state: AgentState) -> dict:
+        last = state["messages"][-1]
+        raw_answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
+        
+        if not g_cfg.get("enabled", True):
+            return {
+                "safe_answer": raw_answer,
+            }
+
+        raw_msg = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+                raw_msg = msg
+                break
+
+        if raw_msg is None:
+            return {
+                "safe_answer": raw_answer,
+            }
+
+        version = g_cfg.get("version", "1.0.0")
+        decision: GuardDecision = mask_output(
+            raw_msg.content, config=config, version=version
+        )
+        log_event(decision, session_id=session_id, config=config)
+
+        ev = GuardEvidence(
+            stage="output",
+            risk_score=decision.risk_score,
+            events=[decision.event_type] if decision.event_type else [],
+            rule_ids=[decision.rule_id] if decision.rule_id else [],
+            latency_ms=decision.latency_ms,
+            bypassed=decision.bypassed,
+            hard_block=decision.hard_block,
+        )
+
+        prior_evidences = state.get("guard_evidences") or []
+        ev_objs = []
+        for e in prior_evidences:
+            if isinstance(e, dict):
+                ev_objs.append(GuardEvidence(**e))
+            elif isinstance(e, GuardEvidence):
+                ev_objs.append(e)
+        ev_objs.append(ev)
+
+        engine = get_engine(config)
+        policy_decision = engine.evaluate(ev_objs)
+
+        safe_content = decision.sanitized_value if decision.sanitized_value is not None else raw_msg.content
+        blocked = False
+
+        if policy_decision == PolicyDecision.BLOCK:
+            safe_content = SAFE_REPLY_MESSAGE
+            blocked = True
+
+        redacted_msg = AIMessage(
+            content=safe_content,
+            id=raw_msg.id,
+        )
+
+        scores = [e.risk_score for e in ev_objs]
+        max_score = max(scores) if scores else 0
+
+        return {
+            "messages": [redacted_msg],
+            "safe_answer": safe_content,
+            "guard_blocked": blocked,
+            "guard_evidences": [e.__dict__ for e in ev_objs],
+            "guard_risk_score": max_score,
+            "guard_policy": policy_decision.value,
+        }
+
+    def route_after_input(state: AgentState) -> str:
+        if state.get("guard_blocked"):
+            return "output_guard"
+        return "agent"
 
     def route_after_agent(state: AgentState) -> str:
         last = state["messages"][-1]
         has_calls = bool(getattr(last, "tool_calls", None))
         if not has_calls:
-            return END
+            return "output_guard"
         if state.get("iterations", 0) < max_iterations:
             return "tools"
-        # At the iteration cap: still route to tools if the final turn proposed a
-        # WRITE or CLARIFY control call, so it surfaces as needs_approval /
-        # needs_clarification instead of being silently dropped (AC8). Plain reads
-        # at the cap just end — the agent already had its budget.
         control = write_tools | clarify_tools
         wants_control = any(c["name"] in control for c in last.tool_calls)
-        return "tools" if wants_control else END
+        return "tools" if wants_control else "output_guard"
 
     def route_after_tools(state: AgentState) -> str:
         if state.get("pending_approval") or state.get("clarification"):
-            return END
+            return "output_guard"
         if state.get("iterations", 0) >= max_iterations:
-            return END
+            return "output_guard"
         return "agent"
 
     sg = StateGraph(AgentState)
+    sg.add_node("input_guard", input_guard_node)
     sg.add_node("agent", agent_node)
     sg.add_node("tools", tools_node)
-    sg.add_edge(START, "agent")
-    sg.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
-    sg.add_conditional_edges("tools", route_after_tools, {"agent": "agent", END: END})
+    sg.add_node("output_guard", output_guard_node)
+    
+    sg.add_edge(START, "input_guard")
+    sg.add_conditional_edges("input_guard", route_after_input, {"agent": "agent", "output_guard": "output_guard"})
+    sg.add_conditional_edges("agent", route_after_agent, {"tools": "tools", "output_guard": "output_guard"})
+    sg.add_conditional_edges("tools", route_after_tools, {"agent": "agent", "output_guard": "output_guard"})
+    sg.add_edge("output_guard", END)
     return sg.compile()
+
+
+def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
+                        clarify_tools: set[str], max_iterations: int, is_question: bool,
+                        config: dict, agent_cfg: dict, session_id: str = ""):
+    llm_auto = llm.bind_tools(tool_schemas)
+    try:
+        llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
+    except Exception:
+        llm_required = llm_auto
+
+    g_cfg = config.get("guardrails") or {}
+
+    async def input_guard_node(state: AgentState) -> dict:
+        if not g_cfg.get("enabled", True):
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        rollout_pct = g_cfg.get("rollout", {}).get("input_guard_pct", 100)
+        if not should_apply_guard(rollout_pct, session_id):
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        raw_msg = ""
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                raw_msg = msg.content
+                break
+
+        if not raw_msg:
+            return {
+                "guard_blocked": False,
+                "guard_evidences": [],
+                "guard_risk_score": 0,
+                "guard_policy": "allow",
+            }
+
+        version = g_cfg.get("version", "1.0.0")
+        decision: GuardDecision = check_input(
+            raw_msg, config=config, session_id=session_id, version=version
+        )
+        log_event(decision, session_id=session_id, config=config)
+
+        accum = get_accumulator(config)
+        session_risk_pct = g_cfg.get("rollout", {}).get("session_risk_pct", 20)
+        should_block_session = False
+        cumulative_score = decision.risk_score
+        
+        if should_apply_guard(session_risk_pct, session_id):
+            should_block_session, cumulative_score = accum.add_and_check(session_id, decision.risk_score)
+            if should_block_session:
+                logger.warning("Session %s blocked due to cumulative multi-turn risk", session_id)
+
+        ev = GuardEvidence(
+            stage="input",
+            risk_score=decision.risk_score,
+            events=[decision.event_type] if decision.event_type else [],
+            rule_ids=[decision.rule_id] if decision.rule_id else [],
+            latency_ms=decision.latency_ms,
+            bypassed=decision.bypassed,
+            hard_block=decision.hard_block or should_block_session,
+        )
+
+        engine = get_engine(config)
+        policy_decision = engine.evaluate([ev])
+
+        if policy_decision == PolicyDecision.BLOCK or should_block_session:
+            blocked_msg = AIMessage(
+                content="Your request contains triggers that violate our safety policies."
+            )
+            return {
+                "messages": [blocked_msg],
+                "guard_blocked": True,
+                "guard_evidences": [ev.__dict__],
+                "guard_risk_score": decision.risk_score,
+                "guard_policy": policy_decision.value,
+                "safe_answer": blocked_msg.content,
+            }
+
+        ret_dict = {
+            "guard_blocked": False,
+            "guard_evidences": [ev.__dict__],
+            "guard_risk_score": decision.risk_score,
+            "guard_policy": policy_decision.value,
+        }
+
+        if decision.sanitized_value:
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HumanMessage):
+                    redacted_human_msg = HumanMessage(
+                        content=decision.sanitized_value,
+                        id=msg.id,
+                    )
+                    ret_dict["messages"] = [redacted_human_msg]
+                    break
+
+        return ret_dict
+
+    async def agent_node(state: AgentState) -> dict:
+        iters = state.get("iterations", 0)
+        active_llm = llm_required if (iters == 0 and is_question) else llm_auto
+        
+        pruned_messages = _prune_messages_for_llm(state["messages"])
+        response = await _ainvoke_with_retry(active_llm, pruned_messages)
+
+        model_name, provider_name = resolve_model_provider(config, agent_cfg)
+        usage.record_from_message("agent", response, model=model_name, provider=provider_name)
+        return {"messages": [response], "iterations": iters + 1}
+
+    async def tools_node(state: AgentState) -> dict:
+        last = state["messages"][-1]
+        tool_messages: list[ToolMessage] = []
+        pending: list[dict] = []
+        clarification: dict | None = None
+        new_evidences: list[dict] = []
+
+        for call in getattr(last, "tool_calls", None) or []:
+            name, args, call_id = call["name"], call.get("args") or {}, call["id"]
+
+            if name in clarify_tools:
+                if clarification is None:
+                    clarification = {
+                        "question": args.get("question") or "Which option?",
+                        "options": args.get("options") or [],
+                    }
+                tool_messages.append(ToolMessage(
+                    content="awaiting user selection", tool_call_id=call_id,
+                ))
+                continue
+
+            if name in write_tools and not (
+                state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
+            ):
+                pending.append({"id": call_id, "name": name, "args": args})
+                tool_messages.append(ToolMessage(
+                    content="blocked: this action writes data and needs human "
+                            "approval before it can run.",
+                    tool_call_id=call_id,
+                ))
+                continue
+
+            tool = registry.get(name)
+            with traced_tool(f"tool:{name}", input=args) as span:
+                if tool is None:
+                    result: Any = {"error": f"unknown tool {name!r}"}
+                else:
+                    try:
+                        import asyncio
+                        result = await asyncio.to_thread(tool.run, **args)
+                    except Exception as exc:
+                        logger.warning("agent tool %s failed: %s", name, exc)
+                        result = {"error": str(exc)}
+                        record_handled_error(
+                            "tool_failure", str(exc), **{"tool.name": name}
+                        )
+                
+                version = g_cfg.get("version", "1.0.0")
+                from backend.guardrails.retrieval_guard import scan_tool_output
+                scan_decision = scan_tool_output(
+                    result, config=config, session_id=session_id, version=version
+                )
+                log_event(scan_decision, session_id=session_id, config=config)
+
+                if scan_decision.risk_score > 0 or scan_decision.bypassed:
+                    ev = GuardEvidence(
+                        stage="retrieval",
+                        risk_score=scan_decision.risk_score,
+                        events=[scan_decision.event_type] if scan_decision.event_type else [],
+                        rule_ids=[scan_decision.rule_id] if scan_decision.rule_id else [],
+                        latency_ms=scan_decision.latency_ms,
+                        bypassed=scan_decision.bypassed,
+                        hard_block=scan_decision.hard_block,
+                    )
+                    new_evidences.append(ev.__dict__)
+
+                cleaned_result = scan_decision.sanitized_value if scan_decision.sanitized_value is not None else result
+                span["output"] = cleaned_result
+                
+            tool_messages.append(ToolMessage(
+                content=json.dumps(cleaned_result, default=str), tool_call_id=call_id,
+            ))
+
+        return {
+            "messages": tool_messages,
+            "pending_approval": pending or None,
+            "clarification": clarification,
+            "guard_evidences": new_evidences,
+        }
+
+    async def output_guard_node(state: AgentState) -> dict:
+        last = state["messages"][-1]
+        raw_answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
+        
+        if not g_cfg.get("enabled", True):
+            return {
+                "safe_answer": raw_answer,
+            }
+
+        raw_msg = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+                raw_msg = msg
+                break
+
+        if raw_msg is None:
+            return {
+                "safe_answer": raw_answer,
+            }
+
+        version = g_cfg.get("version", "1.0.0")
+        decision: GuardDecision = mask_output(
+            raw_msg.content, config=config, version=version
+        )
+        log_event(decision, session_id=session_id, config=config)
+
+        ev = GuardEvidence(
+            stage="output",
+            risk_score=decision.risk_score,
+            events=[decision.event_type] if decision.event_type else [],
+            rule_ids=[decision.rule_id] if decision.rule_id else [],
+            latency_ms=decision.latency_ms,
+            bypassed=decision.bypassed,
+            hard_block=decision.hard_block,
+        )
+
+        prior_evidences = state.get("guard_evidences") or []
+        ev_objs = []
+        for e in prior_evidences:
+            if isinstance(e, dict):
+                ev_objs.append(GuardEvidence(**e))
+            elif isinstance(e, GuardEvidence):
+                ev_objs.append(e)
+        ev_objs.append(ev)
+
+        engine = get_engine(config)
+        policy_decision = engine.evaluate(ev_objs)
+
+        safe_content = decision.sanitized_value if decision.sanitized_value is not None else raw_msg.content
+        blocked = False
+
+        if policy_decision == PolicyDecision.BLOCK:
+            safe_content = SAFE_REPLY_MESSAGE
+            blocked = True
+
+        redacted_msg = AIMessage(
+            content=safe_content,
+            id=raw_msg.id,
+        )
+
+        scores = [e.risk_score for e in ev_objs]
+        max_score = max(scores) if scores else 0
+
+        return {
+            "messages": [redacted_msg],
+            "safe_answer": safe_content,
+            "guard_blocked": blocked,
+            "guard_evidences": [e.__dict__ for e in ev_objs],
+            "guard_risk_score": max_score,
+            "guard_policy": policy_decision.value,
+        }
+
+    def route_after_input(state: AgentState) -> str:
+        if state.get("guard_blocked"):
+            return "output_guard"
+        return "agent"
+
+    def route_after_agent(state: AgentState) -> str:
+        last = state["messages"][-1]
+        has_calls = bool(getattr(last, "tool_calls", None))
+        if not has_calls:
+            return "output_guard"
+        if state.get("iterations", 0) < max_iterations:
+            return "tools"
+        control = write_tools | clarify_tools
+        wants_control = any(c["name"] in control for c in last.tool_calls)
+        return "tools" if wants_control else "output_guard"
+
+    def route_after_tools(state: AgentState) -> str:
+        if state.get("pending_approval") or state.get("clarification"):
+            return "output_guard"
+        if state.get("iterations", 0) >= max_iterations:
+            return "output_guard"
+        return "agent"
+
+    sg = StateGraph(AgentState)
+    sg.add_node("input_guard", input_guard_node)
+    sg.add_node("agent", agent_node)
+    sg.add_node("tools", tools_node)
+    sg.add_node("output_guard", output_guard_node)
+    
+    sg.add_edge(START, "input_guard")
+    sg.add_conditional_edges("input_guard", route_after_input, {"agent": "agent", "output_guard": "output_guard"})
+    sg.add_conditional_edges("agent", route_after_agent, {"tools": "tools", "output_guard": "output_guard"})
+    sg.add_conditional_edges("tools", route_after_tools, {"agent": "agent", "output_guard": "output_guard"})
+    sg.add_edge("output_guard", END)
+    return sg.compile()
+
 
 
 # Max characters to keep in each ToolMessage payload sent back to the agent LLM.
@@ -401,9 +988,9 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Reduce ToolMessage payload size without losing answer or citations.
 
     For JSON tool outputs:
-      - Keep only 'answer' and 'citations' when available.
-      - Remove heavy retrieval/debug fields.
-      - Fall back to truncation only if parsing fails.
+      - Format search_documents output as plain text answer + citations map.
+      - Strip heavy debug/metadata fields for other tool outputs.
+      - Fall back to character truncation.
     """
 
     pruned: list[BaseMessage] = []
@@ -421,47 +1008,36 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
         else:
             max_chars = _TOOL_MSG_MAX_CHARS
 
-        # Small messages don't need processing.
-        if len(msg.content) <= max_chars:
+        # Small messages don't need processing, except search_documents which we always format to plain text
+        if len(msg.content) <= max_chars and tool_name != "search_documents":
             pruned.append(msg)
             continue
-
         new_content = msg.content
 
         try:
             data = json.loads(msg.content)
 
             if isinstance(data, dict):
-                # If this looks like a search_documents result,
-                # preserve only the useful fields.
                 if "answer" in data:
-                    compact = {
-                        "answer": data.get("answer", ""),
-                        "citations": data.get("citations", []),
-                    }
-
-                    # Preserve useful optional fields if they exist.
-                    for key in (
-                        "sources",
-                        "source_documents",
-                        "references",
-                        "confidence",
-                    ):
-                        if key in data:
-                            compact[key] = data[key]
-
-                    new_content = json.dumps(
-                        compact,
-                        ensure_ascii=False,
-                        default=str,
-                    )
-
+                    ans = data.get("answer", "")
+                    cits = data.get("citations") or []
+                    cit_strings = []
+                    for i, c in enumerate(cits, 1):
+                        fname = c.get("filename") or "unknown"
+                        pg_num = c.get("page")
+                        doc_id = c.get("document_id")
+                        loc = f" (page {pg_num})" if pg_num is not None else ""
+                        did = f" [id: {doc_id}]" if doc_id else ""
+                        cit_strings.append(f"[{i}] = {fname}{loc}{did}")
+                    
+                    content_parts = [f"Search Answer: {ans}"]
+                    if cit_strings:
+                        content_parts.append("Source Map:")
+                        content_parts.extend(cit_strings)
+                    new_content = "\n".join(content_parts)
                 else:
                     # Unknown JSON format.
-                    # Remove commonly huge fields while preserving everything else.
                     compact = dict(data)
-                    tool_name = getattr(msg, "name", None)
-
                     for key in (
                         "chunks",
                         "retrieval_debug",
@@ -485,18 +1061,18 @@ def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
                     )
 
         except Exception:
-            # Not JSON -> use character truncation.
-            new_content = msg.content[:max_chars]
-
-            last_brace = max(
-                new_content.rfind("}"),
-                new_content.rfind("]"),
-            )
-
-            if last_brace > 0:
-                new_content = new_content[: last_brace + 1]
-
-            new_content += "\n...[truncated for context efficiency]"
+            # Not JSON -> use character truncation only if it exceeds limit.
+            if len(msg.content) > max_chars:
+                new_content = msg.content[:max_chars]
+                last_brace = max(
+                    new_content.rfind("}"),
+                    new_content.rfind("]"),
+                )
+                if last_brace > 0:
+                    new_content = new_content[: last_brace + 1]
+                new_content += "\n...[truncated for context efficiency]"
+            else:
+                new_content = msg.content
 
         # Final safeguard.
         if len(new_content) > max_chars:
@@ -598,7 +1174,7 @@ def run_agent(
     messages.append(HumanMessage(message))
 
     graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
-                          max_iterations, is_question, config, agent_cfg)
+                          max_iterations, is_question, config, agent_cfg, session_id=session_id)
 
     # ONE root span + ONE token-usage sink for the whole turn — every LLM call
     # and tool dispatch below (however deep, e.g. search_documents' internal
@@ -615,6 +1191,11 @@ def run_agent(
             "approved_writes": approved_writes,
             "approved_calls": approved_calls,
             "clarification": None,
+            "guard_blocked": False,
+            "safe_answer": None,
+            "guard_evidences": [],
+            "guard_risk_score": 0,
+            "guard_policy": "allow",
         })
 
     token_usage = sink.totals()
@@ -665,10 +1246,6 @@ def run_agent(
                 final_state.get("iterations", 0),
             )
 
-        # Fast path: if any prior search_documents tool message already contains an
-        # answer field, use it directly instead of making another LLM call.
-        # This handles the common case where DeepSeek returns content="" on the
-        # synthesis turn after the tool already returned a complete answer.
         search_answers = []
         for m in final_state["messages"]:
             if isinstance(m, ToolMessage):
@@ -677,10 +1254,15 @@ def run_agent(
                     if isinstance(r, dict) and r.get("answer", "").strip():
                         search_answers.append(r["answer"])
                 except Exception:
-                    pass
+                    if m.content.startswith("Search Answer:"):
+                        lines = m.content.splitlines()
+                        ans = lines[0].replace("Search Answer:", "").strip()
+                        if ans:
+                            search_answers.append(ans)
 
-        if len(search_answers) == 1:
-            answer = search_answers[0]
+        unique_answers = list(set(search_answers))
+        if len(unique_answers) == 1:
+            answer = unique_answers[0]
             logger.info("Recovered answer from prior tool result (fast-path fallback)")
         # else: len > 1 -> fall through to slow-path LLM synthesis below
 
@@ -715,11 +1297,167 @@ def run_agent(
                 "the available steps. Please try rephrasing your question or naming the "
                 "specific document you want to search."
             )
+    # Map to final safe/redacted answer if set by guards, otherwise fallback
+    final_answer = final_state.get("safe_answer")
+    if final_answer is None or not final_state.get("guard_blocked"):
+        final_answer = final_answer or answer
+
     return {
         "status": "done",
-        "answer": answer,
+        "answer": final_answer,
         "tool_calls": tool_calls,
         "messages": final_state["messages"],
         "token_usage": token_usage,
         "trace_id": trace_info["trace_id"],
+        "guard_risk_score": final_state.get("guard_risk_score", 0),
+        "guard_policy": final_state.get("guard_policy", "allow"),
     }
+
+
+async def stream_agent(
+    session_id: str,
+    message: str,
+    request: Request,
+    message_id: str,
+    config: dict,
+    registry: dict[str, AgentTool] | None = None,
+    llm=None,
+    conversation_history: list[BaseMessage] | None = None,
+):
+    """
+    Yields SSE events (token, tool_start, tool_end, done, error, usage).
+    Tracks client disconnect, tool calls, and usage tokens.
+    Persists answer on finalization.
+    """
+    from fastapi import Request
+    from backend.storage.conversation_store import get_conversation_store
+    
+    registry = registry if registry is not None else build_agent_registry()
+    agent_cfg = (config.get("query") or {}).get("agent") or {}
+    max_iterations = agent_cfg.get("max_iterations", 5)
+    write_tools = set(agent_cfg.get("write_tools") or [])
+    clarify_tools = set(agent_cfg.get("clarify_tools") or ["request_clarification"])
+
+    if llm is None:
+        llm = get_llm_for(config, agent_cfg)
+
+    tool_schemas = [_to_openai_tool(t) for t in registry.values()]
+    is_question = not _is_greeting(message)
+    messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
+    messages += [
+        m for m in (conversation_history or [])
+        if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
+    ]
+    if messages[1:]:
+        messages.append(SystemMessage(
+            "Reminder: the next user message is a NEW request. Answer ONLY it. "
+            "Do not repeat, continue, or merge in your answer to any earlier question "
+            "above, unless this new message explicitly references it (e.g. 'the one you "
+            "just mentioned', 'and what about...')."
+        ))
+    messages.append(HumanMessage(message))
+
+    graph = _build_async_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
+                          max_iterations, is_question, config, agent_cfg, session_id=session_id)
+
+    stream_messages = list(messages)
+    accumulated_text = []
+    tool_calls = []
+    disconnected = False
+    has_error = False
+    actual_tokens = 0
+    final_text = ""
+
+    try:
+        with traced_request(
+            "agent_chat", input=message,
+            metadata={"session_id": session_id},
+        ) as trace_info, usage.using_sink() as sink:
+            async for event in graph.astream_events(
+                {
+                    "messages": messages,
+                    "iterations": 0,
+                    "pending_approval": None,
+                    "approved_writes": False,
+                    "approved_calls": None,
+                    "clarification": None,
+                    "guard_blocked": False,
+                    "safe_answer": None,
+                    "guard_evidences": [],
+                    "guard_risk_score": 0,
+                    "guard_policy": "allow",
+                },
+                version="v2"
+            ):
+                if await request.is_disconnected():
+                    disconnected = True
+                    break
+
+                kind = event["event"]
+                # Capture messages from finished nodes to extract tool calls and results
+                if kind == "on_chain_end":
+                    node_name = event["metadata"].get("langgraph_node")
+                    if node_name in ("input_guard", "agent", "tools", "output_guard"):
+                        node_output = event["data"].get("output")
+                        if isinstance(node_output, dict) and "messages" in node_output:
+                            stream_messages.extend(node_output["messages"])
+
+                # 1. Capture model stream tokens from the agent node
+                if kind == "on_chat_model_stream" and event["metadata"].get("langgraph_node") == "agent":
+                    chunk = event["data"]["chunk"].content
+                    if chunk:
+                        accumulated_text.append(chunk)
+                        yield {"event": "token", "text": chunk}
+
+                elif kind == "on_tool_start":
+                    tool_calls.append({"name": event["name"], "args": event.get("data", {}).get("input")})
+                    yield {"event": "tool_start", "name": event["name"]}
+
+                elif kind == "on_tool_end":
+                    yield {"event": "tool_end", "name": event["name"]}
+
+            actual_tokens = sink.totals().get("total", 0)
+            final_tool_calls = _extract_tool_calls(stream_messages)
+
+        # Extract the post-processed response from the final assistant message in the graph output,
+        # which will have been processed by all guards (input, tools, output).
+        post_processed_text = ""
+        for msg in reversed(stream_messages):
+            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+                post_processed_text = msg.content
+                break
+        
+        final_text = post_processed_text if post_processed_text else "".join(accumulated_text)
+        yield {"event": "done", "full_text": final_text}
+        yield {"event": "usage", "tokens": actual_tokens}
+        yield {
+            "event": "metadata",
+            "status": "done",
+            "answer": final_text,
+            "tool_calls": final_tool_calls,
+            "token_usage": sink.totals(),
+            "trace_id": trace_info["trace_id"]
+        }
+
+    except Exception as e:
+        logger.exception("stream_agent failed for session %s", session_id)
+        has_error = True
+        yield {"event": "error", "message": "The assistant hit an error generating a response."}
+        final_text = "".join(accumulated_text)
+
+    finally:
+        if accumulated_text or final_text:
+            # Extract complete tool calls paired with their results
+            final_tool_calls = _extract_tool_calls(stream_messages)
+            store = get_conversation_store()
+            store.save_stream_turn(
+                session_id=session_id,
+                message_id=message_id,
+                role="assistant",
+                content=final_text,
+                metadata={
+                    "complete": not has_error and not disconnected,
+                    "message_id": message_id,
+                    "tool_calls": final_tool_calls
+                }
+            )

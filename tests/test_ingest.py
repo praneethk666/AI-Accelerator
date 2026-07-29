@@ -62,6 +62,7 @@ class _FakePG:
     def insert_document(self, *a, **k): _FakePG.calls.append("insert")
     def delete_chunks(self, *a, **k): _FakePG.calls.append("pg_delete")
     def finalize_document(self, *a, **k): _FakePG.calls.append(("finalize", k.get("status")))
+    def document_exists(self, *a, **k): return True
     def close(self): pass
 
 

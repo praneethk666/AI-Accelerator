@@ -41,12 +41,12 @@ from dotenv import load_dotenv
 # Load .env BEFORE load_config so ${GROQ_API_KEY}/${POSTGRES_URL}/... resolve.
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, Response, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.agent.executor import run_agent  # noqa: E402
+from backend.agent.executor import run_agent, stream_agent  # noqa: E402
 from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
@@ -56,6 +56,10 @@ from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
 from backend.storage.qdrant_store import QdrantStore  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+
+from backend.guardrails.token_quota import get_enforcer, get_reserve_tokens
+from backend.guardrails.startup_check import run_startup_self_test
+from backend.core.health_probe import background_health_loop
 
 logger = logging.getLogger(__name__)
 
@@ -276,10 +280,11 @@ def start_auto_ingestion_watcher() -> None:
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     """Verify connections and auto-initialize database schema if missing."""
     import psycopg
     import re
+    import asyncio
     from qdrant_client import QdrantClient
     
     from backend.storage.postgres_store import dsn_from_env
@@ -294,36 +299,27 @@ def on_startup():
         try:
             conn = psycopg.connect(postgres_url, connect_timeout=5)
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_name = 'documents'
-                    );
-                """)
-                exists = cur.fetchone()[0]
-                if not exists:
-                    logger.info("Table 'documents' not found. Auto-initializing schema using scripts/init_db.sql...")
-                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
-                    if os.path.exists(schema_path):
-                        with open(schema_path, "r", encoding="utf-8") as sf:
-                            sql_content = sf.read()
-                        
-                        sql_no_comments = re.sub(r"--[^\n]*", "", sql_content)
-                        statements = []
-                        for stmt in sql_no_comments.split(";"):
-                            stmt = stmt.strip()
-                            if stmt and not stmt.upper().startswith("CREATE DATABASE"):
-                                statements.append(stmt)
-                        
-                        for stmt in statements:
-                            cur.execute(stmt)
-                        conn.commit()
-                        logger.info("Database schema initialized successfully!")
-                    else:
-                        logger.warning("scripts/init_db.sql not found at %s. Cannot auto-initialize schema.", schema_path)
+                # Run init_db.sql idempotently to ensure all tables and indexes (including guardrails) exist
+                logger.info("Syncing database schema using scripts/init_db.sql...")
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
+                if os.path.exists(schema_path):
+                    with open(schema_path, "r", encoding="utf-8") as sf:
+                        sql_content = sf.read()
+                    
+                    sql_no_comments = re.sub(r"--[^\n]*", "", sql_content)
+                    statements = []
+                    for stmt in sql_no_comments.split(";"):
+                        stmt = stmt.strip()
+                        if stmt and not stmt.upper().startswith("CREATE DATABASE"):
+                            statements.append(stmt)
+                    
+                    for stmt in statements:
+                        cur.execute(stmt)
+                    conn.commit()
+                    logger.info("Database schema synchronized successfully!")
                 else:
-                    cur.execute("SELECT 1;")
+                    logger.warning("scripts/init_db.sql not found at %s. Cannot synchronize schema.", schema_path)
             conn.close()
             logger.info("Database connection verified successfully!")
         except Exception as e:
@@ -344,6 +340,14 @@ def on_startup():
         start_auto_ingestion_watcher()
     except Exception as e:
         logger.error("Failed to start auto-ingestion watcher: %s", e)
+
+    # 4. Run Guardrail Self Test & Background Health Probe
+    try:
+        run_startup_self_test(_config)
+        asyncio.create_task(background_health_loop(_config))
+    except Exception as e:
+        logger.critical("Startup checks or health loop start failed: %s", e)
+        raise
 
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
@@ -402,6 +406,7 @@ def _reload_pipeline() -> None:
 class AgentChatRequest(BaseModel):
     message: str
     session_id: str = "web"
+    message_id: str = ""  # Client-generated UUID for deduplication
     approved_writes: bool = False
     # the pending write(s) the user approved, echoed back so approval is bound to the
     # exact name+args that were shown (not whatever the model re-proposes).
@@ -1031,7 +1036,7 @@ def _history_to_messages(history: list[dict]) -> list:
 
 
 @app.post("/agent/chat")
-def agent_chat(req: AgentChatRequest):
+def agent_chat(req: AgentChatRequest, response: Response):
     """Agentic chat: the model picks which tool to call (ingest/search/sql) instead
     of always going straight to retrieval. Writes (ingest_document) stop and report
     what they want to run — POST again with approved_writes=true to actually run it.
@@ -1039,6 +1044,12 @@ def agent_chat(req: AgentChatRequest):
     past conversations; the in-memory cache is just a fast path within one run.
     """
     from backend.storage.conversation_store import get_conversation_store
+
+    # 1. Token Quota Check (Reserve budget)
+    quota = get_enforcer(_config)
+    reserve = get_reserve_tokens(_config)
+    if not quota.reserve(req.session_id, reserve):
+        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
 
     max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
     history = _agent_sessions.get(req.session_id)
@@ -1066,6 +1077,15 @@ def agent_chat(req: AgentChatRequest):
         conversation_history=history, approved_writes=req.approved_writes,
         approved_calls=req.approved_calls, session_id=req.session_id,
     )
+
+    # 2. Reconcile token budget
+    actual_tokens = result.get("token_usage", {}).get("total", 0)
+    quota.reconcile(req.session_id, reserved=reserve, actual=actual_tokens)
+
+    # 3. Add guardrail headers
+    response.headers["X-Guardrail-Events"] = str(result.get("guard_policy", "allow"))
+    response.headers["X-Risk-Score"] = str(result.get("guard_risk_score", 0))
+
     tool_calls = [
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
         for c in result.get("tool_calls", [])
@@ -1105,6 +1125,70 @@ def agent_chat(req: AgentChatRequest):
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),
     }
+
+
+@app.post("/agent/chat/stream")
+async def agent_chat_stream(req: AgentChatRequest, request: Request):
+    """SSE endpoint for streaming agent responses."""
+    import json
+    from fastapi.responses import StreamingResponse
+    from backend.storage.conversation_store import get_conversation_store
+
+    # 1. Token Quota Check (Reserve budget)
+    quota = get_enforcer(_config)
+    reserve = get_reserve_tokens(_config)
+    if not quota.reserve(req.session_id, reserve):
+        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
+
+    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
+    history = _agent_sessions.get(req.session_id)
+    if history is None:
+        try:
+            history = _history_to_messages(
+                get_conversation_store().load_history(req.session_id, n=max_history)
+            )
+        except Exception:
+            logger.debug("agent chat history load failed", exc_info=True)
+            history = []
+    elif len(history) > max_history:
+        history = history[-max_history:]
+
+    # Save user message immediately so it's persisted and visible if user switches/reloads
+    try:
+        store = get_conversation_store()
+        # Save user message using regular save_turn (requires no message_id/deduplication)
+        store.save_turn(req.session_id, "user", req.message)
+    except Exception:
+        logger.debug("agent user chat history save failed", exc_info=True)
+
+    tokens_tracker = {"used": 0}
+
+    async def event_generator():
+        try:
+            async for event in stream_agent(
+                session_id=req.session_id,
+                message=req.message,
+                request=request,
+                message_id=req.message_id,
+                config=_config,
+                registry=_agent_registry,
+                conversation_history=history,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("event") == "usage":
+                    tokens_tracker["used"] = event["tokens"]
+        finally:
+            quota.reconcile(req.session_id, reserved=reserve, actual=tokens_tracker["used"])
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disables nginx buffering
+        },
+    )
 
 
 @app.get("/agent/sessions")

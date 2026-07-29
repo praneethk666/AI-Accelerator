@@ -73,7 +73,8 @@ const fileTypeFromName = (filename) => {
 // (ChatPage.updatePageViewer) and the per-message "View Source" button
 // (MessageRow) so the two stay in sync.
 const buildViewableSources = (sources) => {
-  return (sources || [])
+  console.log("buildViewableSources input sources:", sources);
+  const result = (sources || [])
     .map((s) => ({ ...s, fileType: fileTypeFromName(s.filename) }))
     .filter((s) => {
       if (!s.document_id) return false;
@@ -84,11 +85,19 @@ const buildViewableSources = (sources) => {
       if (s.fileType === 'image') return true;
       return false;
     })
-    .filter((s, i, arr) => arr.findIndex((x) =>
-      x.document_id === s.document_id && x.page === s.page
-        && x.sheet === s.sheet && x.snippet === s.snippet
-    ) === i)
+    .filter((s, i, arr) => arr.findIndex((x) => {
+      if ((x.filename || '').toLowerCase() !== (s.filename || '').toLowerCase()) return false;
+      if (s.fileType === 'pdf' || s.fileType === 'ppt') {
+        return x.page === s.page;
+      }
+      if (s.fileType === 'excel') {
+        return x.sheet === s.sheet;
+      }
+      return true;
+    }) === i)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  console.log("buildViewableSources output result:", result);
+  return result;
 };
 
 /**
@@ -909,6 +918,24 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const fileType = active?.fileType;
   const isPaginated = fileType === 'pdf' || fileType === 'ppt';
 
+  const getBadgeLabel = (p) => {
+    if (p.fileType === 'pdf') return `P.${p.page}`;
+    if (p.fileType === 'ppt') return `Slide ${p.page}`;
+    if (p.fileType === 'excel') return p.sheet ? `Sheet: ${p.sheet}` : 'Excel';
+    if (p.fileType === 'docx') return 'Word';
+    if (p.fileType === 'image') return 'Image';
+    return 'Doc';
+  };
+
+  const handleSelectSource = (idx) => {
+    onPageChange(idx);
+    const target = pages[idx];
+    if (target.fileType === 'pdf' || target.fileType === 'ppt') {
+      setCurrentPage(target.page || 1);
+      setScale(1);
+    }
+  };
+
   const [currentPage, setCurrentPage] = useState(active?.page || 1);
   const [totalPages, setTotalPages] = useState(null);
   const [imgLoaded, setImgLoaded] = useState(false);
@@ -1148,7 +1175,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     // PDF/PPT only — jump by page/slide number and sync activeIdx if cited.
     setCurrentPage(page);
     setScale(1);
-    const idx = pages.findIndex((p) => p.page === page);
+    const idx = pages.findIndex((p) => p.page === page && p.document_id === active?.document_id);
     if (idx !== -1) {
       onPageChange(idx);
     }
@@ -1165,7 +1192,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       : null;
 
   const maxScore = Math.max(...pages.map((p) => p.score ?? 0), 0.001);
-  const multiPage = isPaginated && pages.length > 1;
+  const multiPage = pages.length > 1;
 
   const sheetRows = (fileType === 'excel' && workbook && activeSheet)
     ? XLSX.utils.sheet_to_json(workbook.Sheets[activeSheet], { header: 1, defval: '' })
@@ -1256,23 +1283,23 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </button>
       </div>
 
-      {/* Page/Slide Badges — cited pages shown below header, pdf/ppt only */}
+      {/* Document/Page Badges — cited pages shown below header */}
       {multiPage && (
         <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
           {pages.map((p, i) => {
             const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
-            const isActive = p.page === currentPage;
+            const isActive = i === activeIdx;
             return (
               <button
                 key={i}
-                onClick={() => handlePageChange(p.page)}
+                onClick={() => handleSelectSource(i)}
                 className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
                   ? 'bg-blue-600/20 border-blue-500 text-blue-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                   }`}
-                title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
+                title={`${p.filename} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
-                <span>P.{p.page}</span>
+                <span>{getBadgeLabel(p)}</span>
                 <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
                   <div
                     className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}

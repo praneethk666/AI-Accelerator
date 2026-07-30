@@ -383,22 +383,39 @@ def _try_extract_alarm_table_chunks(block: dict, document_id: str | None, ref_fn
 
     source_ref = ref_fn(block.get("source_ref"))
     alarm_chunks = []
+    last_row_id = None
+    last_row = None
 
     for row in grid[1:]:
         if not row or not any(row):
             continue
         row_id = str(row[0]).strip()
 
-        if not row_id:
-            # Continuation row (wrapped cell text) — merge into the previous alarm chunk
-            # instead of dropping it.
+        if not row_id or row_id == last_row_id:
+            # Continuation row (wrapped cell text) — merge into the previous alarm
+            # chunk instead of creating a duplicate. Real bug found live, 28-Jul:
+            # this used to check ONLY for a blank row_id, but _RowspanTableParser
+            # (unlimited_ocr.py, used by both Unlimited-OCR and PaddleOCR-VL)
+            # deliberately DENORMALIZES rowspan cells -- repeating the alarm name
+            # into every physical row it spans, by design, so it's never blank.
+            # On a real 3-line alarm-details cell this made every wrapped line its
+            # own duplicate alarm chunk (same alarm code appearing 3-4x). Treating
+            # "identical to the immediately preceding row's id" as ALSO a
+            # continuation handles both the old blank-style input and the
+            # denormalized-repeat style from these engines.
             if not alarm_chunks:
                 continue
             extra_details = []
             for i in range(1, min(len(row), len(grid[0]))):
                 hdr = grid[0][i]
                 val = row[i]
-                if val:
+                # Skip a value that's IDENTICAL to what this same column already
+                # held on the alarm's first row -- with rowspan-denormalized
+                # input (see comment above) that's a repeat, not new content, and
+                # re-appending it on every wrapped line would just pile up
+                # redundant "Code: 82H | Code: 82H | ..." text instead of the
+                # genuinely new per-line description.
+                if val and (last_row is None or i >= len(last_row) or val != last_row[i]):
                     extra_details.append(f"{hdr}: {val}")
             if extra_details:
                 prev = alarm_chunks[-1]
@@ -431,6 +448,8 @@ def _try_extract_alarm_table_chunks(block: dict, document_id: str | None, ref_fn
             },
         }
         alarm_chunks.append(chunk)
+        last_row_id = row_id
+        last_row = row
 
     return alarm_chunks if alarm_chunks else None
 
@@ -989,6 +1008,11 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
     )
 
     try:
+        from backend.core import pacing
+        # Real finding, 28-Jul: this call had NO pacing at all, unlike vision/
+        # vision_ocr/enrichment — see chunking.min_interval_s in global.yaml
+        # for the real 429-storm evidence this fixes.
+        pacing.pace("chunk_llm", float((config.get("chunking") or {}).get("min_interval_s", 0) or 0))
         llm = get_llm_for(config, config.get("chunking"))
         response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         from backend.core import usage

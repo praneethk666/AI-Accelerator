@@ -17,10 +17,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from backend.pipeline.ingest import ingest_document  # noqa: E402
+from backend.pipeline.page_images import pages_with_chunks, save_page_images  # noqa: E402
+from backend.storage.postgres_store import PostgresStore  # noqa: E402
 
 
 def main(path: str, document_id: str | None) -> None:
     filename = os.path.basename(path)
+    file_type = "pdf" if path.lower().endswith(".pdf") else None
     t0 = time.time()
     print(f"=== ingesting {filename}  (doc {document_id or 'auto content-hash'}) ===",
           flush=True)
@@ -59,6 +62,24 @@ def main(path: str, document_id: str | None) -> None:
             print(f"\n--- {len(imgs)} figure crops in {img_dir} ---")
             for f in imgs[:60]:
                 print(f"  {f}")
+
+        # Mirrors the API's /upload on_complete tail (backend/api/main.py) -- real
+        # finding, 28-Jul: this script used to skip it entirely, so document_pages
+        # stayed empty (0 rows) after a real full ingestion even though the API
+        # path always populates it. Same shared helper, same behavior either way.
+        did = result.get("document_id")
+        if did and file_type == "pdf" and result.get("status") not in ("failed", "deleted"):
+            try:
+                pages = pages_with_chunks(chunks)
+                pg = PostgresStore()
+                try:
+                    for p, web, w, h in save_page_images(did, path, pages):
+                        pg.insert_page_image(did, p, web, w, h)
+                finally:
+                    pg.close()
+                print(f"\n--- saved {len(pages)} page images ---")
+            except Exception as e:
+                print(f"\n(page-image save failed: {e})")
 
     out = ingest_document(path, document_id, on_step=on_step, on_complete=on_complete)
     elapsed = time.time() - t0

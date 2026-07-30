@@ -362,29 +362,6 @@ def _pg() -> PostgresStore:
 _INGEST_STEPS = list((_config.get("ingestion") or {}).get("steps") or [])
 
 
-def _save_page_images(document_id: str, pdf_path: str, pages: set, dpi: int = 150) -> list:
-    """Render the given (1-based) PDF pages to JPEGs under uploads/pages/<doc_id>/
-    and return [(page, web_path, width, height)]. PDF-only; best-effort. fitz
-    rendering is pure C (no torch/paddle), so it's safe in the backend process."""
-    import fitz
-    page_dir = os.path.join(_PAGES_DIR, document_id)
-    os.makedirs(page_dir, exist_ok=True)
-    out = []
-    doc = fitz.open(pdf_path)
-    try:
-        for p in sorted(pages):
-            if p < 1 or p > len(doc):
-                continue
-            pix = doc[p - 1].get_pixmap(dpi=dpi)
-            fname = f"p{p}.jpg"
-            with open(os.path.join(page_dir, fname), "wb") as f:
-                f.write(pix.tobytes("jpeg", jpg_quality=80))
-            out.append((p, f"/pages/{document_id}/{fname}", pix.width, pix.height))
-    finally:
-        doc.close()
-    return out
-
-
 def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
     """Run the full pipeline for one upload. Delegates run + status + finalize to the
     shared ingest_document entry point; the API-only tail (live DB progress + PDF
@@ -427,13 +404,10 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
         if pg is None or not pg.document_exists(document_id) or file_type != "pdf" or result.get("status") in ("failed", "deleted"):
             return
         try:
+            from backend.pipeline.page_images import pages_with_chunks, save_page_images
             chunks = result.get("chunks", []) or []
-            pages = {
-                int(c["source_ref"]["page"]) for c in chunks
-                if isinstance(c.get("source_ref"), dict)
-                and c["source_ref"].get("page") is not None
-            }
-            for p, web, w, h in _save_page_images(document_id, dest, pages):
+            pages = pages_with_chunks(chunks)
+            for p, web, w, h in save_page_images(document_id, dest, pages):
                 pg.insert_page_image(document_id, p, web, w, h)
             logger.info("saved %d page images for %s", len(pages), document_id)
         except Exception:

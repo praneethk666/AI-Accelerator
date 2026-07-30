@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.chunking.chunk_tool import chunk_blocks
+from backend.chunking.chunk_tool import chunk_blocks, _try_extract_alarm_table_chunks
 from backend.core.schemas import Chunk
 
 
@@ -236,6 +236,71 @@ def test_source_ref_carried_through():
     assert chunks[0]["source_ref"] == src
 
 
+# ── _try_extract_alarm_table_chunks: real bug found live, 28-Jul, on the servo
+# manual's page-54 alarm table (F80H-F8CH). _RowspanTableParser (unlimited_ocr.py,
+# used by both Unlimited-OCR and PaddleOCR-VL) denormalizes rowspan cells --
+# repeating the alarm name/code into EVERY physical row a rowspan spans, by
+# design (never blank). The old continuation-row check only treated a BLANK
+# first column as "same alarm, merge" -- so a real 3-line "Alarm details" cell
+# produced 3 separate duplicate alarm chunks instead of 1. ──────────────────────
+
+def _alarm_block(headers, rows):
+    return {"type": "table", "document_id": "d1",
+            "table_data": {"headers": headers, "rows": rows},
+            "source_ref": {"filename": "x.pdf", "page": 54}}
+
+
+def test_alarm_rowspan_denormalized_continuation_rows_merge_into_one_chunk():
+    # Real shape: PaddleOCR-VL's rowspan-denormalized output for one alarm whose
+    # "Alarm details" cell wraps across 3 physical rows -- name/code repeated on
+    # every row (never blank), Indication/Remarks also repeated.
+    headers = ["Alarm name", "Code", "Alarm details, detecting and clearing method",
+               "Indication", "Remarks"]
+    rows = [
+        ["No response from sensor", "82H",
+         "State that no serial communication from sensor detected.", "8<=>2", "SU"],
+        ["No response from sensor", "82H",
+         "Detect the state no response from sensor.", "8<=>2", "SU"],
+        ["No response from sensor", "82H",
+         "Clear with re-powering on.", "8<=>2", "SU"],
+    ]
+    chunks = _try_extract_alarm_table_chunks(_alarm_block(headers, rows), "d1", lambda r: r)
+    assert chunks is not None
+    assert len(chunks) == 1  # all 3 physical rows are ONE alarm, not 3
+    text = chunks[0]["text"]
+    assert "State that no serial communication from sensor detected." in text
+    assert "Detect the state no response from sensor." in text
+    assert "Clear with re-powering on." in text
+    # the repeated Indication/Remarks value shouldn't be piled up 3x
+    assert text.count("8<=>2") == 1
+    assert text.count("SU") == 1
+
+
+def test_alarm_rows_with_distinct_ids_stay_separate_chunks():
+    headers = ["Alarm name", "Code", "Details"]
+    rows = [
+        ["Sensor error 1", "83H", "Internal sensor failure detected."],
+        ["Sensor error 2", "84H", "Internal sensor failure detected."],
+    ]
+    chunks = _try_extract_alarm_table_chunks(_alarm_block(headers, rows), "d1", lambda r: r)
+    assert len(chunks) == 2
+    assert chunks[0]["tags"]["alarm_name"] == "Sensor error 1"
+    assert chunks[1]["tags"]["alarm_name"] == "Sensor error 2"
+
+
+def test_alarm_continuation_row_with_old_blank_style_still_merges():
+    # The ORIGINAL supported shape (non-denormalized upstream: continuation rows
+    # leave the identity column blank) must keep working unchanged.
+    headers = ["Alarm name", "Code", "Details"]
+    rows = [
+        ["Sensor error 1", "83H", "Internal sensor failure detected."],
+        ["", "", "Clear with re-powering on."],
+    ]
+    chunks = _try_extract_alarm_table_chunks(_alarm_block(headers, rows), "d1", lambda r: r)
+    assert len(chunks) == 1
+    assert "Clear with re-powering on." in chunks[0]["text"]
+
+
 def test_every_chunk_is_a_valid_chunk_schema():
     blocks = [
         {"type": "heading", "text": "H", "document_id": "d1"},
@@ -262,5 +327,8 @@ if __name__ == "__main__":
     test_non_content_blocks_skipped()
     test_empty_text_produces_no_chunk()
     test_source_ref_carried_through()
+    test_alarm_rowspan_denormalized_continuation_rows_merge_into_one_chunk()
+    test_alarm_rows_with_distinct_ids_stay_separate_chunks()
+    test_alarm_continuation_row_with_old_blank_style_still_merges()
     test_every_chunk_is_a_valid_chunk_schema()
     print("chunking tests passed")

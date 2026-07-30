@@ -61,7 +61,22 @@ class PostgresStore:
 
     def __init__(self, dsn: str | None = None) -> None:
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
-        self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True)
+        # prepare_threshold=None: real finding, 28-Jul -- psycopg3's default
+        # auto-prepare-after-repeated-use behavior breaks under Supabase's
+        # Transaction Pooler (PgBouncer transaction mode, used here because the
+        # direct host is IPv6-only -- see repo-conventions memory). A pooled
+        # backend connection can differ call to call, so a server-side prepared
+        # statement name from one physical connection collides with an unrelated
+        # one already present on whichever backend the pool hands back next.
+        # Confirmed live: write_blocks' executemany() over document_blocks threw
+        # psycopg.errors.DuplicatePreparedStatement ("_pg3_0" already exists) and
+        # silently discarded every extracted block for a real 105-page ingestion
+        # (caught by ingest.py's own best-effort try/except, so the run itself
+        # reported success while this table stayed empty). Disabling prepared
+        # statements entirely is the documented psycopg3 fix for pgbouncer/pgpool
+        # transaction-pooling deployments.
+        self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True,
+                                     prepare_threshold=None)
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk row (full record), keyed by chunk_id.

@@ -78,7 +78,15 @@ def _llm_is_continuation(lead: dict, cur: dict, config: dict) -> bool:
     """Ask the LLM whether `cur` is a continuation of `lead` — only for genuinely
     ambiguous boundaries (all-text columns). Cheap: one tiny call, header + a few rows."""
     try:
+        from backend.core import pacing
         from backend.core.llm_client import get_llm
+
+        # Real finding, 28-Jul: shares chunk_tool.py's table-repair call's SAME
+        # gpt-4o-mini per-minute budget (both run during the same "chunk" step)
+        # but had NO pacing at all — real 429s, 7/14 stitch arbitrations failed
+        # on a real 105-page run. Same shared config key as chunk_tool.py's own
+        # pacing call, not a second value that could drift out of sync.
+        pacing.pace("chunk_llm", float((config.get("chunking") or {}).get("min_interval_s", 0) or 0))
 
         def head(td):
             if not isinstance(td, dict):

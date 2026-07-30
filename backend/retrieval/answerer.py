@@ -178,6 +178,103 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     return out
 
 
+def _select_grounding_targets(chunks: list[dict], top_k: int) -> list[dict]:
+    """Top-ranked, DISTINCT-page PDF citations to attach a page IMAGE for —
+    image-grounded answering (28-Jul): the answer LLM can visually cross-check
+    extracted text against the real page, catching a case like the real bug
+    found tonight (a table's "Indication" icon column misread by the table-OCR
+    engine on 9/11 rows while every other column was correct).
+
+    chunks arrive best-first (already reranked). Only chunks with a PDF page
+    locator qualify (source_ref.page) — Excel/PPT citations have no page-image
+    cache. Dedups by (document_id, page) so two top-ranked chunks from the same
+    page don't burn two image slots."""
+    seen: set[tuple] = set()
+    targets: list[dict] = []
+    for chunk in chunks:
+        if len(targets) >= top_k:
+            break
+        ref = chunk.get("source_ref") or {}
+        doc_id, page = chunk.get("document_id"), ref.get("page")
+        if not doc_id or page is None:
+            continue
+        key = (str(doc_id), page)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append({"document_id": str(doc_id), "page": page, "source_ref": ref})
+    return targets
+
+
+def _load_grounding_images(targets: list[dict]) -> list[dict]:
+    """Load the already-rendered page JPEG (document_pages, from ingestion —
+    see backend/pipeline/page_images.py) for each target and base64-encode it.
+
+    Fails OPEN, per-image: a document ingested before this feature existed (no
+    document_pages row), a missing/unreadable file, or a DB error just means
+    that ONE image is skipped — never raises, so a page-image problem can never
+    break answering itself (mirrors _expand_thin_chunks's own catch-and-skip
+    shape for get_blocks above)."""
+    if not targets:
+        return []
+    import base64
+
+    from backend.pipeline.page_images import physical_path
+    from backend.storage.postgres_store import PostgresStore
+
+    out: list[dict] = []
+    store = None
+    try:
+        store = PostgresStore()
+        for t in targets:
+            try:
+                row = store.get_page_image(t["document_id"], t["page"])
+                if not row:
+                    continue
+                with open(physical_path(row["image_path"]), "rb") as f:
+                    data = f.read()
+                out.append({
+                    "label": _locator(t["source_ref"]),
+                    "b64": base64.b64encode(data).decode("ascii"),
+                })
+            except Exception:
+                logger.warning("image-ground: failed to load page image (doc %s, page %s)",
+                                t["document_id"], t["page"], exc_info=True)
+    except Exception:
+        logger.warning("image-ground: PostgresStore unavailable, answering without images",
+                        exc_info=True)
+    finally:
+        if store is not None:
+            store.close()
+    return out
+
+
+def _build_user_content(user_msg: str, images: list[dict]):
+    """Plain string (byte-identical to the pre-image-grounding prompt) when
+    there's nothing to attach — zero behavior/cost change when the feature is
+    off or no image could be loaded. With images, an OpenAI-style multimodal
+    content-block list: LangChain's ChatOpenAI (the active provider) accepts
+    this shape natively (backend/core/vision_client.py's openai path already
+    proves it works against this exact API)."""
+    if not images:
+        return user_msg
+    labels = ", ".join(img["label"] for img in images)
+    text = (
+        user_msg
+        + f"\n\n[The actual source page image is attached below for: {labels}. "
+        "If the image shows a value that conflicts with the extracted text above, "
+        "trust the image — extracted text can misread icons, symbols, or dense "
+        "table cells.]"
+    )
+    content: list[dict] = [{"type": "text", "text": text}]
+    for img in images:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{img['b64']}"},
+        })
+    return content
+
+
 class AnswererTool:
     """
     Implements the Tool Protocol (backend/core/tool.py).
@@ -238,11 +335,38 @@ class AnswererTool:
             model_name, provider_name = resolve_model_provider(
                 config, answerer_cfg, default_model=config["llm"].get("answer_model")
             )
-            llm      = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
-            response = llm.invoke([
+            llm = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
+
+            # Image-grounded answering (28-Jul): only target citations that
+            # actually survived the context-budget cut above, not the full
+            # pre-truncation `chunks` list.
+            context_chunks = chunks[: len(context_blocks)]
+            image_cfg = answerer_cfg.get("image_ground") or {}
+            grounding_images: list[dict] = []
+            if image_cfg.get("enabled"):
+                targets = _select_grounding_targets(
+                    context_chunks, int(image_cfg.get("top_k") or 1))
+                grounding_images = _load_grounding_images(targets)
+
+            content = _build_user_content(user_msg, grounding_images)
+            messages = [
                 {"role": "system", "content": _ANSWER_SYSTEM},
-                {"role": "user",   "content": user_msg},
-            ])
+                {"role": "user",   "content": content},
+            ]
+            try:
+                response = llm.invoke(messages)
+            except Exception:
+                if not grounding_images:
+                    raise
+                # The provider/model may reject the multimodal content shape
+                # (e.g. a non-vision-capable model swapped in) -- fail open by
+                # retrying once as plain text rather than losing the answer.
+                logger.warning("image-ground: multimodal answer call failed, "
+                                "retrying text-only", exc_info=True)
+                response = llm.invoke([
+                    {"role": "system", "content": _ANSWER_SYSTEM},
+                    {"role": "user",   "content": user_msg},
+                ])
             usage.record_from_message("answer", response, model=model_name, provider=provider_name)
             answer_text = clean_message_content(response.content).strip()
 

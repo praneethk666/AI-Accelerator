@@ -11,12 +11,26 @@ engine="surya" at all (that's the OTHER project, NEI). Lazy-loading means Surya'
 freeing that headroom for Unlimited-OCR here. Replaces the two separate
 single-engine servers (unlimited_ocr_server.py, surya_server.py).
 
+NOTE — PaddleOCR-VL-1.6 (a third, genuinely-better table-OCR engine on the 3
+hardest real tables tested, 27-Jul) is deliberately NOT in this process: real
+finding, live-attempted, 28-Jul — torch 2.10.0 and paddlepaddle-gpu 3.3.1 pin
+mutually exclusive nvidia-*-cu12 versions (12.8-family vs 12.6-family) with no
+overlap; installing both in one venv leaves one of the two unable to even
+import ("undefined symbol: ncclCommShrink" when torch's CUDA libs get
+downgraded underneath it). This is a hard packaging conflict, not a config
+issue — PaddleOCR-VL runs as its OWN process instead, see
+scripts/paddleocr_vl_server.py.
+
 Real, validated finding (24-27 Jul) driving which engine to pick:
   - engine="unlimited_ocr": correct reading order + structured <table> HTML with
     proper rowspan denormalization (every row carries its own identifying values,
     not left blank relying on the row above). Slower, ~26-34s/page. Use where
     downstream processing depends on real table structure (AI-Accelerator RAG
-    chunking).
+    chunking). Real gap found 27-Jul: on a real 44-row/5-section spec table it
+    silently DROPPED one row, cascading a 6-row label/value misalignment — not
+    caught by the fully-empty-column safety net (every cell still had plausible
+    text, just paired with the wrong label). See paddleocr_vl_server.py for the
+    engine that fixed this.
   - engine="surya": fast, ~11s/page (3x faster). But returns UNORDERED flat text
     lines — no table/layout structure at all. Validated live: on a real dense
     alarm-code table, row/column order came out scrambled (a Remarks-column value

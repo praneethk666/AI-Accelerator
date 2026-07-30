@@ -8,8 +8,9 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 from backend.extraction.docling_pdf.docling_extract import (
-    _local_table_engine, _local_table, _table_has_span, _table_is_complex,
-    _split_bbox_vertically, _merge_split_table_data,
+    _local_table_engine, _local_table, _local_table_ocr_engine, _table_has_span,
+    _table_is_complex, _split_bbox_vertically, _merge_split_table_data,
+    _sparse_column_indices, _cross_check_sparse_columns,
 )
 
 
@@ -35,6 +36,36 @@ def test_local_table_engine_false_when_set_to_vlm():
 def test_local_table_engine_true_when_set_to_local():
     cfg = {"extraction": {"docling": {"table_engine": "local"}}}
     assert _local_table_engine(cfg) is True
+
+
+# ── _local_table_ocr_engine: which self-hosted model handles table_engine: local ──
+
+def test_local_table_ocr_engine_defaults_to_unlimited_ocr():
+    assert _local_table_ocr_engine({}) == "unlimited_ocr"
+    assert _local_table_ocr_engine({"extraction": {"docling": {}}}) == "unlimited_ocr"
+
+
+def test_local_table_ocr_engine_reads_explicit_paddleocr_vl():
+    cfg = {"extraction": {"docling": {"local_table_ocr_engine": "paddleocr_vl"}}}
+    assert _local_table_ocr_engine(cfg) == "paddleocr_vl"
+
+
+def test_local_table_routes_to_paddleocr_vl_when_configured():
+    fake_crop = MagicMock()
+    fake_crop.crop_region.return_value = b"cropped-png-bytes"
+    table_data = {"headers": ["Code", "Name"], "rows": [["F7H", "Motor error"]]}
+    cfg = {"extraction": {"docling": {"local_table_ocr_engine": "paddleocr_vl"}},
+           "vision_ocr": {}}
+
+    with patch("backend.vision.pdf_cropper.PDFCropper", return_value=fake_crop), \
+         patch("backend.extraction.paddleocr_vl.transcribe_table_paddleocr_vl",
+               return_value=table_data) as mock_paddle, \
+         patch("backend.extraction.unlimited_ocr.transcribe_table_local") as mock_uo:
+        result = _local_table("/fake/manual.pdf", 5, [10, 20, 30, 40], cfg)
+
+    mock_paddle.assert_called_once_with(b"cropped-png-bytes", cfg)
+    mock_uo.assert_not_called()  # the other engine's client must not be touched
+    assert result == table_data
 
 
 def test_local_table_crops_the_region_and_delegates_to_the_local_transcriber():
@@ -185,6 +216,116 @@ def test_table_is_complex_true_for_list_heavy_cells_without_span():
     ])
     assert _table_has_span(t) is False
     assert _table_is_complex(t) is True
+
+
+# ── sparse-column cross-check: real bug found live, 28-Jul, page 54's alarm
+# table -- PaddleOCR-VL dropped the "Indication" 7-segment-display icon column
+# on 9/11 rows while every other column (including short ones like "Code")
+# stayed fully populated. A naive "short values" heuristic would ALSO flag the
+# correct Code column, which is why _sparse_column_indices checks emptiness,
+# not value length. ────────────────────────────────────────────────────────────
+
+def test_sparse_column_indices_flags_mostly_empty_column_with_populated_siblings():
+    # Real shape: Code is always populated (correct); Indication is blank on
+    # most rows (the actual bug) even though it's a real column with content.
+    td = {
+        "headers": ["Alarm name", "Code", "Indication"],
+        "rows": [
+            ["Sensor initial process error", "80H", ""],
+            ["Sensor signal disconnection", "81H", ""],
+            ["No response from sensor", "82H", "[F25]"],
+            ["Sensor error 1", "83H", ""],
+        ],
+    }
+    assert _sparse_column_indices(td) == [2]
+
+
+def test_sparse_column_indices_does_not_flag_short_but_fully_populated_column():
+    td = {
+        "headers": ["Alarm name", "Code"],
+        "rows": [["Sensor initial process error", "80H"],
+                 ["Sensor signal disconnection", "81H"]],
+    }
+    assert _sparse_column_indices(td) == []
+
+
+def test_sparse_column_indices_does_not_flag_a_table_thats_sparse_everywhere():
+    # No column is well-populated -- nothing to compare against, don't flag.
+    td = {
+        "headers": ["A", "B"],
+        "rows": [["", ""], ["", "x"], ["", ""], ["y", ""]],
+    }
+    assert _sparse_column_indices(td) == []
+
+
+def test_cross_check_sparse_columns_fills_gaps_from_vlm_reading_matched_by_row_id():
+    td = {
+        "headers": ["Alarm name", "Code", "Indication"],
+        "rows": [
+            ["No response from sensor", "82H", ""],
+            ["Sensor error 1", "83H", ""],
+        ],
+    }
+    vlm_markdown = (
+        "| Alarm name | Code | Indication |\n"
+        "| --- | --- | --- |\n"
+        "| No response from sensor | 82H | 8<=>2 |\n"
+        "| Sensor error 1 | 83H | 8<=>3 |\n"
+    )
+    with patch("backend.extraction.docling_pdf.docling_extract._vlm_table_from_png",
+               return_value=vlm_markdown) as mock_vlm:
+        result = _cross_check_sparse_columns(td, b"png-bytes", {"vision_ocr": {}})
+
+    mock_vlm.assert_called_once_with(b"png-bytes", {"vision_ocr": {}})
+    assert result["rows"][0][2] == "8<=>2"
+    assert result["rows"][1][2] == "8<=>3"
+
+
+def test_cross_check_sparse_columns_never_overwrites_an_existing_value():
+    td = {
+        "headers": ["Alarm name", "Code", "Indication"],
+        "rows": [["No response from sensor", "82H", "already-here"],
+                 ["Sensor error 1", "83H", ""]],
+    }
+    vlm_markdown = (
+        "| Alarm name | Code | Indication |\n"
+        "| --- | --- | --- |\n"
+        "| No response from sensor | 82H | different-value |\n"
+        "| Sensor error 1 | 83H | 8<=>3 |\n"
+    )
+    with patch("backend.extraction.docling_pdf.docling_extract._vlm_table_from_png",
+               return_value=vlm_markdown):
+        result = _cross_check_sparse_columns(td, b"png-bytes", {"vision_ocr": {}})
+
+    assert result["rows"][0][2] == "already-here"  # untouched
+    assert result["rows"][1][2] == "8<=>3"          # gap filled
+
+
+def test_cross_check_sparse_columns_skips_vlm_call_when_nothing_is_sparse():
+    td = {
+        "headers": ["Alarm name", "Code"],
+        "rows": [["Sensor initial process error", "80H"]],
+    }
+    with patch("backend.extraction.docling_pdf.docling_extract._vlm_table_from_png") as mock_vlm:
+        result = _cross_check_sparse_columns(td, b"png-bytes", {"vision_ocr": {}})
+
+    mock_vlm.assert_not_called()
+    assert result == td
+
+
+def test_cross_check_sparse_columns_tolerates_vlm_failure():
+    td = {
+        "headers": ["Alarm name", "Code", "Indication"],
+        "rows": [
+            ["No response from sensor", "82H", ""],
+            ["Sensor error 1", "83H", ""],
+        ],
+    }
+    with patch("backend.extraction.docling_pdf.docling_extract._vlm_table_from_png",
+               side_effect=RuntimeError("vision call failed")):
+        result = _cross_check_sparse_columns(td, b"png-bytes", {"vision_ocr": {}})
+
+    assert result == td  # unchanged, no exception propagated
 
 
 if __name__ == "__main__":

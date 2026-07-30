@@ -195,24 +195,51 @@ def _local_table_engine(config) -> bool:
     return (dcfg.get("table_engine") or "vlm") == "local"
 
 
-def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
-    """Crop a table region and transcribe it via the self-hosted Unlimited-OCR server,
-    returning {headers, rows} DIRECTLY (no markdown round trip) so the rowspan
-    denormalization survives intact — see backend/extraction/unlimited_ocr.py.
+def _local_table_ocr_engine(config) -> str:
+    """Which self-hosted engine handles per-table-crop escalation, once
+    _local_table_engine() has already picked "local" over "vlm". Real finding,
+    27-Jul: PaddleOCR-VL-1.6 transcribed all 3 of Unlimited-OCR's hardest known
+    real failures on this project's servo manual (2 decoder-length-bound OOMs
+    + 1 silently-dropped-row misalignment) perfectly — see
+    backend/extraction/paddleocr_vl.py. Kept as a separate config knob, not a
+    hardcoded swap, so Unlimited-OCR (with its own validated OOM-retry-ladder
+    and split-crop fallback) stays available with no code change if needed."""
+    dcfg = (config.get("extraction") or {}).get("docling") or {}
+    return dcfg.get("local_table_ocr_engine") or "unlimited_ocr"
 
-    If the whole-table crop exhausts transcribe_table_local's own OOM retry ladder
-    (real finding, 27-Jul: some tables OOM regardless of base_size because the real
-    bottleneck is decoder/generation-length, not input resolution — a long, dense
-    table needs a long output sequence, and THAT's what runs out of memory, not the
-    vision encoder), split the region into top/bottom halves (with overlap so a row
-    straddling the seam is still whole in at least one half) and transcribe each
-    half separately — half the rows means half the output sequence length, which
-    directly targets THIS bottleneck in a way no input-side parameter can. Only
-    engaged as a last resort after the cheaper single-shot retries are exhausted."""
+
+def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
+    """Crop a table region and transcribe it via a self-hosted local engine
+    (picked by _local_table_ocr_engine), returning {headers, rows} DIRECTLY (no
+    markdown round trip) so the rowspan denormalization survives intact.
+
+    engine="paddleocr_vl" (see backend/extraction/paddleocr_vl.py): single
+    request, no retry ladder — no OOM observed on this engine in any real
+    testing so far.
+
+    engine="unlimited_ocr" (default, see backend/extraction/unlimited_ocr.py):
+    if the whole-table crop exhausts transcribe_table_local's own OOM retry
+    ladder (real finding, 27-Jul: some tables OOM regardless of base_size
+    because the real bottleneck is decoder/generation-length, not input
+    resolution — a long, dense table needs a long output sequence, and THAT's
+    what runs out of memory, not the vision encoder), split the region into
+    top/bottom halves (with overlap so a row straddling the seam is still
+    whole in at least one half) and transcribe each half separately — half the
+    rows means half the output sequence length, which directly targets THIS
+    bottleneck in a way no input-side parameter can. Only engaged as a last
+    resort after the cheaper single-shot retries are exhausted."""
     from backend.vision.pdf_cropper import PDFCropper
-    from backend.extraction.unlimited_ocr import transcribe_table_local
     import httpx
     png = PDFCropper().crop_region(pdf_path, page_no, bbox)
+
+    if _local_table_ocr_engine(config) == "paddleocr_vl":
+        from backend.extraction.paddleocr_vl import transcribe_table_paddleocr_vl
+        table_data = transcribe_table_paddleocr_vl(png, config)
+        if table_data is not None:
+            table_data = _cross_check_sparse_columns(table_data, png, config)
+        return table_data
+
+    from backend.extraction.unlimited_ocr import transcribe_table_local
     try:
         return transcribe_table_local(png, config)
     except httpx.HTTPStatusError as e:
@@ -226,6 +253,107 @@ def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
         top_td = transcribe_table_local(top_png, config)
         bottom_td = transcribe_table_local(bottom_png, config)
         return _merge_split_table_data(top_td, bottom_td)
+
+
+def _sparse_column_indices(table_data: dict, min_empty_frac: float = 0.5,
+                            max_sibling_empty_frac: float = 0.2) -> list[int]:
+    """Columns that are empty in MOST rows while OTHER columns in the same table
+    are consistently populated — a real, confirmed failure signature (28-Jul:
+    PaddleOCR-VL dropped a 7-segment-display "Indication" icon column on 9/11
+    rows of a real alarm table while every other column, including short ones
+    like "Code" ("82H" etc), stayed fully populated). A naive "short values"
+    heuristic would also flag that correct Code column, which is why this
+    checks EMPTINESS, not value length.
+
+    Different from unlimited_ocr.py's _has_fully_empty_column, which only
+    catches a column blank in EVERY row (avoiding false positives on a table
+    that's genuinely sparse everywhere) — this catches the softer, more common
+    "mostly blank" pattern, gated on at least one sibling column being
+    well-populated so a table that's legitimately sparse throughout (e.g. an
+    optional-notes column) doesn't trigger an unnecessary cross-check call."""
+    headers = table_data.get("headers") or []
+    rows = table_data.get("rows") or []
+    if len(headers) < 2 or len(rows) < 2:
+        return []
+    empty_fracs = []
+    for col in range(len(headers)):
+        vals = [str(r[col]).strip() if col < len(r) else "" for r in rows]
+        empty_fracs.append(sum(1 for v in vals if not v) / len(vals))
+    if not any(f <= max_sibling_empty_frac for f in empty_fracs):
+        return []  # whole table reads sparse -- not a signal, don't flag anything
+    return [i for i, f in enumerate(empty_fracs) if f >= min_empty_frac]
+
+
+def _vlm_table_from_png(png_bytes: bytes, config: dict) -> str:
+    """Same as _vlm_table but takes already-cropped PNG bytes directly, so a
+    cross-check reads the EXACT SAME visual crop a local engine already read
+    (not a fresh re-crop that could differ slightly)."""
+    from backend.core.vision_client import describe_image
+    from backend.core import prompts
+    vcfg = {"vision": config.get("vision_ocr")}
+    return describe_image(png_bytes, prompts.TABLE_TRANSCRIBE, vcfg).strip()
+
+
+def _cross_check_sparse_columns(table_data: dict, png_bytes: bytes, config: dict) -> dict:
+    """For columns that look suspiciously under-read (see _sparse_column_indices),
+    cross-check against an independent VLM reading of the SAME crop and fill in
+    values it found that the local engine missed. Never overwrites a value the
+    local engine already has -- this only fills gaps, since the local engine
+    is otherwise the validated-better reader (see paddleocr_vl.py).
+
+    Matches the ensemble/consensus pattern from OCR research (correct reads
+    converge, errors/misses diverge — arxiv 2504.11101): cross-checking with an
+    independent model catches exactly this kind of column-specific miss. Kept
+    cheap by only firing on tables that actually show the sparse-column
+    signature, not on every table.
+
+    Rows are matched by their first-column identity value (this codebase's own
+    row_id convention — e.g. alarm name/code), NOT by position, since the two
+    engines can segment/merge a rowspan-wrapped row differently."""
+    sparse = _sparse_column_indices(table_data)
+    if not sparse:
+        return table_data
+    try:
+        vlm_md = _vlm_table_from_png(png_bytes, config)
+        vlm_td = _markdown_table_data(vlm_md)
+    except Exception as e:
+        logger.warning("docling: sparse-column cross-check VLM call failed (%s)", e)
+        return table_data
+    if not vlm_td or not vlm_td.get("rows"):
+        return table_data
+
+    def norm(s):
+        return re.sub(r"\s+", " ", str(s)).strip().lower()
+
+    local_headers = [norm(h) for h in table_data.get("headers") or []]
+    vlm_headers = [norm(h) for h in vlm_td.get("headers") or []]
+    local_rows = table_data.get("rows") or []
+    vlm_rows = vlm_td.get("rows") or []
+
+    vlm_by_id: dict[str, list] = {}
+    for r in vlm_rows:
+        if r:
+            vlm_by_id.setdefault(norm(r[0]), []).append(r)
+
+    filled = 0
+    for col in sparse:
+        if col >= len(local_headers) or local_headers[col] not in vlm_headers:
+            continue
+        vcol = vlm_headers.index(local_headers[col])
+        for row in local_rows:
+            if not row or col >= len(row) or row[col].strip():
+                continue
+            candidates = vlm_by_id.get(norm(row[0])) if row[0] else None
+            if not candidates:
+                continue
+            val = next((str(c[vcol]).strip() for c in candidates
+                        if vcol < len(c) and str(c[vcol]).strip()), None)
+            if val:
+                row[col] = val
+                filled += 1
+    if filled:
+        logger.info("docling: sparse-column cross-check filled %d cell(s) from VLM reading", filled)
+    return table_data
 
 
 def _split_bbox_vertically(bbox: list[float], overlap_frac: float = 0.15) -> tuple[list[float], list[float]]:

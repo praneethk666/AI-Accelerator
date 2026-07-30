@@ -46,7 +46,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.agent.executor import run_agent, stream_agent  # noqa: E402
+from backend.agent.executor import run_agent  # noqa: E402
 from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
@@ -587,7 +587,7 @@ def _save_page_images(document_id: str, pdf_path: str, pages: set, dpi: int = 15
     return out
 
 
-def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
+def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str, session_id: str | None = None, message_id: str | None = None) -> None:
     """Run the full pipeline for one upload. Delegates run + status + finalize to the
     shared ingest_document entry point; the API-only tail (live DB progress + PDF
     page images) is injected via the on_step / on_complete hooks."""
@@ -596,11 +596,11 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
     # Pre-render slides if it is a PowerPoint file
     page_dir = os.path.join(_PAGES_DIR, document_id)
     if file_type == "ppt":
-        from backend.core.office_renderer import render_pptx_slides
-        try:
-            render_pptx_slides(dest, page_dir)
-        except Exception as e:
-            logger.exception("Failed to render PPTX slides for %s", document_id)
+      from backend.core.office_renderer import render_pptx_slides
+      try:
+          render_pptx_slides(dest, page_dir)
+      except Exception as e:
+          logger.exception("Failed to render PPTX slides for %s", document_id)
 
     # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
@@ -642,6 +642,28 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
     try:
         ingest_document(dest, document_id, config=_config, registry=_registry,
                         on_step=on_step, on_complete=on_complete)
+        if session_id and message_id:
+            try:
+                from backend.storage.conversation_store import get_conversation_store
+                get_conversation_store().update_turn_by_message_id(
+                    message_id,
+                    content=f"📎 {filename} ingested successfully!",
+                    metadata={"type": "ingest_done", "filename": filename, "message_id": message_id}
+                )
+            except Exception:
+                logger.exception("Failed to update direct ingest success status in DB")
+    except Exception as e:
+        if session_id and message_id:
+            try:
+                from backend.storage.conversation_store import get_conversation_store
+                get_conversation_store().update_turn_by_message_id(
+                    message_id,
+                    content=f"Ingestion failed: {str(e)}",
+                    metadata={"type": "ingest_error", "filename": filename, "errorMsg": str(e), "message_id": message_id}
+                )
+            except Exception:
+                logger.exception("Failed to update direct ingest failure status in DB")
+        raise e
     finally:
         if pg is not None:
             pg.close()
@@ -685,6 +707,103 @@ def stage_file(file: UploadFile = File(...)):
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     return {"file_path": dest, "filename": file.filename}
+
+
+@app.post("/files/ingest-staged")
+async def ingest_staged(body: dict, background: BackgroundTasks):
+    """Trigger ingestion on an already-staged file (one previously saved by /files/stage).
+    The chat UI calls this when the user drops a file with no question text — it bypasses
+    the LLM agent entirely, so ingestion starts immediately after the user approves inline.
+    The file bytes are already on disk; we just create the documents row and kick off the
+    background pipeline."""
+    file_path = body.get("file_path", "")
+    filename = body.get("filename", "")
+    session_id = body.get("session_id")
+    message_id = body.get("message_id")
+
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(404, "staged file not found on disk")
+    if not filename:
+        filename = os.path.basename(file_path)
+        # Strip the stage_id prefix (format: <uuid>_<realname>) if present
+        parts = filename.split("_", 1)
+        if len(parts) == 2 and len(parts[0]) == 36:  # UUID length
+            filename = parts[1]
+
+    document_id = str(uuid.uuid4())
+    file_type = _file_type(filename)
+
+    pg = _pg()
+    try:
+        pg.insert_document(document_id, filename, file_type, file_path)
+    finally:
+        pg.close()
+
+    if session_id and message_id:
+        try:
+            from backend.storage.conversation_store import get_conversation_store
+            get_conversation_store().update_turn_by_message_id(
+                message_id,
+                content="",
+                metadata={
+                    "type": "ingest_progress",
+                    "filename": filename,
+                    "stagedPath": file_path,
+                    "documentId": document_id,
+                    "message_id": message_id,
+                }
+            )
+        except Exception:
+            logger.exception("Failed to update direct ingest progress status in DB")
+
+    background.add_task(_run_ingestion, document_id, file_path, file_type, filename, session_id, message_id)
+
+    return {
+        "id": document_id,
+        "document_id": document_id,
+        "filename": filename,
+        "file_type": file_type,
+        "status": "processing",
+        "metrics": [],
+    }
+
+
+@app.post("/agent/sessions/{session_id}/init-direct-ingest")
+def init_direct_ingest(session_id: str, body: dict):
+    filename = body.get("filename")
+    staged_path = body.get("staged_path")
+    message_id = body.get("message_id")
+    if not message_id:
+        message_id = str(uuid.uuid4())
+    
+    from backend.storage.conversation_store import get_conversation_store
+    store = get_conversation_store()
+    
+    # Save user turn
+    store.save_turn(session_id, "user", f"📎 {filename}")
+    
+    # Save assistant turn (the ingest approval card)
+    store.save_turn(
+        session_id,
+        "assistant",
+        "",
+        {"type": "ingest_approval", "filename": filename, "stagedPath": staged_path, "message_id": message_id}
+    )
+    return {"message_id": message_id}
+
+
+@app.post("/agent/sessions/{session_id}/cancel-direct-ingest")
+def cancel_direct_ingest(session_id: str, body: dict):
+    message_id = body.get("message_id")
+    filename = body.get("filename")
+    if message_id:
+        from backend.storage.conversation_store import get_conversation_store
+        get_conversation_store().update_turn_by_message_id(
+            message_id,
+            content="Ingestion cancelled.",
+            metadata={"type": "ingest_cancelled", "filename": filename, "message_id": message_id}
+        )
+    return {"ok": True}
 
 
 @app.get("/files/{file_id}/progress")
@@ -1065,10 +1184,32 @@ def agent_chat(req: AgentChatRequest, response: Response):
         # sliding window, not summarization — see query.agent.max_history_messages
         history = history[-max_history:]
 
-    # Save user message immediately so it's persisted and visible if user switches/reloads
+    # Save user message immediately so it's persisted and visible if user switches/reloads.
+    # The [Attached file: <name> — path: <disk_path>] annotation is an internal protocol
+    # marker sent to the agent; replace it with "📎 <name>" so reloaded history shows just
+    # the icon + filename. Also strip the legacy "Please ingest this file." sentinel that
+    # old builds inserted when the user typed nothing (the frontend no longer sends it).
+    import re as _re
+    def _to_display(m):
+        fname = m.group(1).strip()
+        return f"\n\n📎 {fname}"
+    _display_message = _re.sub(
+        r"\s*\[Attached file:\s*(.+?)\s*(?:—|-)\s*path:[^\]]*\]",
+        _to_display,
+        req.message,
+    )
+    # Strip the now-obsolete sentinel (may appear in messages from older clients)
+    _display_message = _re.sub(r"^Please ingest this file\.\s*", "", _display_message, flags=_re.IGNORECASE)
+    _display_message = _display_message.strip() or req.message
     try:
         store = get_conversation_store()
-        store.save_turn(req.session_id, "user", req.message)
+        # Guard against duplicate user messages: if the most recent turn in this session
+        # is already a user message with the same text, don't save again.  This prevents
+        # the double-bubble when the user navigates away and the ChatPage reloads, which
+        # can cause the same /agent/chat to be re-submitted.
+        recent = store.load_history(req.session_id, n=1)
+        if not (recent and recent[-1].get("role") == "user" and recent[-1].get("content") == _display_message):
+            store.save_turn(req.session_id, "user", _display_message)
     except Exception:
         logger.debug("agent user chat history save failed", exc_info=True)
 
@@ -1127,68 +1268,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
     }
 
 
-@app.post("/agent/chat/stream")
-async def agent_chat_stream(req: AgentChatRequest, request: Request):
-    """SSE endpoint for streaming agent responses."""
-    import json
-    from fastapi.responses import StreamingResponse
-    from backend.storage.conversation_store import get_conversation_store
 
-    # 1. Token Quota Check (Reserve budget)
-    quota = get_enforcer(_config)
-    reserve = get_reserve_tokens(_config)
-    if not quota.reserve(req.session_id, reserve):
-        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
-
-    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
-    history = _agent_sessions.get(req.session_id)
-    if history is None:
-        try:
-            history = _history_to_messages(
-                get_conversation_store().load_history(req.session_id, n=max_history)
-            )
-        except Exception:
-            logger.debug("agent chat history load failed", exc_info=True)
-            history = []
-    elif len(history) > max_history:
-        history = history[-max_history:]
-
-    # Save user message immediately so it's persisted and visible if user switches/reloads
-    try:
-        store = get_conversation_store()
-        # Save user message using regular save_turn (requires no message_id/deduplication)
-        store.save_turn(req.session_id, "user", req.message)
-    except Exception:
-        logger.debug("agent user chat history save failed", exc_info=True)
-
-    tokens_tracker = {"used": 0}
-
-    async def event_generator():
-        try:
-            async for event in stream_agent(
-                session_id=req.session_id,
-                message=req.message,
-                request=request,
-                message_id=req.message_id,
-                config=_config,
-                registry=_agent_registry,
-                conversation_history=history,
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("event") == "usage":
-                    tokens_tracker["used"] = event["tokens"]
-        finally:
-            quota.reconcile(req.session_id, reserved=reserve, actual=tokens_tracker["used"])
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disables nginx buffering
-        },
-    )
 
 
 @app.get("/agent/sessions")
@@ -1357,4 +1437,5 @@ def get_vision_calls(file_id: str):
 
 @app.get("/")
 def root():
+    # Reload trigger comment v2
     return {"service": "Document Intelligence + RAG Accelerator", "docs": "/docs"}

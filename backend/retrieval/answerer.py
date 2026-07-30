@@ -166,6 +166,11 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     thin_ids = set()
     for c in chunks:
         ref = c.get("source_ref") or {}
+        filename = ref.get("filename") or ""
+        # Skip Excel chunks entirely from auto-expansion to prevent token bloat
+        if filename.lower().endswith((".xlsx", ".xls", ".xlsm")) or ref.get("sheet") is not None:
+            continue
+
         doc_id = c.get("document_id")
         page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
         key = (str(doc_id), page_val) if doc_id and page_val is not None else None
@@ -270,6 +275,8 @@ class AnswererTool:
             # (up to max_sub_questions x rerank_top_k) can't blow up cost/context on the
             # paid model. Approx 4 chars/token; 0/unset => no cap. Chunks arrive best-first.
             max_ctx_tokens = int((config.get("query") or {}).get("max_context_tokens") or 0)
+            if not max_ctx_tokens:
+                max_ctx_tokens = int((config.get("guardrails") or {}).get("token_budget", {}).get("max_context_tokens") or 20000)
             context_blocks = []
             used_tokens = 0
             for i, chunk in enumerate(chunks, start=1):
@@ -277,11 +284,21 @@ class AnswererTool:
                 label = _locator(ref)
                 summary = (chunk.get("tags") or {}).get("summary")
                 header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
-                block = f"{header}\n{chunk.get('text') or ''}"
-                if max_ctx_tokens and context_blocks and used_tokens + len(block) // 4 > max_ctx_tokens:
+                chunk_text = chunk.get("text") or ""
+                block = f"{header}\n{chunk_text}"
+                
+                block_tokens = len(block) // 4
+                if max_ctx_tokens and used_tokens + block_tokens > max_ctx_tokens:
+                    # Truncate first block to fit budget if it is already too large on its own
+                    if not context_blocks:
+                        allowed_chars = max(0, max_ctx_tokens * 4 - len(header) - 50)
+                        truncated_text = chunk_text[:allowed_chars]
+                        block = f"{header}\n{truncated_text}\n... [truncated to fit token budget]"
+                        context_blocks.append(block)
+                        used_tokens += max_ctx_tokens
                     break
                 context_blocks.append(block)
-                used_tokens += len(block) // 4
+                used_tokens += block_tokens
 
             user_msg = (
                 "Context:\n\n"

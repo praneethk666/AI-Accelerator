@@ -100,6 +100,26 @@ def warm_up(config: dict | None = None) -> None:
     _try("reranker", get_reranker, 120)
 
 
+def _post_with_retry(url: str, headers: dict, json_data: dict, timeout: int = 30, max_retries: int = 5):
+    import time
+    import requests
+    backoff_factor = 2.0
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            status_code = getattr(e.response, "status_code", None) if e.response is not None else None
+            if (status_code == 429 or (status_code and 500 <= status_code < 600)) and attempt < max_retries - 1:
+                retry_after = e.response.headers.get("Retry-After") if e.response is not None else None
+                sleep_time = int(retry_after) if (retry_after and retry_after.isdigit()) else (backoff_factor ** attempt)
+                print(f"Jina API returned {status_code}. Retrying in {sleep_time}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(sleep_time)
+                continue
+            raise e
+
+
 class JinaEmbeddingsAPIClient:
     """API client that calls Jina AI's hosted Embeddings API instead of running SentenceTransformers locally."""
 
@@ -143,8 +163,7 @@ class JinaEmbeddingsAPIClient:
                 "input": chunk,
                 "truncate": True,
             }
-            response = requests.post(self.url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
+            response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
             res_json = response.json()
 
             # Ensure correct ordering based on response indices
@@ -221,8 +240,7 @@ class JinaRerankerAPIClient:
             "documents": documents,
         }
 
-        response = requests.post(self.url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
+        response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
         res_json = response.json()
 
         # Jina returns a list of results sorted by score: [{"index": idx, "relevance_score": score}, ...]

@@ -23,10 +23,11 @@ class ConversationStore(Protocol):
         """Append one turn to the conversation history."""
         ...
 
-    def save_stream_turn(self, session_id: str, message_id: str, role: str, content: str,
-                         metadata: dict) -> None:
-        """Upsert one streamed assistant turn by message_id."""
+    def update_turn_by_message_id(self, message_id: str, content: str, metadata: dict) -> None:
+        """Update a specific conversation turn by its message_id in metadata."""
         ...
+
+
 
     def load_history(self, session_id: str, n: int = 10) -> list[dict]:
         """Return the last n turns as [{"role", "content", "metadata"}, ...]."""
@@ -167,6 +168,16 @@ class PostgresConversationStore:
         finally:
             pg.close()
 
+    def update_turn_by_message_id(self, message_id: str, content: str, metadata: dict) -> None:
+        pg = PostgresStore()
+        try:
+            pg.conn.execute(
+                "UPDATE conversations SET content = %s, metadata = %s WHERE metadata->>'message_id' = %s",
+                (content, _Json(metadata), message_id)
+            )
+        finally:
+            pg.close()
+
     def update_session(self, session_id: str, *,
                        title: str | None = None,
                        pinned: bool | None = None) -> None:
@@ -260,21 +271,7 @@ class PostgresConversationStore:
         finally:
             pg.close()
 
-    def save_stream_turn(self, session_id: str, message_id: str, role: str, content: str, metadata: dict) -> None:
-        pg = PostgresStore()
-        try:
-            # Atomic upsert using standard ON CONFLICT syntax on unique expression index
-            pg.conn.execute(
-                """
-                INSERT INTO conversations (session_id, role, content, metadata)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT ((metadata->>'message_id'))
-                DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata
-                """,
-                (session_id, role, content, _Json(metadata))
-            )
-        finally:
-            pg.close()
+
 
     def delete_session(self, session_id: str) -> None:
         pg = PostgresStore()

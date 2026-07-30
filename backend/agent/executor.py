@@ -66,9 +66,9 @@ SYSTEM_PROMPT = (
     "You are a document intelligence assistant. Your job is to answer questions "
     "by searching the ingested document corpus — NOT from your own knowledge.\n\n"
 
-    "## ABSOLUTE MANDATE — ALWAYS CALL search_documents OR excel_tst_tool FIRST\n"
+    "## ABSOLUTE MANDATE — ALWAYS CALL search_documents OR excel_tool FIRST\n"
     "You are strictly prohibited from answering any question using internal memory or pre-training knowledge.\n"
-    "For EVERY question, you MUST call search_documents (or excel_tst_tool if the query is an Excel calculation) "
+    "For EVERY question, you MUST call search_documents (or excel_tool if the query is an Excel calculation) "
     "FIRST before returning any text answer. Never output an answer without calling a tool.\n"
     "If the document context contains the answer, report it with exact inline citations.\n"
     "If the document context does not contain the answer, state plainly: "
@@ -94,9 +94,9 @@ SYSTEM_PROMPT = (
     "- ingest_document(file_path): Ingest a new file the user provides a path for. "
     "Only call this when the user explicitly attaches a file or provides a local path to import a new file.\n"
     "- sql_read(query): Read-only SQL against the database. Use only when asked.\n"
-    "- excel_tst_tool(filename_or_id, code, sheet_name?): Execute Python/Pandas code "
+    "- excel_tool(filename_or_id, code, sheet_name?): Execute Python/Pandas code "
     "directly on an Excel file's data. Use this when a question requires calculation, "
-    "filtering, aggregation, or any data manipulation on Excel sheets. You MUST follow these rules:\n"
+    "filtering, aggregation, comparison, or any data lookup/manipulation on Excel sheets. You MUST follow these rules:\n"
     "      1. Assign the final output to `result` (e.g., `result = ...`). Do NOT use return statements.\n"
     "      2. NEVER use `import` statements or restricted builtins like `dir()`, `globals()`, `locals()`, `hasattr()`, `setattr()`, `getattr()`, `eval()`, `exec()` — they are blocked by the secure sandbox. Pandas (pd), Numpy (np), sqlite3, math, datetime, re, and json are pre-imported and available.\n"
     "      3. To list all sheets, set sheet_name='all' and use `list(dfs.keys())`.\n"
@@ -110,11 +110,14 @@ SYSTEM_PROMPT = (
     "1. Pure greetings/sign-off (hello, thanks, bye) — reply naturally in plain text.\n"
     "2. Requests to list documents — call list_documents instead.\n"
     "3. Requests to ingest a new file — call ingest_document instead.\n"
-    "4. Questions requiring calculation, filtering, aggregation, data manipulation, or "
+    "4. Questions requiring calculation, filtering, comparisons, sorting, aggregation, data lookup, or "
     "looking up text notes/inclusions/exclusions/metadata on Excel files (e.g. 'sum column X', "
-    "'is scaffolding included', 'list exclusions') — call excel_tst_tool instead. It runs "
-    "real Pandas code on the actual data and is far more accurate and token-efficient than "
-    "searching chunked text.\n\n"
+    "'which company has highest revenue', 'is scaffolding included', 'list exclusions') — call excel_tool instead. "
+    "It runs real Pandas code on the actual data and is far more accurate and token-efficient than searching chunked text.\n"
+    "   CRITICAL: Bypassing excel_tool for Excel files and calling search_documents is STRICTLY PROHIBITED. RAG/Search "
+    "retrieves massive amounts of raw text/tables, which causes extreme context window bloat (up to 500,000+ tokens) and poor "
+    "computational accuracy. First resolve the Excel file name using list_documents/sql_read if needed, then run your "
+    "computational/filtering code entirely inside excel_tool.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
@@ -477,6 +480,63 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 ))
                 continue
 
+            if name == "ingest_document":
+                import os
+                file_path = args.get("file_path", "")
+                
+                # Check database for existing document matching the filename
+                from backend.storage.postgres_store import PostgresStore
+                db_doc = None
+                try:
+                    pg = PostgresStore()
+                    try:
+                        fname = os.path.basename(file_path)
+                        cur = pg.conn.cursor()
+                        cur.execute(
+                            "SELECT document_id, file_path, status FROM documents WHERE filename = %s OR filename = %s OR file_path = %s ORDER BY created_at DESC LIMIT 1",
+                            (file_path, fname, file_path)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            db_doc = {
+                                "document_id": str(row[0]),
+                                "file_path": row[1],
+                                "status": row[2]
+                            }
+                    finally:
+                        pg.close()
+                except Exception as db_exc:
+                    logger.warning("Failed to query documents table in tools_node: %s", db_exc)
+
+                # Resolve file_path to database file_path if it exists on disk
+                resolved_path = file_path
+                if db_doc and db_doc["file_path"] and os.path.isfile(db_doc["file_path"]):
+                    resolved_path = db_doc["file_path"]
+                    args["file_path"] = resolved_path
+
+                # If the document is already ready and file exists, we don't even need approval or tool execution!
+                if db_doc and db_doc["status"] == "ready" and os.path.isfile(resolved_path):
+                    tool_messages.append(ToolMessage(
+                        content=json.dumps({
+                            "document_id": db_doc["document_id"],
+                            "status": "ready",
+                            "message": f"Document {fname!r} is already ingested and ready for query."
+                        }, default=str),
+                        tool_call_id=call_id, name=name,
+                    ))
+                    continue
+
+                # If file path doesn't exist on disk, return FileNotFoundError immediately
+                if not resolved_path or not os.path.isfile(resolved_path):
+                    tool_messages.append(ToolMessage(
+                        content=json.dumps({
+                            "error": f"FileNotFoundError: File {file_path!r} does not exist. "
+                                     f"Please upload/attach the file in the chat input first."
+                        }, default=str),
+                        tool_call_id=call_id, name=name,
+                    ))
+                    continue
+
             if name in write_tools and not (
                 state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
             ):
@@ -779,6 +839,63 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                     content="awaiting user selection", tool_call_id=call_id,
                 ))
                 continue
+
+            if name == "ingest_document":
+                import os
+                file_path = args.get("file_path", "")
+                
+                # Check database for existing document matching the filename
+                from backend.storage.postgres_store import PostgresStore
+                db_doc = None
+                try:
+                    pg = PostgresStore()
+                    try:
+                        fname = os.path.basename(file_path)
+                        cur = pg.conn.cursor()
+                        cur.execute(
+                            "SELECT document_id, file_path, status FROM documents WHERE filename = %s OR filename = %s OR file_path = %s ORDER BY created_at DESC LIMIT 1",
+                            (file_path, fname, file_path)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            db_doc = {
+                                "document_id": str(row[0]),
+                                "file_path": row[1],
+                                "status": row[2]
+                            }
+                    finally:
+                        pg.close()
+                except Exception as db_exc:
+                    logger.warning("Failed to query documents table in tools_node: %s", db_exc)
+
+                # Resolve file_path to database file_path if it exists on disk
+                resolved_path = file_path
+                if db_doc and db_doc["file_path"] and os.path.isfile(db_doc["file_path"]):
+                    resolved_path = db_doc["file_path"]
+                    args["file_path"] = resolved_path
+
+                # If the document is already ready and file exists, we don't even need approval or tool execution!
+                if db_doc and db_doc["status"] == "ready" and os.path.isfile(resolved_path):
+                    tool_messages.append(ToolMessage(
+                        content=json.dumps({
+                            "document_id": db_doc["document_id"],
+                            "status": "ready",
+                            "message": f"Document {fname!r} is already ingested and ready for query."
+                        }, default=str),
+                        tool_call_id=call_id,
+                    ))
+                    continue
+
+                # If file path doesn't exist on disk, return FileNotFoundError immediately
+                if not resolved_path or not os.path.isfile(resolved_path):
+                    tool_messages.append(ToolMessage(
+                        content=json.dumps({
+                            "error": f"FileNotFoundError: File {file_path!r} does not exist. "
+                                     f"Please upload/attach the file in the chat input first."
+                        }, default=str),
+                        tool_call_id=call_id,
+                    ))
+                    continue
 
             if name in write_tools and not (
                 state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
@@ -1312,152 +1429,3 @@ def run_agent(
         "guard_risk_score": final_state.get("guard_risk_score", 0),
         "guard_policy": final_state.get("guard_policy", "allow"),
     }
-
-
-async def stream_agent(
-    session_id: str,
-    message: str,
-    request: Request,
-    message_id: str,
-    config: dict,
-    registry: dict[str, AgentTool] | None = None,
-    llm=None,
-    conversation_history: list[BaseMessage] | None = None,
-):
-    """
-    Yields SSE events (token, tool_start, tool_end, done, error, usage).
-    Tracks client disconnect, tool calls, and usage tokens.
-    Persists answer on finalization.
-    """
-    from fastapi import Request
-    from backend.storage.conversation_store import get_conversation_store
-    
-    registry = registry if registry is not None else build_agent_registry()
-    agent_cfg = (config.get("query") or {}).get("agent") or {}
-    max_iterations = agent_cfg.get("max_iterations", 5)
-    write_tools = set(agent_cfg.get("write_tools") or [])
-    clarify_tools = set(agent_cfg.get("clarify_tools") or ["request_clarification"])
-
-    if llm is None:
-        llm = get_llm_for(config, agent_cfg)
-
-    tool_schemas = [_to_openai_tool(t) for t in registry.values()]
-    is_question = not _is_greeting(message)
-    messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
-    messages += [
-        m for m in (conversation_history or [])
-        if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
-    ]
-    if messages[1:]:
-        messages.append(SystemMessage(
-            "Reminder: the next user message is a NEW request. Answer ONLY it. "
-            "Do not repeat, continue, or merge in your answer to any earlier question "
-            "above, unless this new message explicitly references it (e.g. 'the one you "
-            "just mentioned', 'and what about...')."
-        ))
-    messages.append(HumanMessage(message))
-
-    graph = _build_async_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
-                          max_iterations, is_question, config, agent_cfg, session_id=session_id)
-
-    stream_messages = list(messages)
-    accumulated_text = []
-    tool_calls = []
-    disconnected = False
-    has_error = False
-    actual_tokens = 0
-    final_text = ""
-
-    try:
-        with traced_request(
-            "agent_chat", input=message,
-            metadata={"session_id": session_id},
-        ) as trace_info, usage.using_sink() as sink:
-            async for event in graph.astream_events(
-                {
-                    "messages": messages,
-                    "iterations": 0,
-                    "pending_approval": None,
-                    "approved_writes": False,
-                    "approved_calls": None,
-                    "clarification": None,
-                    "guard_blocked": False,
-                    "safe_answer": None,
-                    "guard_evidences": [],
-                    "guard_risk_score": 0,
-                    "guard_policy": "allow",
-                },
-                version="v2"
-            ):
-                if await request.is_disconnected():
-                    disconnected = True
-                    break
-
-                kind = event["event"]
-                # Capture messages from finished nodes to extract tool calls and results
-                if kind == "on_chain_end":
-                    node_name = event["metadata"].get("langgraph_node")
-                    if node_name in ("input_guard", "agent", "tools", "output_guard"):
-                        node_output = event["data"].get("output")
-                        if isinstance(node_output, dict) and "messages" in node_output:
-                            stream_messages.extend(node_output["messages"])
-
-                # 1. Capture model stream tokens from the agent node
-                if kind == "on_chat_model_stream" and event["metadata"].get("langgraph_node") == "agent":
-                    chunk = event["data"]["chunk"].content
-                    if chunk:
-                        accumulated_text.append(chunk)
-                        yield {"event": "token", "text": chunk}
-
-                elif kind == "on_tool_start":
-                    tool_calls.append({"name": event["name"], "args": event.get("data", {}).get("input")})
-                    yield {"event": "tool_start", "name": event["name"]}
-
-                elif kind == "on_tool_end":
-                    yield {"event": "tool_end", "name": event["name"]}
-
-            actual_tokens = sink.totals().get("total", 0)
-            final_tool_calls = _extract_tool_calls(stream_messages)
-
-        # Extract the post-processed response from the final assistant message in the graph output,
-        # which will have been processed by all guards (input, tools, output).
-        post_processed_text = ""
-        for msg in reversed(stream_messages):
-            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
-                post_processed_text = msg.content
-                break
-        
-        final_text = post_processed_text if post_processed_text else "".join(accumulated_text)
-        yield {"event": "done", "full_text": final_text}
-        yield {"event": "usage", "tokens": actual_tokens}
-        yield {
-            "event": "metadata",
-            "status": "done",
-            "answer": final_text,
-            "tool_calls": final_tool_calls,
-            "token_usage": sink.totals(),
-            "trace_id": trace_info["trace_id"]
-        }
-
-    except Exception as e:
-        logger.exception("stream_agent failed for session %s", session_id)
-        has_error = True
-        yield {"event": "error", "message": "The assistant hit an error generating a response."}
-        final_text = "".join(accumulated_text)
-
-    finally:
-        if accumulated_text or final_text:
-            # Extract complete tool calls paired with their results
-            final_tool_calls = _extract_tool_calls(stream_messages)
-            store = get_conversation_store()
-            store.save_stream_turn(
-                session_id=session_id,
-                message_id=message_id,
-                role="assistant",
-                content=final_text,
-                metadata={
-                    "complete": not has_error and not disconnected,
-                    "message_id": message_id,
-                    "tool_calls": final_tool_calls
-                }
-            )

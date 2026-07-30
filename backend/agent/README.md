@@ -27,7 +27,7 @@ graph LR
 * `list_documents`: Returns a list of all successfully ingested files.
 * `ingest_document`: Ingests a new file.
 * `sql_read`: Performs read-only queries.
-* `excel_tst_tool`: Runs python/pandas data analysis scripts inside a secure sandbox.
+* `excel_tool`: Runs python/pandas data analysis scripts inside a secure sandbox.
 * `request_clarification`: Asks the user to clarify ambiguous requests.
 
 ## Core Features

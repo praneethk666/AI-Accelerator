@@ -56,7 +56,7 @@ def test_expand_replaces_thin_chunk_text_with_full_page():
 
 
 def test_no_thin_chunks_returns_original_list_untouched():
-    fine = _chunk("c2", "a real paragraph " * 10, 40, summary="ok")
+    fine = _chunk("c2", "a real paragraph " * 10, 150, summary="ok")
     out = _expand_thin_chunks([fine])
     assert out == [fine]
 
@@ -129,7 +129,8 @@ def test_slide_sheet_expansion():
     ]
     with patch("backend.storage.postgres_store.PostgresStore", return_value=_fake_store(sheet_blocks)):
         out = _expand_thin_chunks([sheet_chunk])
-    assert "sheet data values" in out[0]["text"]
+    assert "sheet data values" not in out[0]["text"]
+    assert out[0]["text"] == "sheet intro"
 
 
 if __name__ == "__main__":

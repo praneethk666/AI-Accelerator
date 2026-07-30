@@ -87,12 +87,5 @@ class PolicyEngine:
         )
 
 
-# Module-level singleton — lazy-initialised in executor.py after config loads.
-_engine: PolicyEngine | None = None
-
-
 def get_engine(config: dict | None = None) -> PolicyEngine:
-    global _engine
-    if _engine is None:
-        _engine = PolicyEngine.from_config(config or {})
-    return _engine
+    return PolicyEngine.from_config(config or {})

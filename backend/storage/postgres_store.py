@@ -62,6 +62,14 @@ class PostgresStore:
     def __init__(self, dsn: str | None = None) -> None:
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True)
+        # Auto-migration: add file_path column to documents if it doesn't exist yet.
+        # Safe to run on every startup — IF NOT EXISTS is a no-op when already present.
+        try:
+            self.conn.execute(
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT"
+            )
+        except Exception:
+            pass  # DB might not be reachable yet (health probe) — never block startup
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk row (full record), keyed by chunk_id.
@@ -329,7 +337,7 @@ class PostgresStore:
         rows = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at,
+                   route, confidence, status, created_at, file_path,
                    current_step, metrics, token_usage, indexed_tokens,
                    chunk_count, progress, total_steps, updated_at, errors
             FROM documents ORDER BY created_at DESC
@@ -339,16 +347,16 @@ class PostgresStore:
         for row in rows:
             doc = _document_row(row)
             doc.update({
-                "current_step": row[9],
-                "metrics": row[10] or [],
-                "token_usage": row[11],
-                "indexed_tokens": row[12],
-                "chunk_count": row[13],
-                "chunks": row[13],            # alias the UI/older callers expect
-                "progress": row[14],
-                "total_steps": row[15],
-                "updated_at": row[16].isoformat() if row[16] else None,
-                "errors": row[17] or [],
+                "current_step": row[10],
+                "metrics": row[11] or [],
+                "token_usage": row[12],
+                "indexed_tokens": row[13],
+                "chunk_count": row[14],
+                "chunks": row[14],            # alias the UI/older callers expect
+                "progress": row[15],
+                "total_steps": row[16],
+                "updated_at": row[17].isoformat() if row[17] else None,
+                "errors": row[18] or [],
             })
             out.append(doc)
         return out
@@ -358,7 +366,7 @@ class PostgresStore:
         row = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at,
+                   route, confidence, status, created_at, file_path,
                    current_step, metrics, token_usage, indexed_tokens,
                    chunk_count, progress, total_steps, updated_at, errors
             FROM documents WHERE document_id::text = %s
@@ -369,16 +377,16 @@ class PostgresStore:
             return None
         doc = _document_row(row)
         doc.update({
-            "current_step": row[9],
-            "metrics": row[10] or [],
-            "token_usage": row[11],
-            "indexed_tokens": row[12],
-            "chunk_count": row[13],
-            "chunks": row[13],            # alias the UI/older callers expect
-            "progress": row[14],
-            "total_steps": row[15],
-            "updated_at": row[16].isoformat() if row[16] else None,
-            "errors": row[17] or [],
+            "current_step": row[10],
+            "metrics": row[11] or [],
+            "token_usage": row[12],
+            "indexed_tokens": row[13],
+            "chunk_count": row[14],
+            "chunks": row[14],            # alias the UI/older callers expect
+            "progress": row[15],
+            "total_steps": row[16],
+            "updated_at": row[17].isoformat() if row[17] else None,
+            "errors": row[18] or [],
         })
         return doc
 
@@ -461,4 +469,5 @@ def _document_row(r) -> dict:
         "confidence": r[6],
         "status": r[7],
         "created_at": r[8].isoformat() if r[8] else None,
+        "file_path": r[9] if len(r) > 9 else None,
     }

@@ -30,6 +30,29 @@ def load_config(path: str) -> dict:
     return yaml.safe_load(raw)
 
 
+def get_db_url(config: dict) -> str | None:
+    """Extract postgres database URL from configuration or environment.
+    
+    Checks config['database']['postgres_url'] first, then falls back to env POSTGRES_URL,
+    and finally to individual POSTGRES_* env vars.
+    """
+    db_url = config.get("database", {}).get("postgres_url")
+    if not db_url or "${" in str(db_url):
+        db_url = os.getenv("POSTGRES_URL")
+    
+    if not db_url:
+        host = os.getenv("POSTGRES_HOST")
+        if host:
+            port = os.getenv("POSTGRES_PORT", "5432")
+            dbname = os.getenv("POSTGRES_DB", "accelerator")
+            user = os.getenv("POSTGRES_USER", "postgres")
+            password = os.getenv("POSTGRES_PASSWORD", "postgres")
+            db_url = f"host={host} port={port} dbname={dbname} user={user} password={password}"
+            
+    return db_url
+
+
+
 @dataclass
 class PipelineConfig:
     """A parsed pipeline profile.

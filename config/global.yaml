@@ -717,4 +717,3 @@ guardrails:
     llm_input_cost_per_1m:  0.075
     llm_output_cost_per_1m: 0.30
     embed_cost_per_1m:      0.0
-

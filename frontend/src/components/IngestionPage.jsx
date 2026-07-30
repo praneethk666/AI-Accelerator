@@ -101,6 +101,10 @@ const IngestionPage = () => {
   useEffect(() => {
     checkServerHealth();
     loadFiles();
+
+    // Periodically check for new files (e.g. from auto-ingestion watcher) every 3 seconds
+    const interval = setInterval(silentReloadFiles, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const checkServerHealth = async () => {
@@ -111,6 +115,30 @@ const IngestionPage = () => {
     } catch (err) {
       setServerConnected(false);
       setError('Cannot connect to backend server. Make sure it is running on http://localhost:8000');
+    }
+  };
+
+  const silentReloadFiles = async () => {
+    try {
+      const res = await getFiles();
+      const filesList = res.data || [];
+      setFiles(filesList);
+      
+      // Default select to the most recent file if nothing is selected
+      if (filesList.length > 0 && !selectedDocIdRef.current) {
+        const first = filesList[0];
+        selectDocument(first.document_id || first.id, first);
+      }
+
+      // Auto-poll any file that is currently processing in the background
+      filesList.forEach((file) => {
+        const id = file.document_id || file.id;
+        if (file.status === 'processing' && !activePolls.current[id]) {
+          pollProgress(id, file.filename);
+        }
+      });
+    } catch (err) {
+      console.error('Failed to silently reload files:', err);
     }
   };
 
@@ -130,8 +158,9 @@ const IngestionPage = () => {
 
       // Auto-poll any file that is currently processing in the background
       filesList.forEach((file) => {
+        const id = file.document_id || file.id;
         if (file.status === 'processing') {
-          pollProgress(file.document_id || file.id, file.filename);
+          pollProgress(id, file.filename);
         }
       });
     } catch (err) {
@@ -410,121 +439,116 @@ const IngestionPage = () => {
         )}
 
         {/* Pipeline Status — reflects the last upload's actual per-step metrics */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Processing Pipeline</h2>
-            {lastRun ? (
+        {lastRun && lastRun.status === 'processing' && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Processing Pipeline</h2>
               <span className="text-xs text-gray-500 truncate max-w-[60%]">
-                {lastRun.name} ·{' '}
-                {lastRun.status === 'processing'
-                  ? 'processing…'
-                  : `${lastRun.status} · ${fmtDuration((lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0))} total`}
+                {lastRun.name} · processing…
               </span>
-            ) : (
-              <span className="text-xs text-gray-500">upload a document to see step status</span>
-            )}
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
-            {(() => {
-              const metrics = lastRun?.metrics || [];
-              const processing = lastRun?.status === 'processing';
-              // index of the last stage that already has a metric -> the next one is "running"
-              const lastDone = PIPELINE_STAGES.reduce(
-                (acc, s, i) => (metrics.some((x) => s.match.includes(x.step)) ? i : acc), -1);
-              return PIPELINE_STAGES.map((stage, i) => {
-                const m = metrics.find((x) => stage.match.includes(x.step));
-                let state;
-                if (m) state = m.status === 'error' ? 'error' : 'done';
-                else if (!lastRun) state = 'idle';
-                else if (processing && i === lastDone + 1) state = 'running';
-                else if (processing) state = 'pending';
-                else state = 'skipped';
-                const box = {
-                  idle: 'border-slate-700 bg-slate-800/30',
-                  pending: 'border-slate-700 bg-slate-800/30 opacity-50',
-                  skipped: 'border-slate-700 bg-slate-800/20 opacity-50',
-                  running: 'border-blue-500/60 bg-blue-500/10 shadow-lg shadow-blue-500/20 animate-pulse',
-                  done: 'border-green-500/50 bg-green-500/10 shadow-lg shadow-green-500/10',
-                  error: 'border-red-500/50 bg-red-500/10',
-                }[state];
-                const note =
-                  state === 'done' ? fmtDuration(m.ms)
-                  : state === 'error' ? 'failed'
-                  : state === 'running' ? 'running…'
-                  : state === 'skipped' ? 'skipped'
-                  : '';
-                const noteColor =
-                  state === 'error' ? 'text-red-400'
-                  : state === 'running' ? 'text-blue-300'
-                  : 'text-gray-500';
-                return (
-                  <div
-                    key={stage.label}
-                    className={`flex flex-col items-center p-3 rounded-lg border transition-all ${box}`}
-                  >
-                    <span className="text-2xl mb-1">{stage.icon}</span>
-                    <span className="text-xs text-gray-300 text-center font-medium">{stage.label}</span>
-                    <span className={`text-[10px] mt-1 h-3 ${noteColor}`}>{note}</span>
-                  </div>
-                );
-              });
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+              {(() => {
+                const metrics = lastRun?.metrics || [];
+                const processing = lastRun?.status === 'processing';
+                // index of the last stage that already has a metric -> the next one is "running"
+                const lastDone = PIPELINE_STAGES.reduce(
+                  (acc, s, i) => (metrics.some((x) => s.match.includes(x.step)) ? i : acc), -1);
+                return PIPELINE_STAGES.map((stage, i) => {
+                  const m = metrics.find((x) => stage.match.includes(x.step));
+                  let state;
+                  if (m) state = m.status === 'error' ? 'error' : 'done';
+                  else if (!lastRun) state = 'idle';
+                  else if (processing && i === lastDone + 1) state = 'running';
+                  else if (processing) state = 'pending';
+                  else state = 'skipped';
+                  const box = {
+                    idle: 'border-slate-700 bg-slate-800/30',
+                    pending: 'border-slate-700 bg-slate-800/30 opacity-50',
+                    skipped: 'border-slate-700 bg-slate-800/20 opacity-50',
+                    running: 'border-blue-500/60 bg-blue-500/10 shadow-lg shadow-blue-500/20 animate-pulse',
+                    done: 'border-green-500/50 bg-green-500/10 shadow-lg shadow-green-500/10',
+                    error: 'border-red-500/50 bg-red-500/10',
+                  }[state];
+                  const note =
+                    state === 'done' ? fmtDuration(m.ms)
+                    : state === 'error' ? 'failed'
+                    : state === 'running' ? 'running…'
+                    : state === 'skipped' ? 'skipped'
+                    : '';
+                  const noteColor =
+                    state === 'error' ? 'text-red-400'
+                    : state === 'running' ? 'text-blue-300'
+                    : 'text-gray-500';
+                  return (
+                    <div
+                      key={stage.label}
+                      className={`flex flex-col items-center p-3 rounded-lg border transition-all ${box}`}
+                    >
+                      <span className="text-2xl mb-1">{stage.icon}</span>
+                      <span className="text-xs text-gray-300 text-center font-medium">{stage.label}</span>
+                      <span className={`text-[10px] mt-1 h-3 ${noteColor}`}>{note}</span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Timing + token usage summary (from the last run) — labeled stat cards */}
+            {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null || (lastRun.metrics || []).length > 0) && (() => {
+              const tu = lastRun.tokenUsage || {};
+              const totalMs = (lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0);
+              const Stat = ({ label, value, sub }) => (
+                <div className="flex flex-col px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/60 min-w-[110px]">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500">{label}</span>
+                  <span className="text-sm font-semibold text-gray-100">{value}</span>
+                  {sub != null && <span className="text-[10px] text-gray-500 mt-0.5">{sub}</span>}
+                </div>
+              );
+              return (
+                <div className="mt-4 space-y-2">
+                  {/* Row 1: Tokens */}
+                  {(lastRun.tokenUsage || lastRun.indexedTokens != null) && (
+                    <div className="flex flex-wrap gap-2">
+                      {lastRun.tokenUsage && (
+                        <>
+                          <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
+                                sub={fmtLlmCallsSub(tu)} />
+                          <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                          <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                        </>
+                      )}
+                      {lastRun.indexedTokens != null && (
+                        <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
+                              sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
+                      )}
+                      {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
+                        Object.entries(tu.by_kind).map(([k, v]) => (
+                          <Stat key={k} label={k}
+                                value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
+                                sub="tokens" />
+                        ))}
+                    </div>
+                  )}
+                  
+                  {/* Row 2: Time */}
+                  {(totalMs > 0 || (lastRun.metrics && lastRun.metrics.length > 0)) && (
+                    <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
+                      {totalMs > 0 && (
+                        <Stat label="Total time" value={fmtDuration(totalMs)}
+                              sub={`${(lastRun.metrics || []).length} steps`} />
+                      )}
+                      {(lastRun.metrics || []).map((m, i) => (
+                        <Stat key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)}
+                              sub={m.status === 'error' ? 'failed' : 'ok'} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
             })()}
           </div>
-
-          {/* Timing + token usage summary (from the last run) — labeled stat cards */}
-          {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null || (lastRun.metrics || []).length > 0) && (() => {
-            const tu = lastRun.tokenUsage || {};
-            const totalMs = (lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0);
-            const Stat = ({ label, value, sub }) => (
-              <div className="flex flex-col px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/60 min-w-[110px]">
-                <span className="text-[10px] uppercase tracking-wider text-gray-500">{label}</span>
-                <span className="text-sm font-semibold text-gray-100">{value}</span>
-                {sub != null && <span className="text-[10px] text-gray-500 mt-0.5">{sub}</span>}
-              </div>
-            );
-            return (
-              <div className="mt-4 space-y-2">
-                {/* Row 1: Tokens */}
-                {(lastRun.tokenUsage || lastRun.indexedTokens != null) && (
-                  <div className="flex flex-wrap gap-2">
-                    {lastRun.tokenUsage && (
-                      <>
-                        <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
-                              sub={fmtLlmCallsSub(tu)} />
-                        <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
-                        <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
-                      </>
-                    )}
-                    {lastRun.indexedTokens != null && (
-                      <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
-                            sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
-                    )}
-                    {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
-                      Object.entries(tu.by_kind).map(([k, v]) => (
-                        <Stat key={k} label={k}
-                              value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
-                              sub="tokens" />
-                      ))}
-                  </div>
-                )}
-                
-                {/* Row 2: Time */}
-                {(totalMs > 0 || (lastRun.metrics && lastRun.metrics.length > 0)) && (
-                  <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
-                    {totalMs > 0 && (
-                      <Stat label="Total time" value={fmtDuration(totalMs)}
-                            sub={`${(lastRun.metrics || []).length} steps`} />
-                    )}
-                    {(lastRun.metrics || []).map((m, i) => (
-                      <Stat key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)}
-                            sub={m.status === 'error' ? 'failed' : 'ok'} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-        </div>
+        )}
 
         {/* Files Section */}
         <div>

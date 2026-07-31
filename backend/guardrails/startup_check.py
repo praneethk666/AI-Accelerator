@@ -63,8 +63,13 @@ def run_startup_self_test(config: dict) -> None:
     # ── 4. Qdrant Availability (Non-blocking warning) ──────────────────────────
     try:
         from backend.storage.qdrant_store import QdrantStore
-        qdr = QdrantStore(config)
-        qdr.client.get_collections()
+        dim = int(config.get("embeddings", {}).get("dense_dim", 768))
+        collection = config.get("database", {}).get("qdrant_collection", "chunks")
+        qdr = QdrantStore(dim=dim, collection=collection)
+        try:
+            qdr.client.get_collections()
+        finally:
+            qdr.close()
         logger.info("Startup check: Qdrant connection OK")
     except Exception as e:
         logger.warning(

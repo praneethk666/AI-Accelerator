@@ -1436,7 +1436,17 @@ def get_vision_calls(file_id: str):
         pg.close()
 
 
+@app.get("/temp-git-show")
+def temp_git_show():
+    import subprocess
+    try:
+        out = subprocess.check_output(["git", "show", "origin/main:config/global.yaml"], text=True)
+        return {"content": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/")
 def root():
-    # Reload trigger comment v2
+    # Reload trigger comment v4
     return {"service": "Document Intelligence + RAG Accelerator", "docs": "/docs"}

@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import axios from 'axios';
 import {
   sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
   patchAgentSession, stageFile, getFile, API_BASE_URL, getFiles,
@@ -217,6 +218,12 @@ const ChatPage = () => {
   const setSessionLoading = (sessId, val) => {
     setLoadingSessions((prev) => ({ ...prev, [sessId]: val }));
   };
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  };
   const [error, setError] = useState(null);
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
@@ -227,6 +234,7 @@ const ChatPage = () => {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const abortControllerRef = useRef(null);
   const chatContainerRef = useRef(null);
   const [showChatScrollDown, setShowChatScrollDown] = useState(false);
   const [allFiles, setAllFiles] = useState([]);
@@ -582,6 +590,12 @@ const ChatPage = () => {
   // The agent asked the user to choose (needs_clarification): send their pick as the
   // next message so the agent proceeds scoped to that choice.
   const handleClarify = async (optionText, msgIdx) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqSession = sessionId;
     setMessages((prev) => [
       ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
@@ -610,7 +624,7 @@ const ChatPage = () => {
     ]);
 
     try {
-      const res = await sendAgentChat(optionText, reqSession, false, null);
+      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -638,6 +652,22 @@ const ChatPage = () => {
       loadSessions();
       updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Clarify error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
@@ -653,8 +683,13 @@ const ChatPage = () => {
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
+
   // Extract page-level sources from a response and open/close the page viewer.
   // Reuses parseSources (slide/sheet -> page remap) + buildViewableSources
   // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
@@ -682,6 +717,12 @@ const ChatPage = () => {
     }
 
     // ── Normal path: text (+ optional file) → send to agent ──────────────────
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const displayText = attachedFile
       ? `${input.trim()}${input.trim() ? '\n\n' : ''}📎 ${attachedFile.filename}`
       : input;
@@ -729,7 +770,7 @@ const ChatPage = () => {
     ]);
 
     try {
-      const res = await sendAgentChat(sentText, reqSession, false, null);
+      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -757,6 +798,22 @@ const ChatPage = () => {
       loadSessions();
       updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Chat error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
@@ -772,6 +829,10 @@ const ChatPage = () => {
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -942,6 +1003,12 @@ const ChatPage = () => {
     const lastUserMsg = messages[messages.length - 1];
     if (lastUserMsg.role !== 'user') return;
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqSession = sessionId;
     setSessionLoading(reqSession, true);
     setError(null);
@@ -966,7 +1033,7 @@ const ChatPage = () => {
     ]);
 
     try {
-      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null);
+      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -994,6 +1061,22 @@ const ChatPage = () => {
       loadSessions();
       updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Retry error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
@@ -1009,6 +1092,10 @@ const ChatPage = () => {
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -1018,6 +1105,13 @@ const ChatPage = () => {
       setMessages((prev) => prev.map((m, i) => (i === msgIdx ? { ...m, status: 'declined' } : m)));
       return;
     }
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqSession = sessionId;
     setSessionLoading(reqSession, true);
 
@@ -1044,7 +1138,7 @@ const ChatPage = () => {
     );
 
     try {
-      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || []);
+      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -1072,6 +1166,22 @@ const ChatPage = () => {
       loadSessions();
       updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Approval error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
@@ -1087,6 +1197,10 @@ const ChatPage = () => {
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -1368,16 +1482,26 @@ const ChatPage = () => {
                 placeholder="Message the agent... (Shift+Enter for new line)"
                 disabled={loading}
               />
-              <button
-                onClick={handleSend}
-                disabled={loading || (!input.trim() && !attachedFile)}
-                className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${loading || (!input.trim() && !attachedFile)
-                  ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                  : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-              >
-                <PaperAirplaneIcon className="h-4 w-4" />
-              </button>
+              {loading ? (
+                <button
+                  onClick={handleStop}
+                  title="Stop generating"
+                  className="p-2.5 rounded-full flex-shrink-0 transition-colors bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  <div className="w-3 h-3 bg-white rounded-[2px]" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim() && !attachedFile}
+                  className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${(!input.trim() && !attachedFile)
+                    ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                >
+                  <PaperAirplaneIcon className="h-4 w-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>

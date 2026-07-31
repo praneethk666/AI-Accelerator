@@ -81,43 +81,137 @@ def _looks_like_refusal(answer: str) -> bool:
 def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     """
     Parse the LLM's answer to identify which sources were actually cited.
-    Returns only the citations that match bracketed index numbers or filenames.
+    Returns only the citations that match bracketed index numbers or filenames and pages.
     """
     import re
-    
-    # 1. Extract all text content within brackets, e.g. [1], [2, p.3], [Vinod-Nerella.pdf, p.1]
-    brackets = re.findall(r'\[([^\]]+)\]', answer)
-    if not brackets:
-        # If the LLM did not generate any citations, fall back to returning all retrieved chunks
-        return citations
-        
+
+    answer_lower = answer.lower()
+
+    # 1. Parse bracketed index citations, e.g. [1], [2, p.3], [1-3]
     cited_indices = set()
-    cited_filenames = set()
-    
+    brackets = re.findall(r'\[([^\]]+)\]', answer)
     for content in brackets:
-        # Extract individual integers (index references like [1], [1, 2])
+        # Check for ranges first, e.g. 1-3
+        for start, end in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', content):
+            try:
+                s, e = int(start), int(end)
+                if s <= e and e - s < 50:
+                    cited_indices.update(range(s, e + 1))
+            except ValueError:
+                pass
+        # Individual index numbers
         for num_str in re.findall(r'\b\d+\b', content):
-            cited_indices.add(int(num_str))
-            
-        # Match by filename or cleaned filename (case-insensitive)
-        for cit in citations:
-            fname = cit.get("filename") or ""
-            if fname and fname.lower() in content.lower():
-                cited_filenames.add(fname.lower())
-                
-    # 2. Filter the citation list
+            try:
+                cited_indices.add(int(num_str))
+            except ValueError:
+                pass
+
+    # Helper function to find numbers/ranges in a snippet of text
+    def _expand_ranges_and_numbers(text: str) -> set[int]:
+        numbers = set()
+        # Find ranges like '3-5', '3 to 5', '3- 5'
+        range_patterns = [
+            r'\b(\d+)\s*-\s*(\d+)\b',
+            r'\b(\d+)\s+to\s+(\d+)\b',
+        ]
+        for pattern in range_patterns:
+            for start, end in re.findall(pattern, text):
+                try:
+                    s, e = int(start), int(end)
+                    if s <= e and e - s < 100:
+                        numbers.update(range(s, e + 1))
+                except ValueError:
+                    pass
+        # Also find individual numbers
+        for num_str in re.findall(r'\b\d+\b', text):
+            try:
+                numbers.add(int(num_str))
+            except ValueError:
+                pass
+        return numbers
+
+    # Generic terms to avoid false positives (e.g. matching "document" inside text to document.docx)
+    GENERIC_FILE_WORDS = {
+        "document", "doc", "report", "manual", "file", "presentation", "slide", 
+        "sheet", "pdf", "word", "excel", "powerpoint", "ppt", "xlsx", "docx", "pages"
+    }
+
+    # 2. Filter citations
     filtered = []
+    
     for idx, cit in enumerate(citations, start=1):
         is_cited = False
         
-        # Check if cited by index [i]
+        # Check A: Cited by index [i]
         if idx in cited_indices:
             is_cited = True
             
-        # Check if cited by filename reference
-        elif cit.get("filename") and cit["filename"].lower() in cited_filenames:
-            is_cited = True
-            
+        else:
+            # Check B: Cited by name and optionally page/slide/sheet
+            fname = cit.get("filename") or ""
+            if fname:
+                fname_clean = fname.lower()
+                # Also try without extension
+                fname_no_ext = fname_clean.rsplit('.', 1)[0] if '.' in fname_clean else fname_clean
+                
+                # To avoid false positive on very short file names, require name to be at least 3 chars
+                if len(fname_no_ext) >= 3:
+                    # Escape for regex
+                    esc_fname = re.escape(fname_clean)
+                    esc_fname_no_ext = re.escape(fname_no_ext)
+                    
+                    # Pattern matching with word boundary on both sides
+                    # Matches either the exact filename or the filename without extension
+                    # If it's a generic word, we require exact match with extension
+                    if fname_no_ext in GENERIC_FILE_WORDS:
+                        pattern = rf'\b{esc_fname}\b'
+                    else:
+                        pattern = rf'\b(?:{esc_fname}|{esc_fname_no_ext})\b'
+                    
+                    matches = list(re.finditer(pattern, answer_lower))
+                    if matches:
+                        # Filename was mentioned! Now check if specific pages are cited.
+                        page_val = cit.get("page") or cit.get("slide")
+                        sheet_val = cit.get("sheet")
+                        
+                        has_specific_citation = False
+                        matches_any_page_spec = False
+                        
+                        for m in matches:
+                            # Look in a window of 100 characters before and after the mention
+                            start_pos = max(0, m.start() - 100)
+                            end_pos = min(len(answer_lower), m.end() + 100)
+                            context = answer_lower[start_pos:end_pos]
+                            
+                            # Does the context contain page/slide indicators?
+                            has_page_word = bool(re.search(r'\b(?:page|pages|p|pg|slide|slides|sheet|sheets)\b|[()]', context))
+                            
+                            if has_page_word:
+                                has_specific_citation = True
+                                nums = _expand_ranges_and_numbers(context)
+                                
+                                # Check page/slide match
+                                if page_val is not None:
+                                    try:
+                                        p_int = int(float(page_val))
+                                        if p_int in nums:
+                                            matches_any_page_spec = True
+                                            break
+                                    except (ValueError, TypeError):
+                                        pass
+                                        
+                                # Check sheet match
+                                if sheet_val and str(sheet_val).lower() in context:
+                                    matches_any_page_spec = True
+                                    break
+                                    
+                        if has_specific_citation:
+                            if matches_any_page_spec:
+                                is_cited = True
+                        else:
+                            # General mention without specific page references -> count as cited
+                            is_cited = True
+                            
         if is_cited:
             filtered.append(cit)
             

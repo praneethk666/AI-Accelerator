@@ -26,8 +26,6 @@ llm:
   answer_model: gpt-4o-mini
   base_url: https://api.openai.com/v1
   api_key: ${OPENAI_API_KEY}
-  temperature: 0.2
-  thinking_budget: 0
 
 # ── Per-step model overrides (MODULAR) ────────────────────────────────────────
 # Any step below may pin its OWN model (and optionally provider/api_key/base_url/
@@ -43,21 +41,6 @@ llm:
 # ── Categorization ────────────────────────────────────────────────────────────
 categorization:
   # model:                   # optional per-step override; unset => inherits llm.model
-  confidence_thresholds:
-    categorization_low_confidence: 0.5
-
-  industry_keywords:
-    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
-    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
-    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
-    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
-    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
-    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
-    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
-    general:      []
-
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
@@ -412,6 +395,26 @@ industries:
   - general
 
 default_industry: general
+
+# ── Categorization ────────────────────────────────────────────────────────────
+# Used by CategorizeTool.
+# config["categorization"]["industry_keywords"] — keyword lists per industry
+# config["categorization"]["confidence_thresholds"] — when to flag low confidence
+categorization:
+  confidence_thresholds:
+    categorization_low_confidence: 0.5
+
+  industry_keywords:
+    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
+    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
+    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
+    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
+    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
+    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
+    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
+    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
+    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
+    general:      []
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.

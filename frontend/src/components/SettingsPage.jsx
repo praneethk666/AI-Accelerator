@@ -392,15 +392,16 @@ const SettingsPage = () => {
               <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Embeddings & Reranking</h2>
               <div className="grid md:grid-cols-2 gap-x-8">
                 <div>
-                  <Field label="Embedding Provider" hint="local = BAAI/bge-m3 (local CPU/GPU). jina = jina-embeddings-v3 (Hosted API).">
+                  <Field label="Embedding Provider" hint="local = BAAI/bge-m3 (local CPU/GPU). jina = jina-embeddings-v3 (Hosted API). openai = text-embedding-3-small (Hosted API).">
                     <Select 
                       value={s.embeddings_dense_provider || 'local'} 
                       onChange={(v) => {
                         set('embeddings_dense_provider', v);
                         if (v === 'jina') set('embeddings_dense_model', 'jina-embeddings-v3');
+                        else if (v === 'openai') set('embeddings_dense_model', 'text-embedding-3-small');
                         else set('embeddings_dense_model', 'BAAI/bge-m3');
                       }} 
-                      options={['local', 'jina']} 
+                      options={['local', 'jina', 'openai']} 
                     />
                   </Field>
                   <Field label="Embedding Model">

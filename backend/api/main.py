@@ -464,6 +464,7 @@ _SETTINGS_MAP = {
     # embeddings & reranking
     "embeddings_dense_provider": ["embeddings", "dense_provider"],
     "embeddings_dense_model": ["embeddings", "dense_model"],
+    "embeddings_dense_dim": ["embeddings", "dense_dim"],
     "embeddings_reranker_provider": ["embeddings", "reranker_provider"],
     "embeddings_reranker_model": ["embeddings", "reranker_model"],
     # auto-ingestion

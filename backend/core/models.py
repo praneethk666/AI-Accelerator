@@ -174,9 +174,66 @@ class JinaEmbeddingsAPIClient:
         return result[0] if is_single else result
 
 
+class OpenAIEmbeddingsAPIClient:
+    """API client that calls OpenAI's hosted Embeddings API instead of running SentenceTransformers locally."""
+
+    def __init__(self, model_name: str, api_key: str | None = None, base_url: str | None = None, dimensions: int | None = None) -> None:
+        self.model_name = model_name
+        self.api_key = api_key
+        self.url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/embeddings"
+        self.dimensions = dimensions
+
+    def encode(
+        self,
+        sentences: str | list[str],
+        normalize_embeddings: bool = True,
+        batch_size: int = 16,
+    ):
+        """Replicates SentenceTransformer's encode method signature."""
+        if not self.api_key:
+            raise ValueError(
+                "OpenAI API Key is missing. Please set OPENAI_API_KEY in your environment or global.yaml."
+            )
+
+        is_single = isinstance(sentences, str)
+        input_list = [sentences] if is_single else list(sentences)
+
+        if not input_list:
+            import numpy as np
+            return np.array([])
+
+        import requests
+        import numpy as np
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        all_embeddings = []
+        for i in range(0, len(input_list), batch_size):
+            chunk = input_list[i : i + batch_size]
+            data = {
+                "model": self.model_name,
+                "input": chunk,
+            }
+            if self.dimensions is not None:
+                data["dimensions"] = self.dimensions
+
+            response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
+            res_json = response.json()
+
+            # Ensure correct ordering based on response indices
+            sorted_data = sorted(res_json["data"], key=lambda x: x["index"])
+            all_embeddings.extend([item["embedding"] for item in sorted_data])
+
+        result = np.array(all_embeddings)
+        return result[0] if is_single else result
+
+
 def get_dense_model(config: dict):
-    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim)
-    or the JinaEmbeddingsAPIClient."""
+    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim),
+    the JinaEmbeddingsAPIClient, or the OpenAIEmbeddingsAPIClient."""
     global _dense_model
     if _dense_model is None:
         with _model_lock:
@@ -189,6 +246,23 @@ def get_dense_model(config: dict):
                     import os
                     api_key = embed_cfg.get("dense_api_key") or os.environ.get("JINA_API_KEY")
                     _dense_model = JinaEmbeddingsAPIClient(model_name, api_key)
+                elif provider == "openai":
+                    import os
+                    api_key = embed_cfg.get("dense_api_key") or os.environ.get("OPENAI_API_KEY")
+                    base_url = embed_cfg.get("dense_base_url") or os.environ.get("OPENAI_BASE_URL")
+                    dimensions = embed_cfg.get("dense_dim")
+                    # Convert dimensions to int if present
+                    if dimensions is not None:
+                        try:
+                            dimensions = int(dimensions)
+                        except (ValueError, TypeError):
+                            dimensions = None
+                    _dense_model = OpenAIEmbeddingsAPIClient(
+                        model_name=model_name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        dimensions=dimensions
+                    )
                 else:
                     from sentence_transformers import SentenceTransformer
                     _dense_model = SentenceTransformer(model_name, trust_remote_code=True)

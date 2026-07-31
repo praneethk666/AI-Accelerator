@@ -71,8 +71,13 @@ async def _probe_qdrant(config: dict) -> bool:
     """Check Qdrant health. Returns True if Qdrant responds."""
     try:
         def run_check():
-            qdr = QdrantStore(config)
-            qdr.client.get_collections()
+            dim = int(config.get("embeddings", {}).get("dense_dim", 768))
+            collection = config.get("database", {}).get("qdrant_collection", "chunks")
+            qdr = QdrantStore(dim=dim, collection=collection)
+            try:
+                qdr.client.get_collections()
+            finally:
+                qdr.close()
         await asyncio.to_thread(run_check)
         return True
     except Exception as e:

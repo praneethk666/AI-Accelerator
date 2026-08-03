@@ -263,3 +263,6 @@ docs/
 
 # Claude Code local settings — machine-specific, not project config
 .claude/
+
+# Agent customizations & local rules
+.agents/

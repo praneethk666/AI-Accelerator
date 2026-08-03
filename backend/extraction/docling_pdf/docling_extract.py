@@ -103,6 +103,34 @@ def _block_page(b: dict):
     return ref.get("page") if isinstance(ref, dict) else None
 
 
+def _update_page_progress(document_id: str, tool_name: str, current_page: int, total_pages: int) -> None:
+    """Helper to update PostgreSQL with page-by-page progress. Safe from circular
+    imports and DB issues, fallback to PostgresStore if pool isn't loaded."""
+    try:
+        from backend.api.main import _pool_get_conn, _pool_return_conn
+        conn = _pool_get_conn()
+        try:
+            conn.execute(
+                "UPDATE documents SET current_step = %s, updated_at = NOW() WHERE document_id::text = %s",
+                (f"{tool_name} (page {current_page} of {total_pages})", document_id)
+            )
+        finally:
+            _pool_return_conn(conn)
+    except Exception:
+        try:
+            from backend.storage.postgres_store import PostgresStore
+            pg = PostgresStore()
+            try:
+                pg.conn.execute(
+                    "UPDATE documents SET current_step = %s, updated_at = NOW() WHERE document_id::text = %s",
+                    (f"{tool_name} (page {current_page} of {total_pages})", document_id)
+                )
+            finally:
+                pg.close()
+        except Exception:
+            pass
+
+
 def _pp(report: dict | None, page) -> dict | None:
     """Get/create the per-page action record in the report (None if no report or page).
     Records what we did to each page so the decision trail is queryable per page."""
@@ -518,73 +546,239 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     table_source = (table_source or "docling").lower()
     filename = display_filename(pdf_path)
     blocks: list[dict] = []
+    
+    # Initialize variables for both remote and local modes
+    page_text: dict = {}
+    pic_jobs: list[tuple] = []
+    dfigs: dict = defaultdict(list)
+    dtables: dict = defaultdict(list)
 
     from backend.core.tool import check_cancelled
-    check_cancelled(document_id)
+    mode = (dcfg.get("mode") or "local").lower()
 
-    # Opened lazily only when a table_source that can use it is active; closed at the
-    # end. _pymupdf_cache memoizes find_tables() per page across a page's tables.
-    fdoc = None
-    _pymupdf_cache: dict = {}
-    if table_source in ("pymupdf", "auto"):
+    if mode == "remote":
+        import requests
+        server_url = dcfg.get("server_url")
+        if not server_url or "${" in str(server_url):
+            server_url = os.environ.get("DOCLING_SERVER_URL", "http://localhost:8083")
+        api_key = dcfg.get("server_key")
+        if not api_key or "${" in str(api_key):
+            api_key = os.environ.get("DOCLING_API_KEY") or os.environ.get("DOCLING_SERVER_KEY", "")
+        
+        server_url = server_url.rstrip("/")
+        do_ocr = bool(dcfg.get("do_ocr", False))
+        do_table_structure = bool(dcfg.get("do_table_structure", True))
+        
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+            
+        data = {
+            "document_id": document_id,
+            "filename": filename,
+            "table_source": table_source,
+            "do_ocr": str(do_ocr).lower(),
+            "do_table_structure": str(do_table_structure).lower(),
+            "min_picture_pts": str(min_pic),
+        }
+        
+        logger.info("docling: Calling remote server at %s/extract for doc %s", server_url, document_id)
+        try:
+            with open(pdf_path, "rb") as f:
+                files = {"pdf": (filename, f, "application/pdf")}
+                resp = requests.post(
+                    f"{server_url}/extract",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=600,
+                )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:
+            err_msg = str(e)
+            logger.error("docling: Remote server call failed: %s. Falling back to local mode.", err_msg)
+            if report is not None:
+                report["remote_error"] = err_msg
+            mode = "local"
+        else:
+            logger.info("docling: Remote server call successful for doc %s", document_id)
+            remote_blocks = payload.get("blocks", [])
+            n_pages = payload.get("n_pages", 0)
+            if report is not None:
+                report["pages"]["total"] = n_pages
+                report["mode"] = "remote"
+                
+            for b in remote_blocks:
+                page_no = b.get("source_ref", {}).get("page")
+                btype = b.get("type")
+                if btype in ("text", "heading"):
+                    text = b.get("text", "")
+                    if text:
+                        page_text.setdefault(page_no, []).append(text)
+                        
+            for b in remote_blocks:
+                btype = b.get("type")
+                page_no = b.get("source_ref", {}).get("page")
+                bbox = b.get("source_ref", {}).get("bbox")
+                
+                if not b.get("block_id"):
+                    b["block_id"] = str(uuid.uuid4())
+                
+                if btype == "image_caption":
+                    if bbox:
+                        idx = len(blocks)
+                        blocks.append(None)
+                        pic_jobs.append((idx, page_no, bbox))
+                        dfigs[int(page_no)].append(bbox)
+                elif btype == "table":
+                    if report is not None:
+                        report["tables"]["total"] += 1
+                        ts = b.get("metadata", {}).get("table_source") or "tableformer"
+                        report["tables"][ts] = report["tables"].get(ts, 0) + 1
+                    if bbox and isinstance(page_no, int):
+                        dtables[page_no].append(bbox)
+                    blocks.append(b)
+                else:
+                    blocks.append(b)
+
+    if mode == "local":
+        logger.info("docling: Running local extraction for doc %s", document_id)
+        if report is not None:
+            report["mode"] = "local"
+        fdoc = None
+        _pymupdf_cache: dict = {}
+        if table_source in ("pymupdf", "auto"):
+            try:
+                import fitz
+                fdoc = fitz.open(pdf_path)
+            except Exception as e:
+                logger.warning("pymupdf: could not open %s for table extraction (%s)", pdf_path, e)
+
+        # Count pages via fitz to run page-by-page conversion (which avoids memory issues on large files)
+        total_pages = 0
         try:
             import fitz
-            fdoc = fitz.open(pdf_path)
+            fdoc_temp = fitz.open(pdf_path)
+            total_pages = len(fdoc_temp)
+            if fdoc is None and table_source in ("pymupdf", "auto"):
+                fdoc = fdoc_temp
+            else:
+                if fdoc is not fdoc_temp:
+                    fdoc_temp.close()
         except Exception as e:
-            logger.warning("pymupdf: could not open %s for table extraction (%s)", pdf_path, e)
+            logger.warning("Failed to open PDF to count pages: %s", e)
 
-    # Count pages via fitz to run page-by-page conversion (which avoids memory issues on large files)
-    total_pages = 0
-    try:
-        import fitz
-        fdoc_temp = fitz.open(pdf_path)
-        total_pages = len(fdoc_temp)
-        if fdoc is None and table_source in ("pymupdf", "auto"):
-            fdoc = fdoc_temp
+        # accumulate page text so each figure is captioned WITH its page context
+        page_text = {}
+        pic_jobs = []   # defer figure crop/caption until page text is gathered
+        dfigs = defaultdict(list)    # docling figure boxes per page (for the YOLO union)
+        dtables = defaultdict(list)  # docling table boxes per page (excluded from figures)
+
+        conv = _converter(dcfg)
+
+        if total_pages > 0:
+            if report is not None:
+                report["pages"]["total"] = total_pages
+
+            for pg_num in range(1, total_pages + 1):
+                from backend.core.tool import check_cancelled
+                check_cancelled(document_id)
+                _update_page_progress(document_id, "docling_pdf", pg_num, total_pages)
+                try:
+                    res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
+                    doc = res.document
+                except Exception as e:
+                    logger.warning("docling: failed to convert page %d of %s: %s", pg_num, filename, e)
+                    continue
+
+                for item, _level in doc.iterate_items():
+                    if isinstance(item, TextItem):
+                        label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
+                        text = (item.text or "").strip()
+                        if not text or label in _DROP_LABELS:
+                            continue
+                        _, bbox = _prov(item)
+                        page_no = pg_num
+                        bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                        btype = "heading" if label in _HEADING_LABELS else "text"
+                        blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
+                        page_text.setdefault(page_no, []).append(text)
+
+                    elif isinstance(item, TableItem):
+                        _, bbox = _prov(item)
+                        page_no = pg_num
+                        bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                        ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
+                        if ncols == 1:
+                            txt = _table_as_text(item, doc)
+                            if txt:
+                                blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
+                                page_text.setdefault(page_no, []).append(txt)
+                            continue
+
+                        complex_ = _table_is_complex(item)
+                        pmd_td = None
+                        if fdoc is not None and bb and (table_source == "pymupdf" or
+                                                         (table_source == "auto" and complex_)):
+                            pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                        use_pymupdf = pmd_td is not None
+                        use_vlm = (not use_pymupdf) and bb and (
+                            table_source == "vlm" or (table_source == "auto" and complex_))
+                        source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
+                        if use_pymupdf:
+                            td = pmd_td
+                            md = _render_table_markdown(td)
+                        elif use_vlm:
+                            try:
+                                md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                                td = None
+                            except Exception as e:
+                                logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                                source = "tableformer"
+                                md, td = _table_markdown(item, doc), _table_data(item, doc)
+                        else:
+                            md, td = _table_markdown(item, doc), _table_data(item, doc)
+                        if td is None:
+                            td = _markdown_table_data(md)
+                        if report is not None:
+                            report["tables"]["total"] += 1
+                            report["tables"][source] = report["tables"].get(source, 0) + 1
+                            rec = _pp(report, page_no)
+                            if rec:
+                                rec["tables"][source] = rec["tables"].get(source, 0) + 1
+                        if bb and isinstance(page_no, int):
+                            dtables[page_no].append(bb)
+                        blocks.append(_block(document_id, page_no, filename, "table",
+                                             md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
+
+                    elif isinstance(item, PictureItem):
+                        _, bbox = _prov(item)
+                        page_no = pg_num
+                        bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
+                        if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
+                            idx = len(blocks)
+                            blocks.append(None)
+                            pic_jobs.append((idx, page_no, bb))
+                            dfigs[int(page_no)].append(bb)
         else:
-            if fdoc is not fdoc_temp:
-                fdoc_temp.close()
-    except Exception as e:
-        logger.warning("Failed to open PDF to count pages: %s", e)
-
-    # accumulate page text so each figure is captioned WITH its page context
-    page_text: dict = {}
-    pic_jobs: list[tuple] = []   # defer figure crop/caption until page text is gathered
-    dfigs: dict = defaultdict(list)    # docling figure boxes per page (for the YOLO union)
-    dtables: dict = defaultdict(list)  # docling table boxes per page (excluded from figures)
-
-    conv = _converter(dcfg)
-
-    if total_pages > 0:
-        if report is not None:
-            report["pages"]["total"] = total_pages
-
-        for pg_num in range(1, total_pages + 1):
-            from backend.core.tool import check_cancelled
-            check_cancelled(document_id)
-            try:
-                res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
-                doc = res.document
-            except Exception as e:
-                logger.warning("docling: failed to convert page %d of %s: %s", pg_num, filename, e)
-                continue
-
+            # Fallback to full conversion if page count could not be retrieved
+            res = conv.convert(pdf_path)
+            doc = res.document
             for item, _level in doc.iterate_items():
                 if isinstance(item, TextItem):
                     label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
                     text = (item.text or "").strip()
                     if not text or label in _DROP_LABELS:
                         continue
-                    _, bbox = _prov(item)
-                    page_no = pg_num
+                    page_no, bbox = _prov(item)
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
                     btype = "heading" if label in _HEADING_LABELS else "text"
                     blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
                     page_text.setdefault(page_no, []).append(text)
 
                 elif isinstance(item, TableItem):
-                    _, bbox = _prov(item)
-                    page_no = pg_num
+                    page_no, bbox = _prov(item)
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
                     ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
                     if ncols == 1:
@@ -630,87 +824,16 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                                          md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
 
                 elif isinstance(item, PictureItem):
-                    _, bbox = _prov(item)
-                    page_no = pg_num
+                    page_no, bbox = _prov(item)
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
                     if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
                         idx = len(blocks)
                         blocks.append(None)
                         pic_jobs.append((idx, page_no, bb))
                         dfigs[int(page_no)].append(bb)
-    else:
-        # Fallback to full conversion if page count could not be retrieved
-        res = conv.convert(pdf_path)
-        doc = res.document
-        for item, _level in doc.iterate_items():
-            if isinstance(item, TextItem):
-                label = (str(getattr(item, "label", "")) or "").lower().split(".")[-1]
-                text = (item.text or "").strip()
-                if not text or label in _DROP_LABELS:
-                    continue
-                page_no, bbox = _prov(item)
-                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-                btype = "heading" if label in _HEADING_LABELS else "text"
-                blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
-                page_text.setdefault(page_no, []).append(text)
 
-            elif isinstance(item, TableItem):
-                page_no, bbox = _prov(item)
-                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-                ncols = getattr(getattr(item, "data", None), "num_cols", 0) or 0
-                if ncols == 1:
-                    txt = _table_as_text(item, doc)
-                    if txt:
-                        blocks.append(_block(document_id, page_no, filename, "text", txt, bbox=bb))
-                        page_text.setdefault(page_no, []).append(txt)
-                    continue
-
-                complex_ = _table_is_complex(item)
-                pmd_td = None
-                if fdoc is not None and bb and (table_source == "pymupdf" or
-                                                 (table_source == "auto" and complex_)):
-                    pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
-                use_pymupdf = pmd_td is not None
-                use_vlm = (not use_pymupdf) and bb and (
-                    table_source == "vlm" or (table_source == "auto" and complex_))
-                source = "pymupdf" if use_pymupdf else ("vlm" if use_vlm else "tableformer")
-                if use_pymupdf:
-                    td = pmd_td
-                    md = _render_table_markdown(td)
-                elif use_vlm:
-                    try:
-                        md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                        td = None
-                    except Exception as e:
-                        logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
-                        source = "tableformer"
-                        md, td = _table_markdown(item, doc), _table_data(item, doc)
-                else:
-                    md, td = _table_markdown(item, doc), _table_data(item, doc)
-                if td is None:
-                    td = _markdown_table_data(md)
-                if report is not None:
-                    report["tables"]["total"] += 1
-                    report["tables"][source] = report["tables"].get(source, 0) + 1
-                    rec = _pp(report, page_no)
-                    if rec:
-                        rec["tables"][source] = rec["tables"].get(source, 0) + 1
-                if bb and isinstance(page_no, int):
-                    dtables[page_no].append(bb)
-                blocks.append(_block(document_id, page_no, filename, "table",
-                                     md or _render_table_markdown(td) or "[table]", table_data=td, bbox=bb))
-
-            elif isinstance(item, PictureItem):
-                page_no, bbox = _prov(item)
-                bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-                if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
-                    idx = len(blocks)
-                    blocks.append(None)
-                    pic_jobs.append((idx, page_no, bb))
-                    dfigs[int(page_no)].append(bb)
-
-    if fdoc is not None:
-        fdoc.close()
+        if fdoc is not None:
+            fdoc.close()
 
     # Figure UNION: add DocLayout-YOLO boxes that Docling missed (tested: Docling splits
     # collages but misses some figures; YOLO catches those). Skip YOLO boxes that overlap
@@ -782,8 +905,14 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for rec in report.get("per_page", {}).values():
             rec["figures"]["dropped"] = rec["figures"]["proposed"] - rec["figures"]["kept"]
 
-    logger.info("docling: %d blocks from %d pages (%d tables, %d pictures)",
-                len(blocks), len(doc.pages), len(doc.tables), len(doc.pictures))
+    if mode == "remote":
+        logger.info("docling (remote): %d blocks from %d pages (%d tables, %d pictures)",
+                    len(blocks), report["pages"]["total"] if report else 0,
+                    report["tables"]["total"] if report else 0,
+                    report["figures"].get("proposed", 0) if report else 0)
+    else:
+        logger.info("docling: %d blocks from %d pages (%d tables, %d pictures)",
+                    len(blocks), len(doc.pages), len(doc.tables), len(doc.pictures))
     return blocks
 
 

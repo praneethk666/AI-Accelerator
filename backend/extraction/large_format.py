@@ -87,8 +87,11 @@ def _merge(parts: list[str], config: dict) -> str:
         return "\n\n".join(parts)
     try:
         from backend.core.llm_client import get_llm
+        from backend.core import usage
         body = "\n\n".join(f"[tile {i + 1}]\n{p}" for i, p in enumerate(parts))
-        reply = get_llm(config).invoke(prompts.SCHEMATIC_MERGE + body)
+        full_prompt = prompts.SCHEMATIC_MERGE + body
+        reply = get_llm(config).invoke(full_prompt)
+        usage.record_from_message("large_format_merge", reply, prompt=full_prompt, model=config.get("llm", {}).get("model"), provider=config.get("llm", {}).get("provider"))
         out = (getattr(reply, "content", str(reply)) or "").strip()
         return out or "\n\n".join(parts)
     except Exception as e:

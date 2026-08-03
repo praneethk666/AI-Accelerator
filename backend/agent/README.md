@@ -38,4 +38,5 @@ Tools specified under `query.agent.write_tools` (such as `ingest_document`) requ
 * The API/CLI prompts the user for verification. If approved, the agent is re-run with `approved_writes=True`, allowing the tool to execute.
 
 ### 2. Conversation Cache & Relational Sync
-Every conversation turn is logged to the PostgreSQL `conversations` table. To minimize latency, the active session is cached in-memory (`_agent_sessions` in `main.py`). The chat history is capped at `max_history_messages` using a sliding window.
+Every conversation turn is logged to the PostgreSQL `conversations` table. To minimize latency and token usage, the active session is cached in-memory (`_agent_sessions` in `main.py`) per `session_id`. The chat history is filtered strictly for clean Q&A pairs (excluding tool calls and intermediate payloads) and capped at `max_history_messages` (20 messages / 10 Q&A pairs) using a sliding window.
+

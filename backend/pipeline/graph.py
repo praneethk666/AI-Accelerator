@@ -89,6 +89,7 @@ def _make_node(tool: Tool, raw_config: dict):
                 raise
             except Exception as exc:  # one tool must not kill the run
                 status, error = "error", str(exc)
+                logger.exception("Step %s failed with error: %s", tool.name, exc)
                 state["errors"].append(f"{tool.name}: {exc}")
                 result = state
                 record_handled_error(

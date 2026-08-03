@@ -51,15 +51,26 @@ def is_healthy(service: str) -> bool:
 
 
 async def _probe_postgres() -> bool:
-    """Check PostgreSQL health. Returns True if database responds."""
+    """Check PostgreSQL health using a pooled connection to avoid creating
+    a new TCP connection on every probe cycle."""
     try:
-        # Wrap postgres test inside to_thread to avoid blocking event loop
         def run_check():
-            pg = PostgresStore()
-            with pg.conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-            pg.conn.close()
+            # Import pool helpers from main — they're safe to call here because
+            # health_probe is only started after main has initialised the pool.
+            try:
+                from backend.api.main import _pool_get_conn, _pool_return_conn
+                conn = _pool_get_conn()
+                try:
+                    conn.execute("SELECT 1").fetchone()
+                finally:
+                    _pool_return_conn(conn)
+            except ImportError:
+                # Fallback: direct connection if pool not yet available (startup race)
+                pg = PostgresStore()
+                with pg.conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                pg.conn.close()
         await asyncio.to_thread(run_check)
         return True
     except Exception as e:

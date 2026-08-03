@@ -43,13 +43,17 @@ class RetrievalTool:
     name: str = "retrieval"
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
-        sub_questions: list[str] = state["sub_questions"] or []
-        doc_scope:     list[str] = state["document_scope"] or []
+        sub_questions: list[str] = state.get("sub_questions") or []
+        doc_scope:     list[str] = state.get("document_scope") or []
 
         if not sub_questions:
-            logger.warning("RetrievalTool: no sub_questions in state — skipping")
-            state["retrieved_chunks"] = []
-            return state
+            raw_q = state.get("standalone_query") or state.get("query")
+            if raw_q:
+                sub_questions = [raw_q]
+            else:
+                logger.warning("RetrievalTool: no sub_questions or query in state — skipping")
+                state["retrieved_chunks"] = []
+                return state
 
         retrieval_cfg = config["query"]["retrieval"]
         # HARD filter = explicit document_id scope (a choice the user/agent made — respect it).
@@ -208,9 +212,29 @@ def _hybrid_rerank(query, cfg, full_config, filters):
     if not candidates:
         return []
 
+    # Enforce degradation guardrails: reranker_max_pairs and reranker_max_tokens_per_pair
+    g_cfg = full_config.get("guardrails", {})
+    deg_cfg = g_cfg.get("degradation", {})
+    
+    max_pairs = deg_cfg.get("reranker_max_pairs")
+    if max_pairs is not None:
+        candidates = candidates[:max_pairs]
+        
+    max_tokens = deg_cfg.get("reranker_max_tokens_per_pair")
+    pairs = []
+    for c in candidates:
+        text = c["text"] or ""
+        if max_tokens is not None:
+            # 1 token is roughly 4 characters
+            char_limit = max_tokens * 4
+            if len(text) > char_limit:
+                text = text[:char_limit]
+        pairs.append((query, text))
+
     try:
         reranker = get_reranker(full_config)
-        scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
+        scores   = reranker.predict(pairs)
+
         ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
 
         # Optional relevance gate: drop candidates below a calibrated cross-encoder score
@@ -241,11 +265,12 @@ def _hybrid_rerank(query, cfg, full_config, filters):
 def _hyde(query, cfg, full_config, filters):
     top_k    = cfg["top_n"]
     llm      = get_llm(full_config)
-    response = llm.invoke(
+    hyde_prompt = (
         "Write a short factual paragraph directly answering this question. "
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     )
-    usage.record_from_message("hyde", response, model=full_config["llm"]["model"], provider=full_config["llm"]["provider"],)
+    response = llm.invoke(hyde_prompt)
+    usage.record_from_message("hyde", response, prompt=hyde_prompt, model=full_config["llm"]["model"], provider=full_config["llm"]["provider"])
     hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp, full_config)

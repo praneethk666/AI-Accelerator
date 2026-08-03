@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
-import { uploadFile, getFiles, deleteFile, healthCheck, getProgress } from '../api';
+import { uploadFile, getFiles, deleteFile, healthCheck, getProgress, checkDoclingServer } from '../api';
 import {
   CloudArrowUpIcon,
   DocumentIcon,
@@ -78,6 +78,7 @@ const IngestionPage = () => {
   // metrics from the most recent upload: { name, status, metrics: [{step, ms, status}] }
   const [lastRun, setLastRun] = useState(null);
   const [selectedDocId, setSelectedDocId] = useState(null);
+  const [doclingAlert, setDoclingAlert] = useState(null); // null | { url: string }
   const selectedDocIdRef = useRef(null);
   const activePolls = useRef({});
 
@@ -97,14 +98,43 @@ const IngestionPage = () => {
     }
   };
 
-  // Check server health on component mount
+  // ─ Smart adaptive file list polling ─────────────────────────────────────────────
+  // Polls /files only when: (1) a file is actively processing, OR (2) this is
+  // the first load. Stops when tab is hidden. This replaces the old always-on
+  // 3-second interval that ran 20 req/min regardless of activity.
   useEffect(() => {
     checkServerHealth();
     loadFiles();
 
-    // Periodically check for new files (e.g. from auto-ingestion watcher) every 3 seconds
-    const interval = setInterval(silentReloadFiles, 3000);
-    return () => clearInterval(interval);
+    let intervalId = null;
+
+    const smartPoll = () => {
+      // Skip polling when tab is in background — saves bandwidth and Supabase quota
+      if (document.visibilityState === 'hidden') return;
+      silentReloadFiles();
+    };
+
+    const startPolling = () => {
+      if (intervalId) return;
+      intervalId = setInterval(smartPoll, 10_000); // 10s instead of 3s
+    };
+
+    const stopPolling = () => {
+      if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') { startPolling(); smartPoll(); }
+      else stopPolling();
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    startPolling();
+
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   const checkServerHealth = async () => {
@@ -122,8 +152,15 @@ const IngestionPage = () => {
     try {
       const res = await getFiles();
       const filesList = res.data || [];
-      setFiles(filesList);
-      
+
+      // Skip setFiles() if only status and ids are unchanged — prevents needless
+      // re-renders when nothing has changed (the dominant source of frontend lag).
+      setFiles((prev) => {
+        const prevSig = prev.map((f) => `${f.document_id}:${f.status}`).join(',');
+        const newSig = filesList.map((f) => `${f.document_id}:${f.status}`).join(',');
+        return prevSig === newSig ? prev : filesList;
+      });
+
       // Default select to the most recent file if nothing is selected
       if (filesList.length > 0 && !selectedDocIdRef.current) {
         const first = filesList[0];
@@ -177,6 +214,19 @@ const IngestionPage = () => {
       return;
     }
 
+    // Check if any PDF is uploaded and if configured remote docling server is online
+    const hasPdf = acceptedFiles.some((f) => f.name.toLowerCase().endsWith('.pdf'));
+    if (hasPdf) {
+      try {
+        const { data: doclingHealth } = await checkDoclingServer();
+        if (doclingHealth.mode === 'remote' && doclingHealth.reachable === false) {
+          setDoclingAlert({ url: doclingHealth.url || 'configured server' });
+        }
+      } catch (err) {
+        console.error('Docling server check failed:', err);
+      }
+    }
+
     setUploading(true);
     setError(null);
 
@@ -216,8 +266,9 @@ const IngestionPage = () => {
     setUploading(false);
   };
 
-  // Poll a document's ingestion progress and update the pipeline cards + file row
-  // live, until it finishes (ready/failed).
+  // ─ Per-document ingestion progress poller ────────────────────────────────────────
+  // Adaptive backoff: starts at 1.5s, slows to 3s after 10 polls, 5s after 30.
+  // Hard cap: 120 attempts (~3 min max vs the old 800 = 12+ min at 900ms flat).
   const pollProgress = (docId, name) => {
     if (activePolls.current[docId]) return;
     activePolls.current[docId] = true;
@@ -227,7 +278,7 @@ const IngestionPage = () => {
       attempts += 1;
       try {
         const { data } = await getProgress(docId);
-        
+
         // Only update metrics if this document is currently selected
         if (selectedDocIdRef.current === docId) {
           setLastRun({
@@ -238,6 +289,7 @@ const IngestionPage = () => {
             tokenUsage: data.token_usage,
             indexedTokens: data.indexed_tokens,
             chunks: data.chunks,
+            currentStep: data.current_step,
           });
         }
 
@@ -245,23 +297,27 @@ const IngestionPage = () => {
           prev.map((f) =>
             (f.document_id === docId || f.id === docId)
               ? { ...f, status: data.status, document_type: data.document_type,
-                  industry: data.industry, route: data.route, confidence: data.confidence }
+                  industry: data.industry, route: data.route, confidence: data.confidence,
+                  current_step: data.current_step }
               : f
           )
         );
-        if (data.status === 'processing' && attempts < 800) {
-          setTimeout(tick, 900);
+
+        if (data.status === 'processing' && attempts < 120) {
+          // Adaptive backoff: slow down as ingestion takes longer
+          const delay = attempts > 30 ? 5000 : attempts > 10 ? 3000 : 1500;
+          setTimeout(tick, delay);
         } else {
           delete activePolls.current[docId];
-          loadFiles(); // final refresh from the DB
+          loadFiles(); // final refresh from DB
         }
       } catch (e) {
         if (e.message === 'Resource not found') {
           delete activePolls.current[docId];
           return;
         }
-        if (attempts < 800) {
-          setTimeout(tick, 1500); // transient — keep trying
+        if (attempts < 120) {
+          setTimeout(tick, 2000); // transient error — keep trying, slower
         } else {
           delete activePolls.current[docId];
         }
@@ -473,7 +529,10 @@ const IngestionPage = () => {
                   const note =
                     state === 'done' ? fmtDuration(m.ms)
                     : state === 'error' ? 'failed'
-                    : state === 'running' ? 'running…'
+                    : state === 'running'
+                      ? (lastRun && lastRun.currentStep && lastRun.currentStep.includes('page')
+                         ? lastRun.currentStep.replace('docling_pdf ', '').replace('pymupdf_pdf ', '')
+                         : 'running…')
                     : state === 'skipped' ? 'skipped'
                     : '';
                   const noteColor =
@@ -568,9 +627,22 @@ const IngestionPage = () => {
           </div>
 
           {loading ? (
-            <div className="text-center py-12">
-              <ArrowPathIcon className="h-8 w-8 mx-auto text-blue-400 animate-spin mb-3" />
-              <p className="text-gray-400">Loading files...</p>
+            <div className="grid gap-4">
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="bg-gradient-to-br from-slate-800/40 to-slate-800/20 border border-slate-700/50 rounded-lg p-6 animate-pulse"
+                  style={{ animationDelay: `${i * 150}ms`, animationDuration: '1.5s' }}
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="p-3 bg-slate-700/30 rounded-lg border border-slate-700/30 w-12 h-12 flex-shrink-0" />
+                    <div className="flex-1 space-y-3">
+                      <div className="h-5 bg-slate-700/50 rounded w-1/3" />
+                      <div className="h-3 bg-slate-700/30 rounded w-1/4" />
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : files.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/20 rounded-lg border border-slate-700">
@@ -685,7 +757,11 @@ const IngestionPage = () => {
                     <div className="flex items-center gap-2 flex-shrink-0 mt-4 md:mt-0">
                       <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold ${getStatusColor(file.status)}`}>
                         {getStatusIcon(file.status)}
-                        <span>{file.status}</span>
+                        <span>
+                          {file.status === 'processing' && file.current_step && file.current_step.includes('page')
+                            ? file.current_step.replace('docling_pdf ', '').replace('pymupdf_pdf ', '')
+                            : file.status}
+                        </span>
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleOpenChat(file.id); }}
@@ -709,6 +785,42 @@ const IngestionPage = () => {
           )}
         </div>
       </div>
+
+      {doclingAlert && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <ExclamationCircleIcon className="h-7 w-7 flex-shrink-0" />
+              <h3 className="text-lg font-bold text-white">Docling GPU Server Unreachable</h3>
+            </div>
+            <p className="text-sm text-gray-300">
+              The remote Docling server could not be reached.
+            </p>
+            <p className="text-sm text-gray-400">
+              This PDF upload will automatically fall back to <strong>Local CPU mode</strong> instead.
+            </p>
+            <div className="p-3 bg-slate-900/60 rounded-lg text-xs text-gray-400 border border-slate-700/60">
+              💡 To silence this warning, go to <strong>Settings</strong> and change Docling Extraction Mode to <strong>Local CPU</strong>.
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => navigate('/settings')}
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-gray-200"
+              >
+                Open Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setDoclingAlert(null)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white"
+              >
+                Dismiss & Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

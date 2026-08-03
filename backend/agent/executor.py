@@ -77,8 +77,9 @@ SYSTEM_PROMPT = (
     "## TOOLS\n"
     "- search_documents(query, document_scope?, doc_type?, industry?): Search ingested docs. "
     "Pass the user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
-    "when the user clearly refers to specific documents. Pass `doc_type` (e.g. 'invoice', "
-    "'manual') or `industry` ONLY when the question clearly implies a scope (e.g. 'in the "
+    "ONLY when the user explicitly quotes a real filename or document_id that you have seen in a "
+    "list_documents result — NEVER invent, guess, or make up a filename. "
+    "Pass `doc_type` (e.g. 'invoice', 'manual') or `industry` ONLY when the question clearly implies a scope (e.g. 'in the "
     "invoices…') and the value matches something you saw via list_documents — otherwise omit "
     "all filters and search everything. A filter should narrow on clear intent, never on a guess.\n"
     "- get_page_context(document_id, page): Fetch a document PAGE's full raw content, "
@@ -89,8 +90,8 @@ SYSTEM_PROMPT = (
     "page and re-answer from that. Don't call this speculatively on every search — only "
     "when a returned chunk genuinely looks too fragmented to answer confidently from.\n"
     "- list_documents(): List all ingested documents (id, filename, type, status). "
-    "Call this when the user asks what documents exist, or when they mention a "
-    "filename you need to look up.\n"
+    "Call this ONLY when the user explicitly asks 'what files exist?', 'show loaded documents', or 'list files'. "
+    "NEVER call list_documents for content questions or short phrases like 'model name' — use search_documents instead.\n"
     "- ingest_document(file_path): Ingest a new file the user provides a path for. "
     "Only call this when the user explicitly attaches a file or provides a local path to import a new file.\n"
     "- sql_read(query): Read-only SQL against the database. Use only when asked.\n"
@@ -456,7 +457,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         response = _invoke_with_retry(active_llm, pruned_messages)
 
         model_name, provider_name = resolve_model_provider(config, agent_cfg)
-        usage.record_from_message("agent", response, model=model_name, provider=provider_name)
+        usage.record_from_message("agent", response, prompt=pruned_messages, model=model_name, provider=provider_name)
         return {"messages": [response], "iterations": iters + 1}
 
     def tools_node(state: AgentState) -> dict:
@@ -816,7 +817,7 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
         response = await _ainvoke_with_retry(active_llm, pruned_messages)
 
         model_name, provider_name = resolve_model_provider(config, agent_cfg)
-        usage.record_from_message("agent", response, model=model_name, provider=provider_name)
+        usage.record_from_message("agent", response, prompt=pruned_messages, model=model_name, provider=provider_name)
         return {"messages": [response], "iterations": iters + 1}
 
     async def tools_node(state: AgentState) -> dict:
@@ -915,7 +916,16 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                 else:
                     try:
                         import asyncio
+                        if name == "search_documents" and session_id:
+                            args["session_id"] = session_id
                         result = await asyncio.to_thread(tool.run, **args)
+                        if isinstance(result, dict) and result.get("ambiguity", {}).get("is_ambiguous"):
+                            opts = result["ambiguity"].get("options") or []
+                            if clarification is None:
+                                clarification = {
+                                    "question": "The document contains multiple model names. Which component's model are you referring to?",
+                                    "options": opts,
+                                }
                     except Exception as exc:
                         logger.warning("agent tool %s failed: %s", name, exc)
                         result = {"error": str(exc)}
@@ -1276,19 +1286,21 @@ def run_agent(
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
     is_question = not _is_greeting(message)
     messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
-    # messages += conversation_history or []
-    messages += [
-    m for m in (conversation_history or [])
-    if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
-]
-    if messages[1:]:  # there IS prior history for this session
+    clean_history = [
+        m for m in (conversation_history or [])
+        if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
+    ]
+    max_history = agent_cfg.get("max_history_messages", 20)
+    messages += clean_history[-max_history:]
+
+    if len(messages) > 1:  # there IS prior history for this session
         messages.append(SystemMessage(
-        "Reminder: the next user message is a NEW request. Answer ONLY it. "
-        "Do not repeat, continue, or merge in your answer to any earlier question "
-        "above, unless this new message explicitly references it (e.g. 'the one you "
-        "just mentioned', 'and what about...')."
-    ))
+            "Prior conversation history is provided above. If the next user message is a short "
+            "follow-up or ambiguous request (e.g., 'model name', 'what about it?'), resolve its "
+            "context against the prior conversation history."
+        ))
     messages.append(HumanMessage(message))
+
 
     graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
                           max_iterations, is_question, config, agent_cfg, session_id=session_id)
@@ -1316,6 +1328,18 @@ def run_agent(
         })
 
     token_usage = sink.totals()
+    calls_log = sink.get_calls_log()
+    if calls_log:
+        try:
+            from backend.storage.postgres_store import PostgresStore
+            pg = PostgresStore()
+            try:
+                pg.write_llm_calls(document_id=None, calls=calls_log, session_id=session_id)
+            finally:
+                pg.close()
+        except Exception as exc:
+            logger.warning("Failed to persist agent llm_calls to Postgres: %s", exc)
+
     tool_calls = _extract_tool_calls(final_state["messages"])
     if final_state.get("clarification"):
         clar = final_state["clarification"]
@@ -1326,6 +1350,7 @@ def run_agent(
             # answer mirrors the question so simple clients still show something
             "answer": clar.get("question"),
             "tool_calls": tool_calls,
+            "llm_calls": calls_log,
             "messages": final_state["messages"],
             "token_usage": token_usage,
             "trace_id": trace_info["trace_id"],
@@ -1335,6 +1360,7 @@ def run_agent(
             "status": "needs_approval",
             "pending": final_state["pending_approval"],
             "tool_calls": tool_calls,
+            "llm_calls": calls_log,
             "answer": None,
             "messages": final_state["messages"],
             "token_usage": token_usage,
@@ -1404,7 +1430,8 @@ def run_agent(
                 messages_for_fallback = fallback_messages + [SystemMessage(content=fallback_prompt)]
                 fallback_response = llm.invoke(messages_for_fallback)
                 answer = clean_message_content(fallback_response.content)
-                usage.record_from_message("agent_fallback", fallback_response)
+                model_name, provider_name = resolve_model_provider(config, agent_cfg)
+                usage.record_from_message("agent_fallback", fallback_response, prompt=messages_for_fallback, model=model_name, provider=provider_name)
             except Exception as exc:
                 logger.warning("Agent fallback LLM invocation failed: %s", exc)
 
@@ -1423,6 +1450,7 @@ def run_agent(
         "status": "done",
         "answer": final_answer,
         "tool_calls": tool_calls,
+        "llm_calls": calls_log,
         "messages": final_state["messages"],
         "token_usage": token_usage,
         "trace_id": trace_info["trace_id"],

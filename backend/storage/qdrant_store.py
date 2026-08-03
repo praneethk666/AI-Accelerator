@@ -50,13 +50,18 @@ class QdrantStore:
     """Thin wrapper over a Qdrant collection (named dense + sparse vectors)."""
 
     def __init__(
-        self, dim: int, collection: str = "chunks", url: str | None = None
+        self, dim: int, collection: str = "chunks", url: str | None = None, api_key: str | None = None, config: dict | None = None
     ) -> None:
         self.dim = dim
         self.collection = collection
+        if config and isinstance(config, dict):
+            db_cfg = config.get("database") or {}
+            url = url or db_cfg.get("qdrant_url")
+            api_key = api_key or db_cfg.get("qdrant_api_key")
         self.client = QdrantClient(
             url=url or url_from_env(),
-            api_key=os.getenv("QDRANT_API_KEY")
+            api_key=api_key or os.getenv("QDRANT_API_KEY"),
+            check_compatibility=False
         )
         self._ensure_collection()
 

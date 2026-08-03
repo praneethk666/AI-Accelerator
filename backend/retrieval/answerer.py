@@ -54,8 +54,7 @@ _ANSWER_SYSTEM = (
     "unless that exact form appears verbatim in the source. If you present multiple forms, "
     "every one must be cited from a specific passage.\n"
     "- If a relevant table or figure caption is in the context, use it and cite it.\n"
-    "- If the context only partially answers, answer what it supports and state plainly "
-    "what is missing.\n"
+    "- If the context partially answers or uses corresponding domain terms (e.g. danger/warning levels or safety procedures for incident/severity questions), answer what the context supports with citations and state plainly if specific aspects (like organizational escalation tiers) are not defined.\n"
     "- If the answer is not in the context, reply EXACTLY: "
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler.\n"
@@ -213,11 +212,70 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                             is_cited = True
                             
         if is_cited:
+            # Find earliest character position where this citation (index or page) appears in answer
+            pos = 999999
+            page_val = cit.get("page") or cit.get("slide")
+            # Check [idx] mention
+            m_idx = answer.find(f"[{idx}]")
+            if m_idx != -1:
+                pos = min(pos, m_idx)
+            # Check p.X mention
+            if page_val is not None:
+                for p_pat in (f"p.{page_val}", f"p. {page_val}", f"page {page_val}"):
+                    m_p = answer_lower.find(p_pat)
+                    if m_p != -1:
+                        pos = min(pos, m_p)
+            cit["_pos"] = pos
             filtered.append(cit)
             
     # 3. Fallback: if parsing failed to extract any valid citation matches, 
     # keep all retrieved chunks to ensure the sources list is not empty.
-    return filtered if filtered else citations
+    res = filtered if filtered else citations
+
+    # Rank citations primarily by CONTENT OVERLAP with the final answer
+    # (so the page/chunk containing the majority of the answer is ordered FIRST),
+    # then by mention frequency, retrieval score, and position.
+    def _content_overlap(ans: str, snip: str) -> float:
+        if not ans or not snip:
+            return 0.0
+        ans_words = set(re.findall(r'\b[a-zA-Z0-9_-]{3,}\b', ans.lower()))
+        snip_words = set(re.findall(r'\b[a-zA-Z0-9_-]{3,}\b', snip.lower()))
+        if not ans_words or not snip_words:
+            return 0.0
+        stop_words = {
+            "the", "and", "for", "with", "that", "this", "from", "are", "these",
+            "source", "page", "pages", "pdf", "docx", "xlsx", "manual", "document",
+            "include", "includes", "including", "system", "into", "their", "will",
+            "which", "also", "have", "been", "they", "were", "when", "what"
+        }
+        return float(len((ans_words & snip_words) - stop_words))
+
+    for c in res:
+        overlap = _content_overlap(answer, c.get("snippet") or "")
+        page_val = c.get("page") or c.get("slide")
+        mentions = 0
+        if page_val is not None:
+            for p_pat in (f"p.{page_val}", f"p. {page_val}", f"page {page_val}", f"page: {page_val}"):
+                mentions += answer_lower.count(p_pat)
+        c["_overlap"] = overlap
+        c["_mentions"] = mentions
+        c["_score_val"] = float(c.get("score") or 0.0)
+
+    res.sort(
+        key=lambda c: (
+            c.get("_overlap", 0.0),
+            c.get("_mentions", 0),
+            c.get("_score_val", 0.0),
+            -c.get("_pos", 999999),
+        ),
+        reverse=True
+    )
+    for c in res:
+        c.pop("_pos", None)
+        c.pop("_overlap", None)
+        c.pop("_mentions", None)
+        c.pop("_score_val", None)
+    return res
 
 
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
@@ -406,12 +464,13 @@ class AnswererTool:
             model_name, provider_name = resolve_model_provider(
                 config, answerer_cfg, default_model=config["llm"].get("answer_model")
             )
-            llm      = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
-            response = llm.invoke([
+            llm = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
+            prompt_messages = [
                 {"role": "system", "content": _ANSWER_SYSTEM},
                 {"role": "user",   "content": user_msg},
-            ])
-            usage.record_from_message("answer", response, model=model_name, provider=provider_name)
+            ]
+            response = llm.invoke(prompt_messages)
+            usage.record_from_message("answer", response, prompt=prompt_messages, model=model_name, provider=provider_name)
             answer_text = clean_message_content(response.content).strip()
 
             # Build citations — image_path and table_data are top-level chunk fields.

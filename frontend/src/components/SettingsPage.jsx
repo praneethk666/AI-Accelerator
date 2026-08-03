@@ -13,6 +13,7 @@ import {
   activateProfile,
   getConfigRaw,
   saveConfig,
+  checkDoclingServer,
 } from '../api';
 
 // Small presentational helpers ------------------------------------------------
@@ -62,6 +63,17 @@ const SettingsPage = () => {
   const [addStepName, setAddStepName] = useState('');
   const [advanced, setAdvanced] = useState(false);
   const [yamlText, setYamlText] = useState('');
+  const [serverStatus, setServerStatus] = useState(null); // null | 'checking' | 'online' | 'offline'
+
+  const testDoclingServer = async () => {
+    setServerStatus('checking');
+    try {
+      const { data } = await checkDoclingServer();
+      setServerStatus(data.reachable ? 'online' : 'offline');
+    } catch {
+      setServerStatus('offline');
+    }
+  };
 
   useEffect(() => { load(); }, []);
 
@@ -291,6 +303,78 @@ const SettingsPage = () => {
                 <Field label="Digital PDF Extractor Engine" hint="pymupdf_pdf = Fast PyMuPDF Native + Bbox Table Exclusion + Row Alarm Chunker. docling_pdf = IBM Docling + TableFormer.">
                   <Select value={s.pdf_extractor_digital} onChange={(v) => set('pdf_extractor_digital', v)} options={s._digital_pdf_options || ['pymupdf_pdf', 'docling_pdf']} />
                 </Field>
+
+                {s.pdf_extractor_digital === 'docling_pdf' && (
+                  <div className="mb-5 p-4 bg-slate-800/40 border border-slate-700/80 rounded-xl">
+                    <label className="block text-sm font-medium text-gray-200 mb-1">Docling Extraction Mode</label>
+                    <p className="text-xs text-gray-400 mb-3">Choose whether to run IBM Docling PDF extraction on a remote GPU server or locally on CPU.</p>
+                    <div className="flex items-center gap-3 mb-3">
+                      <button
+                        type="button"
+                        onClick={() => { set('docling_mode', 'local'); setServerStatus(null); }}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+                          (s.docling_mode || 'local') === 'local'
+                            ? 'border-slate-500 bg-slate-700/50 text-gray-200'
+                            : 'border-slate-700 bg-slate-800/40 text-gray-400 hover:bg-slate-700/50'
+                        }`}
+                      >
+                        💻 Local CPU
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { set('docling_mode', 'remote'); testDoclingServer(); }}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5 ${
+                          s.docling_mode === 'remote'
+                            ? 'border-blue-500/50 bg-blue-500/10 text-blue-300'
+                            : 'border-slate-700 bg-slate-800/40 text-gray-400 hover:bg-slate-700/50'
+                        }`}
+                      >
+                        🚀 Remote GPU Server
+                      </button>
+                    </div>
+
+                    {(s.docling_mode || 'local') === 'remote' && (
+                      <div className="mt-3 pt-3 border-t border-slate-700/50 space-y-3">
+                        <Field label="Remote Server URL" hint="Base URL of remote Docling server (e.g. http://localhost:8083)">
+                          <input
+                            className={inputCls}
+                            placeholder="http://localhost:8083"
+                            value={s.docling_server_url ?? ''}
+                            onChange={(e) => set('docling_server_url', e.target.value)}
+                          />
+                        </Field>
+
+                        <div className="flex items-center gap-3 pt-1">
+                          <button
+                            type="button"
+                            onClick={testDoclingServer}
+                            disabled={serverStatus === 'checking'}
+                            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-xs text-gray-200 rounded-lg flex items-center gap-1.5"
+                          >
+                            {serverStatus === 'checking' && <ArrowPathIcon className="h-3.5 w-3.5 animate-spin" />}
+                            Test Connection
+                          </button>
+                          {serverStatus === 'online' && (
+                            <span className="text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircleIcon className="h-4 w-4" /> Server online & reachable
+                            </span>
+                          )}
+                          {serverStatus === 'offline' && (
+                            <span className="text-xs text-red-400 flex items-center gap-1">
+                              <ExclamationCircleIcon className="h-4 w-4" /> Server unreachable
+                            </span>
+                          )}
+                        </div>
+
+                        {serverStatus === 'offline' && (
+                          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-300">
+                            ⚠️ <strong>Server unreachable:</strong> The remote Docling server cannot be reached. Extraction will automatically fall back to local CPU mode until restored.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <Field label="Scanned OCR engine" hint="surya = best quality (slower). paddle = fast (big scanned docs on CPU).">
                   <Select value={s.ocr_engine} onChange={(v) => set('ocr_engine', v)} options={['surya', 'paddle']} />
                 </Field>
@@ -358,6 +442,22 @@ const SettingsPage = () => {
                 </div>
               </section>
             </div>
+
+            {/* Storage Settings */}
+            <section className="mt-8 pt-6 border-t border-slate-700/60">
+              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Storage Settings</h2>
+              <div className="grid md:grid-cols-2 gap-x-8">
+                <div>
+                  <Field label="Storage Provider" hint="Select where uploaded files should be stored. All connection parameters must be set in your environment / .env file.">
+                    <Select
+                      value={s.storage_provider || 'local'}
+                      onChange={(v) => set('storage_provider', v)}
+                      options={['local', 'supabase']}
+                    />
+                  </Field>
+                </div>
+              </div>
+            </section>
 
             {/* Auto Ingestion */}
             <section className="mt-8 pt-6 border-t border-slate-700/60">

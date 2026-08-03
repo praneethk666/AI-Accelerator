@@ -96,8 +96,7 @@ const buildViewableSources = (sources) => {
         return x.sheet === s.sheet;
       }
       return true;
-    }) === i)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    }) === i);
   console.log("buildViewableSources output result:", result);
   return result;
 };
@@ -206,7 +205,7 @@ const Tooltip = ({ children, content }) => {
 
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pageViewer, setPageViewer] = useState(null);
   // pageViewer: null | { pages: [{page, documentId, filename, score}], activeIdx: number }
   const [sessions, setSessions] = useState([]);
@@ -280,6 +279,9 @@ const ChatPage = () => {
           clearInterval(poll);
         });
         window.activeDirectPolls = {};
+      }
+      if (loadSessionsTimerRef.current) {
+        clearTimeout(loadSessionsTimerRef.current);
       }
     };
   }, []);
@@ -363,7 +365,12 @@ const ChatPage = () => {
   }, []);
 
   // Automatically close sidebar when PDF Viewer opens, and open it when PDF Viewer closes
+  const isFirstMount = useRef(true);
   useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
     if (pageViewer) {
       setSidebarOpen(false);
     } else {
@@ -373,7 +380,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(); loadFiles(); }, []);
+  useEffect(() => { loadSessions(false, true); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {
@@ -381,24 +388,38 @@ const ChatPage = () => {
     getFile(fileId).then((res) => setContextFile(res.data)).catch(() => { });
   }, [fileId]);
 
-  const loadSessions = async (autoSelect = false) => {
-    try {
-      const res = await getAgentSessions();
-      const loaded = res.data || [];
-      setSessions(loaded);
-      
-      if (autoSelect && loaded.length > 0) {
-        const sorted = [...loaded].sort((a, b) => {
-          if (a.pinned && !b.pinned) return -1;
-          if (!a.pinned && b.pinned) return 1;
-          return new Date(b.last_active) - new Date(a.last_active);
-        });
-        if (sorted[0]) {
-          handleSelectSession(sorted[0].session_id);
+  const loadSessionsTimerRef = useRef(null);
+  const loadSessions = async (autoSelect = false, immediate = false) => {
+    const fetchNow = async () => {
+      try {
+        const res = await getAgentSessions();
+        const loaded = res.data || [];
+        setSessions(loaded);
+        
+        if (autoSelect && loaded.length > 0) {
+          const sorted = [...loaded].sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return new Date(b.last_active) - new Date(a.last_active);
+          });
+          if (sorted[0]) {
+            handleSelectSession(sorted[0].session_id);
+          }
         }
+      } catch (err) {
+        console.error('Failed to load sessions:', err);
       }
-    } catch (err) {
-      console.error('Failed to load sessions:', err);
+    };
+
+    if (immediate) {
+      if (loadSessionsTimerRef.current) {
+        clearTimeout(loadSessionsTimerRef.current);
+        loadSessionsTimerRef.current = null;
+      }
+      await fetchNow();
+    } else {
+      if (loadSessionsTimerRef.current) clearTimeout(loadSessionsTimerRef.current);
+      loadSessionsTimerRef.current = setTimeout(fetchNow, 600);
     }
   };
 
@@ -1213,9 +1234,21 @@ const ChatPage = () => {
 
   return (
     <div className="flex h-screen bg-slate-900 text-gray-100 relative">
+      <style>{`
+        @keyframes slideInSide {
+          from {
+            opacity: 0;
+            transform: translateX(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+      `}</style>
       {/* Sidebar */}
       <div
-        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-300 ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
+        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-500 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
           }`}
       >
         {/* Sidebar Header */}
@@ -1253,7 +1286,7 @@ const ChatPage = () => {
               if (!a.pinned && b.pinned) return 1;
               return new Date(b.last_active) - new Date(a.last_active);
             })
-            .map((s) => (
+            .map((s, index) => (
               <div
                 key={s.session_id}
                 onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
@@ -1261,6 +1294,11 @@ const ChatPage = () => {
                   ? 'bg-slate-800 text-white'
                   : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
                   }`}
+                style={{
+                  animation: 'slideInSide 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+                  animationDelay: `${index * 30}ms`,
+                  opacity: 0,
+                }}
                 title={s.title}
               >
                 <div className="min-w-0 flex-1">
@@ -1814,7 +1852,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     : null;
 
   return (
-    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
+    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-500 ease-in-out overflow-hidden ${sidebarOpen
       ? 'w-[40%] min-w-[40%] max-w-[40%]'
       : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>

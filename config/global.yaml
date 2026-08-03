@@ -9,17 +9,18 @@
 # Together, z.ai, DeepSeek, vLLM, …). api_key is usually a ${ENV_VAR}; blank => SDK's
 # default env.
 # Recipes:
-#   z.ai GLM (default): provider: openai  model: glm-4.7-flash
-#                        base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
-#   Groq:           provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
+#   OpenAI (active): provider: openai  model: gpt-4o-mini  base_url: https://api.openai.com/v1  api_key: ${OPENAI_API_KEY}
+#   z.ai GLM:        provider: openai  model: glm-4.7-flash
+#                    base_url: https://api.z.ai/api/paas/v4/  api_key: ${ZAI_API_KEY}
+#   Groq:            provider: groq    model: llama-3.1-8b-instant   api_key: ${GROQ_API_KEY}
 #   Gemini (AI Studio): provider: google  model: gemini-2.5-flash   api_key: ${GOOGLE_API_KEY}
-#   DeepSeek:       provider: openai  model: deepseek-chat
-#                   base_url: https://api.deepseek.com/v1           api_key: ${DEEPSEEK_API_KEY}
-#   NVIDIA NIM:     provider: openai  model: meta/llama-3.1-8b-instruct
-#                   base_url: https://integrate.api.nvidia.com/v1   api_key: ${NVIDIA_API_KEY}
-#   OpenRouter:     provider: openai  model: <org/model>
-#                   base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
-#   Local vLLM:     provider: openai  model: <served>  base_url: http://localhost:8001/v1
+#   DeepSeek:        provider: openai  model: deepseek-chat
+#                    base_url: https://api.deepseek.com/v1           api_key: ${DEEPSEEK_API_KEY}
+#   NVIDIA NIM:      provider: openai  model: meta/llama-3.1-8b-instruct
+#                    base_url: https://integrate.api.nvidia.com/v1   api_key: ${NVIDIA_API_KEY}
+#   OpenRouter:      provider: openai  model: <org/model>
+#                    base_url: https://openrouter.ai/api/v1          api_key: ${OPENROUTER_API_KEY}
+#   Local vLLM:      provider: openai  model: <served>  base_url: http://localhost:8001/v1
 llm:
   provider: openai
   model: gpt-4o-mini
@@ -39,8 +40,99 @@ llm:
 # Handled in code by get_llm_for(config, section) — see backend/core/llm_client.py.
 
 # ── Categorization ────────────────────────────────────────────────────────────
+# Used by CategorizeTool.
+# config["categorization"]["industry_keywords"] — keyword lists per industry
+# config["categorization"]["confidence_thresholds"] — when to flag low confidence
 categorization:
-  # model:                   # optional per-step override; unset => inherits llm.model
+  confidence_thresholds:
+    categorization_low_confidence: 0.5
+
+  industry_keywords:
+    automotive:
+      - toyota
+      - ford
+      - bmw
+      - vehicle
+      - engine
+      - torque
+      - transmission
+      - chassis
+      - automotive
+    electronics:
+      - circuit
+      - pcb
+      - schematic
+      - voltage
+      - resistor
+      - capacitor
+      - signal
+      - semiconductor
+    manufacturing:
+      - assembly
+      - drawing
+      - tolerance
+      - weld
+      - machining
+      - fixture
+      - jig
+      - bom
+      - part number
+    finance:
+      - balance sheet
+      - revenue
+      - profit
+      - ledger
+      - audit
+      - fiscal
+      - equity
+      - financial statement
+    legal:
+      - contract
+      - agreement
+      - clause
+      - liability
+      - indemnity
+      - arbitration
+      - jurisdiction
+    healthcare:
+      - patient
+      - diagnosis
+      - clinical
+      - pharma
+      - dosage
+      - trial
+      - medical
+      - drug
+      - therapy
+    retail_ecommerce:
+      - order id
+      - add to cart
+      - delivery address
+      - shipped
+      - return policy
+      - sku
+      - cart total
+      - mrp
+    travel_transport:
+      - pnr
+      - boarding point
+      - seat number
+      - departure time
+      - ticket number
+      - passenger name
+      - bus operator
+      - coach number
+    entertainment_media:
+      - showtime
+      - screen number
+      - movie ticket
+      - booking id
+      - seat no
+      - show timing
+      - multiplex
+      - cinema hall
+    general: []
+
 # ── Vision ────────────────────────────────────────────────────────────────────
 # provider: google (AI Studio) | ollama (self-hosted) | openai (any OpenAI-compatible
 # multimodal endpoint via base_url — GPT-4o-vision, NVIDIA NIM VLMs, OpenRouter).
@@ -54,12 +146,8 @@ vision:
   min_image_px: 150         # images smaller than this (each side) are skipped
   timeout_s: 120
   max_retries: 5            # retry/backoff is the safety net for transient 429/5xx
-  max_concurrency: 3        # moderate, not maximal — burned by wrong "unlimited paid
-                             # tier" assumptions twice today (Gemma, and z.ai). Raise
-                             # once real ingestion confirms headroom at this setting.
-  min_interval_s: 0.5       # ~120 RPM ceiling this enforces, comfortably under even
-                             # the lowest documented paid tier (150 RPM) — a deliberate
-                             # safety margin, not the same mistake as min_interval_s: 0.
+  max_concurrency: 2        # concurrency limit for vision processing
+  min_interval_s: 2         # pacing between consecutive calls to prevent rate-limit hits
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
@@ -78,8 +166,6 @@ vision:
       net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any
       visible dimensions or tolerances. Be precise — this is used for search.
 
-# ── OCR (scanned pages) ───────────────────────────────────────────────────────
-# Engine picked per deployment (surya|paddle — see extraction/scanned_pdf/).
 # ── Vision-OCR (page transcription for COMPLEX pages) ─────────────────────────
 # Routed VLM transcription: when native text is garbled (broken fonts) or a page has
 # tables/figures, render the page and let a document VLM transcribe it (clean text +
@@ -88,297 +174,164 @@ vision:
 # API (below: NVIDIA Build API for testing). Set mode: off to disable, always to force.
 vision_ocr:
   enabled: true
-  mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on
-                            # hard pages) | always (VLM-ONLY: skips Paddle/pymupdf entirely)
-                            # Back to always (21-Jul, v2, Gemini 2.5-flash): every
-                            # scanned/mixed page gets proper VLM transcription instead
-                            # of the weaker free Paddle fallback. Was "complex" for a
-                            # few hours today while on Gemma's restrictive 30 RPM
-                            # quota; Gemini's 150-300+ RPM tier removes that constraint
-                            # — this restores the original pre-session behavior.
+  mode: always              # off (native/Paddle only) | complex (hybrid: cheap + VLM on hard pages) | always (VLM-ONLY)
   provider: openai
   model: meta/llama-3.2-11b-vision-instruct
   base_url: https://integrate.api.nvidia.com/v1
   api_key: ${NVIDIA_API_KEY}
   dpi: 150
-  min_interval_s: 0.5       # MUST match vision.min_interval_s — both blocks call the
-                            # same model through the same pacing.pace("vision", ...)
-                            # key (backend/core/vision_client.py); a mismatch here
-                            # would let these calls skip pacing while still drawing
-                            # from the same shared per-minute quota.
+  min_interval_s: 2
   max_retries: 3
   timeout_s: 120
 
+# ── OCR (scanned pages) ───────────────────────────────────────────────────────
+# Engine picked per deployment (surya|paddle — see extraction/scanned_pdf/).
 # engine: surya | paddle
 #   surya  — torch + llama.cpp; ONE pass gives text + layout, 90+ languages, best
-#            accuracy on complex layouts. Needs the llama-server binary
-#            (brew install llama.cpp). BEST ON A GPU/LINUX BOX: on CPU/Apple Silicon
-#            llama-server stalls over long docs, so prefer surya only where a GPU
-#            backs llama-server. Set ocr.engine: surya in that deployment's profile.
+#            accuracy on complex layouts. Needs llama-server binary. Best on GPU.
 #   paddle — PaddleOCR text + DocLayout-YOLO/contour regions. CNN recognition,
-#            reliable and fast on CPU. DEFAULT for CPU/dev/Mac.
+#            reliable and fast on CPU. DEFAULT for CPU/dev.
 ocr:
-  engine: paddle            # CPU default. NOTE: Surya is impractical on Mac/M2 — its
-                            # llama-server recognition exceeds ~90s/page (times out, falls
-                            # back to Paddle anyway). Use 'surya' only on a real CUDA GPU.
-  # Region detection + table handling:
-  #   auto    -> Surya layout+table_rec when engine=surya (GPU), else contour (default)
-  #   surya   -> force Surya layout: classifies Figure/Table/Text, and runs table_rec
-  #              to produce STRUCTURED tables (rows/cols) instead of image captions.
-  #              Best quality, GPU-recommended (transformer models, slow on CPU).
-  #   contour -> lightweight YOLO+contour detector (CPU-friendly), tables stay as
-  #              OCR text + vision caption.
-  layout_engine: auto
-  # Surya can stall on a cold/unhealthy llama-server. Each page is bounded by this
-  # many seconds; on timeout (or any error) that page falls back to PaddleOCR so a
-  # stall can't hang an ingestion. Warm Surya pages take ~20-25s, so keep headroom.
-  surya_timeout_s: 90
-  # OCR runs in an isolated subprocess (avoids native crashes in the backend). This
-  # caps the whole document's OCR; if exceeded, the child is killed and the doc is
-  # marked failed instead of hanging. 22 scanned pages ran in ~5 min, so allow room.
-  subprocess_timeout_s: 1800
+  engine: paddle            # CPU default.
+  layout_engine: auto       # auto | surya | contour
+  surya_timeout_s: 90       # Surya bounds per page before falling back to PaddleOCR
+  subprocess_timeout_s: 1800 # Overall OCR process timeout
 
 # ── Extraction platform (Docling) ─────────────────────────────────────────────
 # Docling (IBM, MIT) is the maintained document-AI engine: layout model + reading
 # order, TableFormer for real table structure, OCR for scanned pages, figure
 # localization. ONE tool (docling_pdf) covers digital/scanned/mixed. It runs on CPU
-# (M2 dev) and auto-accelerates on a CUDA GPU — same code, just set device.
-# Active when pdf_extractors point at docling_pdf (see below).
+# (dev) and auto-accelerates on a CUDA GPU — same code, just set device.
+# Also supports dedicated remote extraction microservice via mode: server.
 extraction:
-  deskew: true                # auto-rotate a sideways SCAN (rotated invoice / 90-270°
-                              # page with no /Rotate) to upright before the VLM, via
-                              # Tesseract OSD. No-op if tesseract missing or page upright.
-  stitch_tables: true         # merge tables that continue across pages (the
-                              # continuation page repeats no header) — inherit the
-                              # lead table's header. Runs after extract, before chunk.
-  stitch_arbitration: true    # for ambiguous boundaries (same column count, all-text
-                              # columns) ask the LLM "continuation or separate?" — avoids
-                              # false-merging a different table. Off => leave unmerged.
+  deskew: true                # auto-rotate sideways scans via Tesseract OSD
+  stitch_tables: true         # merge tables that continue across page breaks
+  stitch_arbitration: true    # ask LLM to arbitrate ambiguous table continuations
   docling:
-    # Docling runs with OCR OFF: it gives clean text+tables for DIGITAL pages and
-    # figure boxes for all pages, fast (no wasted RapidOCR — which tested worst on
-    # scans, 0.57 vs GLM 0.99). Scanned/garbled pages are rescued by the VLM below.
-    do_ocr: false
+    do_ocr: false             # Docling internal OCR (false = use VLM rescue / Paddle)
     do_table_structure: true  # TableFormer: recover rows/cols (vs flat text)
     images_scale: 2.0         # internal render scale for layout/figures
-    min_picture_pts: 24       # universal speck floor only: skip a region smaller than this
-                              # on a side (rule line / bullet / stray mark) — not worth a
-                              # VLM call. Logos / banners / mis-tagged text are dropped by
-                              # the SEMANTIC GATE (the caption call classifies each crop),
-                              # NOT by geometry — so wide schematics/CAD aren't wrongly cut.
-    min_picture_area_frac: 0.004  # (legacy; unused — the semantic gate handles noise now)
-    figure_union: true        # union Docling + DocLayout-YOLO figures (tested: Docling
-                              # splits collages, YOLO catches figures Docling misses).
-                              # Only YOLO 'figure'/'chart' classes — NOT 'table' (those
-                              # stay with TableFormer; previously tables leaked in as images)
-    # Per-page router: VLM-transcribe ONLY pages whose text is missing (scanned) or
-    # garbled (broken fonts). Clean digital pages cost 0 tokens.
-    page_rescue: true
-    # Budget for VLM page-transcriptions per doc (0 = unlimited — AVOID: on the paid
-    # Gemini key this was a cost cap; on the free z.ai key it's a TIME/RELIABILITY cap
-    # instead — a 1000-page scanned manual would make 1000 sequential rate-limited
-    # calls). Past the cap, scanned pages fall back to free local PaddleOCR, bounding
-    # cost/time on huge scans either way.
-    max_vlm_pages: 60
-    device: auto              # auto | cpu | cuda | mps  (cuda on the GPU box)
+    min_picture_pts: 24       # skip regions smaller than this on a side
+    min_picture_area_frac: 0.004
+    figure_union: true        # union Docling + DocLayout-YOLO figures
+    page_rescue: true         # per-page VLM rescue for garbled/scanned pages
+    max_vlm_pages: 60         # budget cap for VLM page transcriptions per doc
+    device: auto              # auto | cpu | cuda | mps
     num_threads: 4
-  # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
-  # per-page VLM rescue); the tunable knob is TABLES:
-  #   auto    -> TableFormer for simple tables; for COMPLEX ones (merged cells or
-  #              multi-line headers), try pymupdf's ruled-line geometry first (free,
-  #              validated 21-Jul: reproduced a 37-row merged-cell Toyota spec table
-  #              cleanly where TableFormer AND the VLM both garbled row alignment),
-  #              falling back to VLM only if pymupdf finds no ruled table there
-  #              (scanned pages, borderless tables). Best of both, free-first. Default.
-  #   pymupdf -> always try ruled-line geometry (free); TableFormer if no match found.
-  #              Use when a corpus is mostly clean ruled/digital tables and you want
-  #              to skip VLM spend entirely for tables.
-  #   docling -> always TableFormer (free). vlm -> always crop+VLM.
+    mode: local               # local (in-process) | server (remote Docling microservice)
+    server_url: ${DOCLING_SERVER_URL} # remote Docling server endpoint
+    server_key: ${DOCLING_API_KEY}
   by_kind:
-    digital: { table_source: auto }
-    scanned: { table_source: auto }
-    mixed:   { table_source: auto }
-    default: { table_source: auto }
+    digital:
+      table_source: auto
+    scanned:
+      table_source: auto
+    mixed:
+      table_source: auto
+    default:
+      table_source: auto
   # Large-format / diagram pages (CAD, circuit schematics, oversized engineering sheets).
-  # A VLM downsamples a whole big sheet until the tiny designators/labels are illegible,
-  # so we render high-DPI and TILE such pages, transcribe each tile, then merge. Triggers
-  # on MEASURED signals (vector density / physical size) + the document_type — never on a
-  # filename. Tile count is derived from page size vs vlm_max_px (A4/Letter = 1 tile).
+  # Tiles high-DPI renders to preserve legible component designators.
   large_format:
     enabled: true
-    dpi: 200                  # render DPI for tiling
-    vlm_max_px: 2600          # max legible tile edge (px); keeps A4/Letter whole, tiles A3/D/E
-    overlap: 0.12             # tile overlap so a component on a seam isn't cut
-    merge: llm                # llm = dedup-merge tiles via the text LLM; concat = join
-    max_tiles: 24             # safety cap on tiles per page
-  # CAD / circuit extraction (route_extractors: cad_route/circuit_route -> cad_extract).
-  # Adaptive: normal sheets use the region-JSON prompt; oversized sheets tile (above).
-  # Every page is fault-tolerant (one bad page is skipped, not fatal).
+    dpi: 200
+    vlm_max_px: 2600
+    overlap: 0.12
+    merge: llm                # llm = dedup-merge tiles via LLM; concat = join
+    max_tiles: 24
   cad:
-    max_pages: 0            # cap VLM pages per CAD/circuit doc (0 = unlimited). Set for
-                              # huge 1000+ page schematic sets to bound cost/time.
+    max_pages: 0              # cap VLM pages per CAD/circuit doc (0 = unlimited)
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
-# Configured dense embeddings and reranking settings.
-# Provider can be "local" (uses SentenceTransformers locally) or "jina" (API cloud model).
-# Models swap automatically when provider settings are changed via Settings UI.
-# 
-# BAAI/bge-m3: MULTILINGUAL (100+ langs incl. Japanese) dense embedder — chosen for the
-# bilingual JP/EN Toyota corpus and its alphanumeric part numbers. Native dense+sparse+
-# ColBERT, 8192-token context, 1024-dim. Heavier than nomic (~568M, ~2.3GB) so slower on
-# CPU; uses Apple-Silicon MPS / GPU when available. Reranker upgraded to the matching
-# multilingual bge-reranker-v2-m3.
-# PREFIXES: bge-m3 takes NO instruction prefix — keep dense_*_prefix EMPTY. (nomic needs
-# "search_document: " / "search_query: "; a wrong prefix silently degrades recall.)
-# Alt (English-only, lighter/faster on CPU): dense_model nomic-ai/nomic-embed-text-v1.5,
-#   dense_dim 768, dense_document_prefix "search_document: ", dense_query_prefix "search_query: ",
-#   reranker_model BAAI/bge-reranker-large.
+# ── Embeddings & Reranker ─────────────────────────────────────────────────────
+# Provider can be "openai", "local" (SentenceTransformers), or "jina" (cloud API).
+# Dense dimension, models, and rerankers swap automatically via Settings UI.
 embeddings:
-  dense_provider: local                 # local | jina
-  dense_model: BAAI/bge-m3              # BAAI/bge-m3 (local) or jina-embeddings-v3 (cloud)
-  dense_api_key: ${JINA_API_KEY}
-  dense_dim: 1024
-  dense_document_prefix: ""             # bge-m3: none. nomic: "search_document: "
-  dense_query_prefix: ""                # bge-m3: none. nomic: "search_query: "
-  dense_batch_size: 16                  # caps peak MPS/GPU memory per encode() sub-batch.
-                                         # Lower (e.g. 8) on a memory-constrained Mac;
-                                         # raise on a real GPU box with headroom.
+  dense_provider: openai                # openai | local | jina
+  dense_model: text-embedding-3-small   # OpenAI text-embedding-3-small, BAAI/bge-m3, or jina-embeddings-v3
+  dense_api_key: ${OPENAI_API_KEY}
+  dense_dim: 1024                       # Matryoshka output dimension for text-embedding-3-small
+  dense_document_prefix: ''             # prefix required for some models (e.g. nomic)
+  dense_query_prefix: ''
+  dense_batch_size: 16
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
-  reranker_provider: local              # local | jina
-  reranker_model: BAAI/bge-reranker-v2-m3 # BAAI/bge-reranker-v2-m3 (local) or jina-reranker-v2-base-multilingual (cloud)
+  reranker_provider: jina               # jina | local
+  reranker_model: jina-reranker-v2-base-multilingual # jina-reranker-v2-base-multilingual or BAAI/bge-reranker-v2-m3
   reranker_api_key: ${JINA_API_KEY}
-  chunking_model: minishlab/potion-base-32M  # SemanticChunker split bounds model
+  chunking_model: minishlab/potion-base-32M # SemanticChunker split bounds model
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 chunking:
   strategy: semantic        # semantic | recursive
-  size: 400                 # tokens (not characters)
-  overlap: 50               # tokens
-  section_aware: true       # break chunks at headings (section-scoped) + tag the
-                            # section; images stay atomic (never split).
-  split_large_tables: true  # tables ARE atomic (one chunk) UNLESS bigger than `size`
-                            # tokens rendered — then split by ROW GROUP with the header
-                            # repeated in every sub-chunk (source_ref gets table_part/
-                            # table_parts/table_row_range). Validated 21-Jul on a 37-row
-                            # Toyota spec table: as one chunk, a single-row query ("wheel
-                            # spindle power") retrieves the whole table; row-grouped, it
-                            # retrieves the 3-4 rows that matter. false = old behavior
-                            # (always one chunk per table, however large).
+  size: 400                 # tokens per chunk
+  overlap: 50               # token overlap
+  section_aware: true       # break chunks at section headings & preserve document hierarchy
+  split_large_tables: true  # split tables larger than size by row group, repeating headers
 
 # ── Enrichment ────────────────────────────────────────────────────────────────
-# enrich_chunks stamps tags + (when summarize) an LLM one-line summary + semantic
-# keywords on each chunk. summarize: false -> offline frequency keywords only.
+# enrich_chunks stamps tags + summary + semantic search terms on each chunk.
 enrichment:
   summarize: true
-  keyword_count: 6           # fallback frequency keywords if the LLM is off/fails
-  min_interval_s: 0.3        # back on paid Gemini 2.5-flash (21-Jul, v2) — light pacing
-                             # only, not the 1.5s z.ai needed. Was 0 under the original
-                             # paid setup; keeping a small margin given today's two wrong
-                             # "unlimited paid tier" assumptions already burned time twice.
-  batch_size: 10              # chunks summarized per LLM call. Smaller batches => shorter
-                             # JSON replies that are far less likely to truncate or
-                             # partially fail (fewer keyword fallbacks); the tradeoff is
-                             # more calls. 5 balances reliability vs rate-limit exposure.
+  keyword_count: 6
+  min_interval_s: 0.3
+  batch_size: 20
   provider: openai
   model: meta/llama-3.2-11b-vision-instruct
   base_url: https://integrate.api.nvidia.com/v1
   api_key: ${NVIDIA_API_KEY}
-  # Instruction describing what to produce per chunk (summary + meaningful keywords).
-  # The pipeline adds the numbered chunks and asks for a JSON array — don't put a
-  # chunk in here. Editable in the Settings UI.
   prompt: >
-    You label document chunks for a technical search index. For each chunk produce a
-    one-sentence summary stating what it is about and what a reader would learn (in the
-    document's own terms), plus 6-10 SPECIFIC search terms taken from the chunk —
-    part numbers, model names, component/procedure names, specs and units, domain
-    terms. Never use stopwords, generic words (information, section, manual), or terms
-    not present in the chunk.
+    You label document chunks for a technical search index. For each chunk produce a one-sentence
+    summary stating what it is about and what a reader would learn (in the document's own terms), plus
+    6-10 SPECIFIC search terms taken from the chunk — part numbers, model names, component/procedure names,
+    specs and units, domain terms. Never use stopwords, generic words (information, section, manual),
+    or terms not present in the chunk.
 
-# ── Query pipeline ────────────────────────────────────────────────────────────
+# ── Query Pipeline ────────────────────────────────────────────────────────────
 query:
-  small_corpus_tokens: 100000   # below this, adaptive_router skips retrieval
-  max_context_tokens: 0      # answer_tool context budget
-
-  # Query-time pipeline steps (the read path). run_query() builds the graph from
-  # this list: plan the query -> retrieve -> answer. Same graph engine as ingestion.
-  steps: [query_planner, retrieval, answerer]
-
+  small_corpus_tokens: 100000   # below this threshold, adaptive_router skips retrieval
+  max_context_tokens: 0         # answer_tool context budget (0 = dynamic)
+  steps:
+    - query_planner
+    - retrieval
+    - answerer
   planner:
     max_sub_questions: 4        # QueryPlannerTool: cap on decomposed sub-questions
-    # model:                    # override; unset => answer_model, then global llm.model
-
-  answerer:
-    # model:                    # override; unset => answer_model, then global llm.model
-
+  answerer: null
   hyde:
     enabled: false              # generate hypothetical answer before encoding
-
-  # ── Retrieval settings (read by RetrievalTool / AnswererTool) ────────────
-  # These are accessed as config["query"]["retrieval"]["..."] in tool code.
-  # Vector DB = Qdrant (see database.qdrant_url).
-  # Relational DB = PostgreSQL (not MSSQL). See database.postgres_url.
   retrieval:
     method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
-    top_n: 20                   # fused chunks returned by plain hybrid (no reranker)
-    candidate_k: 80             # wide pool the reranker actually scores (hybrid_rerank fuses to this)
+    top_n: 20                   # fused chunks returned by plain hybrid
+    candidate_k: 80             # wide candidate pool for reranker scoring
     rerank_top_k: 5             # chunks kept after reranking
-    dense_weight: 0.6           # RRF weight for dense leg (hybrid methods)
+    dense_weight: 0.6           # RRF weight for dense vector leg
     sparse_weight: 0.4          # RRF weight for sparse/BM25 leg
-    # rerank_min_score:         # OPTIONAL cross-encoder score floor. Unset = disabled (keep
-                                # top rerank_top_k regardless). bge-reranker-v2-m3 scores are
-                                # logits (can be negative); calibrate on real queries before
-                                # enabling — too high returns 0 chunks and the answerer refuses.
-
   agent:
-    max_iterations: 8
+    max_iterations: 5           # maximum tool-calling reasoning turns
+    max_history_messages: 20    # sliding window of conversation messages
     provider: openai
     model: gpt-4o-mini
     base_url: https://api.openai.com/v1
     api_key: ${OPENAI_API_KEY}
     extra_body: {}
-    # Tools in this list are NOT executed on first ask — the executor stops and
-    # reports what it wants to run; a human must approve before it re-runs with
-    # approved_writes=True. Read-only tools (search_documents, sql_read) run free.
-    write_tools: [ingest_document]
-    # Every turn resends the whole conversation_history to the LLM — without a
-    # cap this grows unbounded within a long session (rising cost/latency per
-    # turn, eventually exceeding the model's context window). Simple sliding
-    # window, not summarization: a long conversation loses its earliest turns
-    # rather than compacting them. Revisit if usage shows long sessions are
-    # common enough that losing early context actually hurts answers.
-    max_history_messages: 20
+    write_tools:
+      - ingest_document         # human approval required before running write tools
 
-# ── Reading config from a tool ─────────────────────────────────────────────────
-# config passed to a Tool.run(state, config) is the full dict from
-# load_config("config/global.yaml"). Read settings with:
-#   config["query"]["retrieval"]["method"]
-#   config["query"]["retrieval"]["top_n"]
-#   config["embeddings"]["dense_model"]     ← shared with embed_tool
-#   config["embeddings"]["sparse_model"]
-#   config["embeddings"]["reranker_model"]
-#   config["database"]["qdrant_url"]
-#   config["database"]["postgres_url"]
-# Never use os.getenv() for model names — keep them in config so they're swappable.
-
-# ── Document taxonomy ─────────────────────────────────────────────────────────
-# The categorize prompt's type menu is BUILT FROM this list (single source of truth,
-# see classifier._doctype_menu) — every value here must have a type_to_route entry
-# below, and descriptions live in classifier._DOCTYPE_HINTS. Add a type in BOTH places.
+# ── Document Taxonomy ─────────────────────────────────────────────────────────
 document_types:
   - invoice
   - purchase_order
   - financial_statement
   - report
   - research_paper
-  - manual            # service/instruction manuals (procedures, parts, troubleshooting)
+  - manual
   - contract
   - policy
   - datasheet
   - presentation
   - spreadsheet
-  - cad_drawing       # mechanical CAD: assembly drawings, part drawings, engineering blueprints
-  - circuit_diagram   # electrical: schematics, PCB layouts, wiring diagrams
-  - schematic         # technical/flow diagrams (not a full CAD/circuit drawing)
+  - cad_drawing
+  - circuit_diagram
+  - schematic
   - image
   - unknown
 
@@ -396,184 +349,165 @@ industries:
 
 default_industry: general
 
-# ── Categorization ────────────────────────────────────────────────────────────
-# Used by CategorizeTool.
-# config["categorization"]["industry_keywords"] — keyword lists per industry
-# config["categorization"]["confidence_thresholds"] — when to flag low confidence
-categorization:
-  confidence_thresholds:
-    categorization_low_confidence: 0.5
-
-  industry_keywords:
-    automotive:   [toyota, ford, bmw, vehicle, engine, torque, transmission, chassis, automotive]
-    electronics:  [circuit, pcb, schematic, voltage, resistor, capacitor, signal, semiconductor]
-    manufacturing: [assembly, drawing, tolerance, weld, machining, fixture, jig, bom, part number]
-    finance:      [balance sheet, revenue, profit, ledger, audit, fiscal, equity, financial statement]
-    legal:        [contract, agreement, clause, liability, indemnity, arbitration, jurisdiction]
-    healthcare:   [patient, diagnosis, clinical, pharma, dosage, trial, medical, drug, therapy]
-    retail_ecommerce: [order id, add to cart, delivery address, shipped, return policy, sku, cart total, mrp]
-    travel_transport: [pnr, boarding point, seat number, departure time, ticket number, passenger name, bus operator, coach number]
-    entertainment_media: [showtime, screen number, movie ticket, booking id, seat no, show timing, multiplex, cinema hall]
-    general:      []
-
 # ── Routing ───────────────────────────────────────────────────────────────────
 # Maps document_type → route name. The route selects which pipeline steps run.
-# cad_drawing and circuit_diagram are separate routes — same steps but different
-# vision prompts and retrieval strategy, both wired in the graph (backend/pipeline/graph.py).
 type_to_route:
-  cad_drawing:         cad_route      # mechanical drawings → CADExtractionTool, mechanical prompt
-  circuit_diagram:     circuit_route  # electrical diagrams → CADExtractionTool, electrical prompt
-  schematic:           diagram_heavy  # flow/technical diagrams — caption but no CAD extraction
-  datasheet:           diagram_heavy
-  report:              text_default
-  research_paper:      text_default
-  manual:              text_default
-  invoice:             text_default
-  purchase_order:      text_default
+  cad_drawing: cad_route
+  circuit_diagram: circuit_route
+  schematic: diagram_heavy
+  datasheet: diagram_heavy
+  report: text_default
+  research_paper: text_default
+  manual: text_default
+  invoice: text_default
+  purchase_order: text_default
   financial_statement: text_default
-  contract:            text_default
-  policy:              text_default
-  presentation:        text_default
-  spreadsheet:         text_default
-  image:               image_route
-  unknown:             text_default
+  contract: text_default
+  policy: text_default
+  presentation: text_default
+  spreadsheet: text_default
+  image: image_route
+  unknown: text_default
 
-# "extract" is a placeholder in the steps below. At build time the graph expands
-# it into concrete extractors; at runtime exactly one runs. Values MUST match a
-# tool's `name` (see backend/extraction/*/tool.py). Selection priority:
-#   route_extractors > pdf_extractors (by state.pdf_kind) > extractors (by file_type)
-#
-# extractors: simple file_type -> tool (1:1). 
 extractors:
   excel: excel_extraction
   ppt: ppt_extraction
   docx: word_extraction
   image: image_extraction
-  
 
-
-# pdf_extractors: a PDF is not one tool. The categorize step runs detector.py and
-# sets state["pdf_kind"] (digital/scanned/mixed); the matching extractor runs.
-# docling_pdf is the HYBRID per-page extractor (industry-standard, token-efficient):
-# Docling does text + structured tables (TableFormer, auto-escalating complex ones to
-# the VLM) + figure localization (unioned with DocLayout-YOLO) — NO per-page LLM tokens
-# on clean digital pages. The VLM (GLM) is spent only where vision is required:
-# scanned/garbled pages (extraction.docling.page_rescue, cost-capped with Paddle
-# fallback) and figure captions. To force the VLM on EVERY page instead, revert these
-# to pdf_digital/scanned_pdf/mixed_pdf and set vision_ocr.mode: always (costlier).
 pdf_extractors:
   digital: docling_pdf
   scanned: docling_pdf
   mixed: docling_pdf
 
-# route_extractors: a route overrides extraction entirely. CAD/circuit drawings
-# are PDFs but need vision extraction (cad_extract) with the right diagram prompt,
-# not the normal text pdf extractor. On these routes the file_type/pdf extractors
-# are suppressed.
 route_extractors:
   cad_route: cad_extract
   circuit_route: cad_extract
 
 routes:
   text_default:
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   diagram_heavy:
-    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   cad_route:
-    # Mechanical CAD drawings — CADExtractionTool uses a mechanical diagram prompt
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   circuit_route:
-    # Electrical circuit diagrams — CADExtractionTool uses an electrical/schematic prompt
-    steps: [categorize, extract, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   image_route:
-    steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+    steps:
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
 
-# ── Ingestion profile (what the API/run_pipeline actually builds) ─────────────
-# categorize decides the route at RUNTIME, so the graph is built once with the
-# UNION of steps and route_gates skip the steps a given route doesn't want.
-# Only vision_enrichment varies across the routes above, so it's the only gate.
+# ── Ingestion Profile ─────────────────────────────────────────────────────────
 ingestion:
-  steps: [categorize, extract, vision_enrichment, chunk, enrich_chunks, embed, index]
+  steps:
+    - categorize
+    - extract
+    - vision_enrichment
+    - chunk
+    - enrich_chunks
+    - embed
+    - index
   route_gates:
-    # vision_enrichment must run on text_default too: most real documents
-    # (manuals, reports, datasheets with diagrams) land there, and their images
-    # would otherwise never be captioned. CAD/circuit routes are intentionally
-    # excluded — their route_extractor (cad_extract) does its own vision pass.
-    # The tool no-ops when a page has no significant images, so this is cheap.
-    vision_enrichment: [text_default, diagram_heavy, image_route]
+    vision_enrichment:
+      - text_default
+      - diagram_heavy
+      - image_route
 
-# ── Database (connection strings from environment) ────────────────────────────
+# ── Database & Vector Storage ─────────────────────────────────────────────────
 database:
   postgres_url: ${POSTGRES_URL}
   qdrant_url: ${QDRANT_URL}
+  qdrant_api_key: ${QDRANT_API_KEY}
   qdrant_collection: chunks
 
+# ── Directory Auto-Ingestion Watcher ──────────────────────────────────────────
 auto_ingestion:
   enabled: true
   watch_dir: auto_ingest
   poll_interval: 10
 
-
 # ── Guardrails (v5 Configuration) ─────────────────────────────────────────────
 guardrails:
   enabled: true
-  version: "1.0.0"
-
+  version: 1.0.0
   policy:
-    block_threshold:  80
-    warn_threshold:   40
+    block_threshold: 80
+    warn_threshold: 40
     bypass_alert_rate: 0.05
     stage_weights:
-      input:     1.0
+      input: 1.0
       retrieval: 1.2
-      output:    1.5
-
+      output: 1.5
   input:
     max_query_chars: 2000
     pii_redact: true
     injection_check: true
-    encoding_entropy_check: false   # gated: false-positive corpus audit required
+    encoding_entropy_check: false
     off_topic_check: false
-    passport_pattern: false         # gated: corpus audit Phase 4
-    voter_id_pattern: false         # gated: corpus audit Phase 4
-
+    passport_pattern: false
+    voter_id_pattern: false
   retrieval:
     chunk_injection_scan: true
     scan_max_bytes: 100000
-
   output:
     pii_mask: true
     gstin_before_pan: true
     groundedness:
-      enabled: false                # Phase 4 only
+      enabled: false
       fail_open: true
       timeout_ms: 3000
-
   token_quota:
     enabled: true
     window_minutes: 60
     tokens_per_window: 500000
     reserve_tokens: 2000
     fail_open: true
-
   token_budget:
     enabled: true
     max_context_tokens: 20000
-
   trust_registry:
-    manual:    1.0
+    manual: 1.0
     datasheet: 1.0
-    contract:  0.95
-    invoice:   0.85
-    image:     0.60
-    unknown:   0.50
-
+    contract: 0.95
+    invoice: 0.85
+    image: 0.6
+    unknown: 0.5
   session_risk:
     enabled: true
     window_minutes: 30
     session_block_threshold: 150
-    redis_url: null                 # left blank for single-worker in-memory enforcer
-
+    redis_url: null
   degradation:
     qdrant_max_retries: 2
     qdrant_base_delay_s: 0.5
@@ -582,24 +516,28 @@ guardrails:
     reranker_max_pairs: 50
     reranker_max_tokens_per_pair: 512
     reranker_max_total_tokens: 10000
-
   rollout:
-    input_guard_pct:     100
-    retrieval_guard_pct:  50
-    output_guard_pct:    100        # PII compliance requirement (must be 100)
-    token_quota_pct:       5
-    session_risk_pct:     20
-
+    input_guard_pct: 100
+    retrieval_guard_pct: 50
+    output_guard_pct: 100
+    token_quota_pct: 5
+    session_risk_pct: 20
   logging:
     enabled: true
     ring_buffer_size: 500
-
   health_probe:
     enabled: true
     interval_seconds: 60
-
   cost:
     enabled: true
-    llm_input_cost_per_1m:  0.075
-    llm_output_cost_per_1m: 0.30
-    embed_cost_per_1m:      0.0
+    llm_input_cost_per_1m: 0.075
+    llm_output_cost_per_1m: 0.3
+    embed_cost_per_1m: 0.0
+
+# ── Cloud Object Storage (Supabase) ───────────────────────────────────────────
+# Used for storing original document uploads and converted assets.
+storage:
+  provider: supabase
+  supabase_url: ${SUPABASE_URL}
+  supabase_key: ${SUPABASE_KEY}
+  supabase_bucket: documents

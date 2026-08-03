@@ -132,19 +132,25 @@ def test_delete_session_removes_all_its_turns():
 
 def test_list_sessions_single_query(monkeypatch):
     from backend.storage.postgres_store import PostgresStore
+    import backend.storage.conversation_store as cs
+    
     store, sid = _store()
     try:
         store.save_turn(sid, "user", "Opening query")
         call_count = {"n": 0}
-        original_init = PostgresStore.__init__
-        def wrapped_init(self, *args, **kwargs):
-            original_init(self, *args, **kwargs)
-            orig_execute = self.conn.execute
-            def counting_execute(*a, **kw):
-                call_count["n"] += 1
-                return orig_execute(*a, **kw)
-            self.conn.execute = counting_execute
-        monkeypatch.setattr(PostgresStore, "__init__", wrapped_init)
+        
+        # Instantiate store directly, bypassing constructor mocks
+        mock_store = PostgresStore()
+        orig_execute = mock_store.conn.execute
+        
+        def counting_execute(*a, **kw):
+            call_count["n"] += 1
+            return orig_execute(*a, **kw)
+        
+        mock_store.conn.execute = counting_execute
+        
+        # Patch the seam directly in the conversation_store module
+        monkeypatch.setattr(cs, "_get_store", lambda: mock_store)
         
         sessions = store.list_sessions()
         # Ensure only 1 query is executed inside list_sessions

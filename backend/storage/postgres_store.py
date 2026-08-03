@@ -59,17 +59,33 @@ def dsn_from_env() -> str:
 class PostgresStore:
     """Thin wrapper over a Postgres connection (text + tags; no vectors)."""
 
-    def __init__(self, dsn: str | None = None) -> None:
+    _migration_done: bool = False  # class-level flag — runs DDL only once per process
+
+    def __init__(self, dsn: str | None = None, config: dict | None = None) -> None:
+        if not dsn and config and isinstance(config, dict):
+            from backend.core.config import get_db_url
+            dsn = get_db_url(config)
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True)
         # Auto-migration: add file_path column to documents if it doesn't exist yet.
-        # Safe to run on every startup — IF NOT EXISTS is a no-op when already present.
-        try:
-            self.conn.execute(
-                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT"
-            )
-        except Exception:
-            pass  # DB might not be reachable yet (health probe) — never block startup
+        # Guard with a class-level flag so this runs ONCE per process, not per request.
+        if not PostgresStore._migration_done:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT"
+                )
+                self.conn.execute(
+                    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS session_id TEXT"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id, created_at)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)"
+                )
+                PostgresStore._migration_done = True
+            except Exception:
+                pass  # DB might not be reachable yet (health probe) — never block startup
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk row (full record), keyed by chunk_id.
@@ -206,31 +222,91 @@ class PostgresStore:
             for r in rows
         ]
 
-    def write_llm_calls(self, document_id: str, calls: list[dict]) -> None:
+    def write_llm_calls(self, document_id: str | None, calls: list[dict], session_id: str | None = None) -> None:
         """Persist the raw prompt + raw response for every LLM/vision call made
-        during ingestion (categorize/vision/enrichment) — the full record, since
-        those steps only keep the fields they parsed out in their normal tables."""
+        during ingestion or agent chat into the llm_calls table."""
         if not calls:
             return
         import uuid
-        document_id = str(document_id)  # see write_blocks — caller may pass a uuid.UUID
+        import json
+
+        # Validate document_id as a valid UUID, or None
+        doc_uuid = None
+        if document_id:
+            try:
+                doc_uuid = str(uuid.UUID(str(document_id)))
+            except (ValueError, AttributeError):
+                doc_uuid = None
+
         with self.conn.cursor() as cur:
             cur.executemany(
                 """
                 INSERT INTO llm_calls
-                    (call_id, document_id, kind, provider, model, prompt,
+                    (call_id, document_id, session_id, kind, provider, model, prompt,
                      raw_response, input_tokens, output_tokens)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
-                        str(uuid.uuid4()), document_id, c.get("kind"), c.get("provider"),
-                        c.get("model"), c.get("prompt"), c.get("raw_response"),
-                        c.get("input_tokens"), c.get("output_tokens"),
+                        str(uuid.uuid4()),
+                        doc_uuid,
+                        session_id or c.get("session_id"),
+                        str(c.get("kind") or "unknown"),
+                        c.get("provider"),
+                        c.get("model"),
+                        c.get("prompt") if (c.get("prompt") is None or isinstance(c.get("prompt"), str)) else json.dumps(c.get("prompt"), default=str),
+                        c.get("raw_response") if (c.get("raw_response") is None or isinstance(c.get("raw_response"), str)) else json.dumps(c.get("raw_response"), default=str),
+                        int(c.get("input_tokens") or 0),
+                        int(c.get("output_tokens") or 0),
                     )
                     for c in calls
                 ],
             )
+
+    def get_llm_calls(
+        self,
+        document_id: str | None = None,
+        session_id: str | None = None,
+        kind: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Retrieve LLM/vision calls with optional filtering by document_id, session_id, or kind."""
+        query = (
+            "SELECT call_id, document_id, session_id, kind, provider, model, "
+            "prompt, raw_response, input_tokens, output_tokens, created_at "
+            "FROM llm_calls WHERE 1=1"
+        )
+        params: list[Any] = []
+        if document_id:
+            query += " AND document_id::text = %s"
+            params.append(str(document_id))
+        if session_id:
+            query += " AND session_id = %s"
+            params.append(str(session_id))
+        if kind:
+            query += " AND kind = %s"
+            params.append(str(kind))
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [
+            {
+                "call_id": str(r[0]),
+                "document_id": str(r[1]) if r[1] else None,
+                "session_id": r[2],
+                "kind": r[3],
+                "provider": r[4],
+                "model": r[5],
+                "prompt": r[6],
+                "raw_response": r[7],
+                "input_tokens": r[8],
+                "output_tokens": r[9],
+                "created_at": r[10].isoformat() if r[10] else None,
+            }
+            for r in rows
+        ]
 
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Fetch full chunk rows by chunk_id (hydrate Qdrant search hits)."""

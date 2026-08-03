@@ -24,8 +24,35 @@ def extract_pymupdf(pdf_path: str, document_id: str, config: dict | None = None)
     doc = fitz.open(pdf_path)
 
     blocks: list[dict] = []
+    total_pages = len(doc)
+
+    def update_prog(p_idx):
+        try:
+            from backend.api.main import _pool_get_conn, _pool_return_conn
+            conn = _pool_get_conn()
+            try:
+                conn.execute(
+                    "UPDATE documents SET current_step = %s, updated_at = NOW() WHERE document_id::text = %s",
+                    (f"pymupdf_pdf (page {p_idx} of {total_pages})", document_id)
+                )
+            finally:
+                _pool_return_conn(conn)
+        except Exception:
+            try:
+                from backend.storage.postgres_store import PostgresStore
+                pg = PostgresStore()
+                try:
+                    pg.conn.execute(
+                        "UPDATE documents SET current_step = %s, updated_at = NOW() WHERE document_id::text = %s",
+                        (f"pymupdf_pdf (page {p_idx} of {total_pages})", document_id)
+                    )
+                finally:
+                    pg.close()
+            except Exception:
+                pass
 
     for page_idx, page in enumerate(doc, start=1):
+        update_prog(page_idx)
         table_rects = []
         # 1. Extract tables
         try:

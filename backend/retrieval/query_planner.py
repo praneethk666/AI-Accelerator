@@ -27,7 +27,7 @@ from backend.core.tool import PipelineState
 
 logger = logging.getLogger(__name__)
 
-_PROMPT = """You rewrite a user's question for a document search engine.
+_PROMPT = """You rewrite a user's question for an enterprise document search engine.
 
 Conversation so far (may be empty):
 {history}
@@ -37,9 +37,10 @@ User question: {query}
 Do two things:
 1. Rewrite the question so it stands alone without the conversation (resolve "it",
    "that", "they", etc.). If it is already standalone, keep it as-is.
-   If the user question is a single keyword, entity, or a name (e.g. "Manoj", "stipend"), rewrite it as a proper search question asking for information about that keyword (e.g., "who is Manoj" or "what is the information about Manoj", "details about stipend").
-2. Break it into 1 to {max_subs} focused sub-questions. A simple question becomes
-   exactly one sub-question. Only split genuinely multi-part questions.
+   If the user question is a single keyword, entity, or a name (e.g. "Manoj", "stipend"), rewrite it as a proper search question asking for information about that keyword.
+2. Break it into 1 to {max_subs} focused search sub-questions.
+   - For domain-specific or technical questions (e.g. safety, errors, incidents, parameters, procedures), include synonym and concept expansions that appear in technical manuals and standard documents (e.g., expand "high-severity incidents / escalation steps" to include "danger warning classifications (DANGER/WARNING/CAUTION)" and "emergency safety/shutdown procedures").
+   - A simple, specific question can remain 1-2 sub-questions.
 
 Reply with ONLY a JSON object, no prose:
 {{"standalone_query": "...", "sub_questions": ["...", "..."]}}"""
@@ -87,7 +88,7 @@ def _plan(query: str, history: list, config: dict, max_subs: int) -> dict:
         config, config.get("query", {}).get("planner"),
         default_model=config["llm"].get("answer_model"),
     )
-    usage.record_from_message("query_planner", response, model=model_name, provider=provider_name)
+    usage.record_from_message("query_planner", response, prompt=prompt, model=model_name, provider=provider_name)
     return json.loads(_extract_json(clean_message_content(response.content)))
 
 

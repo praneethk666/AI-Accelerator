@@ -932,7 +932,9 @@ def repair_table_with_llm(block: dict, config: dict, section_lead: str, precedin
         
         response = llm.invoke(messages)
         from backend.core import usage
-        usage.record_from_message("chunking", response)
+        from backend.core.llm_client import resolve_model_provider
+        model_name, provider_name = resolve_model_provider(config, config.get("chunking"))
+        usage.record_from_message("chunking", response, prompt=messages, model=model_name, provider=provider_name)
         res_text = response.content.strip()
         
         # Strip code block fences if returned by the LLM

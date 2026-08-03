@@ -72,10 +72,74 @@ def test_raw_passthrough_is_preserved():
     assert cfg.raw["custom"]["k"] == 1
 
 
+def test_yaml_comment_preservation():
+    from backend.core.yaml_handler import (
+        load_yaml_roundtrip,
+        dump_yaml_roundtrip,
+        apply_settings_in_place,
+    )
+    import tempfile
+
+    sample_yaml = """# Global Header Comment: System configuration
+llm:
+  # Primary reasoning model
+  provider: openai
+  model: gpt-4o-mini  # Fast default model
+  api_key: ${OPENAI_API_KEY}
+
+chunking:
+  strategy: semantic  # semantic chunker
+  size: 400
+  overlap: 50
+
+# Ingestion pipeline definition
+ingestion:
+  steps:
+    - categorize
+    - extract  # main extraction step
+    - chunk
+    - embed
+    - index
+"""
+    with tempfile.NamedTemporaryFile("w+", suffix=".yaml", delete=False, encoding="utf-8") as f:
+        f.write(sample_yaml)
+        temp_file = f.name
+
+    try:
+        data = load_yaml_roundtrip(temp_file)
+        settings_map = {
+            "llm_model": ["llm", "model"],
+            "chunking_size": ["chunking", "size"],
+        }
+        apply_settings_in_place(data, {"llm_model": "gpt-4o", "chunking_size": 600}, settings_map)
+        dump_yaml_roundtrip(data, temp_file)
+
+        with open(temp_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Values updated
+        assert "model: gpt-4o" in content or "gpt-4o" in content
+        assert "size: 600" in content or "600" in content
+
+        # All comments and structure preserved
+        assert "# Global Header Comment: System configuration" in content
+        assert "# Primary reasoning model" in content
+        assert "# Fast default model" in content
+        assert "# semantic chunker" in content
+        assert "# Ingestion pipeline definition" in content
+        assert "# main extraction step" in content
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+
 if __name__ == "__main__":
     test_get_db_url()
+    test_global_yaml_loads_and_has_pipeline_profiles()
     test_from_yaml_reads_route_and_steps()
     test_section_returns_tool_settings()
     test_missing_fields_use_safe_defaults()
     test_raw_passthrough_is_preserved()
+    test_yaml_comment_preservation()
     print("config tests passed")
+

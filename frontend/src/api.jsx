@@ -176,4 +176,6 @@ export const saveProfile = async (name, yamlText) =>
 export const activateProfile = async (name) =>
   API.post('/config/activate', { name });
 
+export const checkDoclingServer = async () => API.get('/health/docling-server', { timeout: 8000 });
+
 export default API;

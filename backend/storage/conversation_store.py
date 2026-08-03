@@ -17,6 +17,15 @@ from typing import Protocol
 from backend.storage.postgres_store import PostgresStore, _Json
 
 
+def _get_store():
+    """Get a pooled or direct PostgresStore instance."""
+    try:
+        from backend.api.main import _PooledPostgresStore
+        return _PooledPostgresStore()
+    except (ImportError, Exception):
+        return PostgresStore()
+
+
 class ConversationStore(Protocol):
     def save_turn(self, session_id: str, role: str, content: str,
                   metadata: dict | None = None) -> None:
@@ -60,7 +69,7 @@ class PostgresConversationStore:
     def _ensure_schema(self) -> None:
         """Create tables if missing — keeps the store usable even if
         scripts/init_db.sql wasn't run. MUST stay in sync with init_db.sql."""
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             pg.conn.execute(
                 """
@@ -141,12 +150,37 @@ class PostgresConversationStore:
                 )
             except Exception:
                 pass
+            # Migrations for history performance optimizations
+            try:
+                pg.conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT"
+                )
+                pg.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at "
+                    "ON sessions (pinned DESC, updated_at DESC)"
+                )
+                # Backfill first_message for existing historical sessions
+                pg.conn.execute(
+                    """
+                    UPDATE sessions s
+                    SET first_message = LEFT(c.content, 60)
+                    FROM (
+                        SELECT DISTINCT ON (session_id) session_id, content
+                        FROM conversations
+                        WHERE role = 'user'
+                        ORDER BY session_id, created_at ASC, id ASC
+                    ) c
+                    WHERE s.session_id = c.session_id AND s.first_message IS NULL
+                    """
+                )
+            except Exception:
+                pass
         finally:
             pg.close()
 
     def save_turn(self, session_id: str, role: str, content: str,
                   metadata: dict | None = None) -> None:
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             # ensure a sessions row exists (upsert so it's idempotent)
             pg.conn.execute(
@@ -165,11 +199,20 @@ class PostgresConversationStore:
                 """,
                 (session_id, role, content, _Json(metadata) if metadata else None),
             )
+            # Cache the first user message on the sessions table for sidebar loading speed
+            if role == "user":
+                pg.conn.execute(
+                    """
+                    UPDATE sessions SET first_message = LEFT(%s, 60)
+                    WHERE session_id = %s AND first_message IS NULL
+                    """,
+                    (content, session_id),
+                )
         finally:
             pg.close()
 
     def update_turn_by_message_id(self, message_id: str, content: str, metadata: dict) -> None:
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             pg.conn.execute(
                 "UPDATE conversations SET content = %s, metadata = %s WHERE metadata->>'message_id' = %s",
@@ -182,7 +225,7 @@ class PostgresConversationStore:
                        title: str | None = None,
                        pinned: bool | None = None) -> None:
         """Update session metadata (custom title, pinned status)."""
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             # ensure a row exists first
             pg.conn.execute(
@@ -209,7 +252,7 @@ class PostgresConversationStore:
             pg.close()
 
     def load_history(self, session_id: str, n: int = 10) -> list[dict]:
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             rows = pg.conn.execute(
                 """
@@ -226,31 +269,19 @@ class PostgresConversationStore:
         return [{"role": r[0], "content": r[1], "metadata": r[2]} for r in reversed(rows)]
 
     def list_sessions(self, limit: int = 50) -> list[dict]:
-        pg = PostgresStore()
+        pg = _get_store()
         try:
+            # High-performance index-backed query. No expensive CTE or DISTINCT ON sorting.
             rows = pg.conn.execute(
                 """
-                WITH top_sessions AS (
-                    SELECT s.session_id, s.created_at AS started_at, s.updated_at AS last_active, s.pinned, s.title
-                    FROM sessions s
-                    WHERE EXISTS (
-                        SELECT 1 FROM conversations c WHERE c.session_id = s.session_id
-                    )
-                    ORDER BY COALESCE(s.pinned, FALSE) DESC, s.updated_at DESC
-                    LIMIT %s
-                ),
-                first_messages AS (
-                    SELECT DISTINCT ON (c.session_id) c.session_id, LEFT(c.content, 60) AS content
-                    FROM conversations c
-                    JOIN top_sessions ts ON ts.session_id = c.session_id
-                    WHERE c.role = 'user'
-                    ORDER BY c.session_id, c.created_at ASC, c.id ASC
+                SELECT session_id, created_at AS started_at, updated_at AS last_active,
+                       pinned, title AS custom_title, first_message
+                FROM sessions s
+                WHERE EXISTS (
+                    SELECT 1 FROM conversations c WHERE c.session_id = s.session_id
                 )
-                SELECT ts.session_id, ts.started_at, ts.last_active,
-                       ts.pinned, ts.title AS custom_title, fm.content AS first_message
-                FROM top_sessions ts
-                LEFT JOIN first_messages fm ON fm.session_id = ts.session_id
-                ORDER BY COALESCE(ts.pinned, FALSE) DESC, ts.last_active DESC
+                ORDER BY COALESCE(pinned, FALSE) DESC, updated_at DESC
+                LIMIT %s
                 """,
                 (limit,),
             ).fetchall()
@@ -271,10 +302,8 @@ class PostgresConversationStore:
         finally:
             pg.close()
 
-
-
     def delete_session(self, session_id: str) -> None:
-        pg = PostgresStore()
+        pg = _get_store()
         try:
             pg.conn.execute("DELETE FROM conversations WHERE session_id = %s", (session_id,))
             pg.conn.execute("DELETE FROM sessions WHERE session_id = %s", (session_id,))

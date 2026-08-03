@@ -78,10 +78,10 @@ class DoclingPDFTool(Tool):
 
         p, t, f, s = report["pages"], report["tables"], report["figures"], report["stitch"]
         logger.info(
-            "docling_pdf[%s kind=%s tables=%s]: pages %d (digital %d, VLM %d, paddle %d) | "
+            "docling_pdf[%s kind=%s tables=%s mode=%s]: pages %d (digital %d, VLM %d, paddle %d) | "
             "tables %d (TableFormer %d, pymupdf %d, VLM %d) | figures %d kept of %d proposed "
             "(docling %d, +yolo %d, gate dropped %d) | stitched %d (LLM arb %d)",
-            doc_id, report["pdf_kind"], tsource, p["total"], p["digital_kept"],
+            doc_id, report["pdf_kind"], tsource, report.get("mode", "local"), p["total"], p["digital_kept"],
             p["vlm_rescued"], p["paddle_fallback"], t["total"], t["tableformer"],
             t.get("pymupdf", 0), t.get("vlm", 0), f["total"], f.get("proposed", 0),
             f["docling"], f["yolo_added"], f.get("dropped_by_gate", 0), s["merged"],
@@ -89,6 +89,10 @@ class DoclingPDFTool(Tool):
 
         state["blocks"] = blocks
         state["extraction_report"] = report   # picked up into step metrics by the graph
+        
+        if report and report.get("remote_error"):
+            state.setdefault("errors", []).append(f"docling_pdf remote: {report['remote_error']}")
+            
         # Docling located + captioned figures already; no per-page vision pass.
         state["page_profiles"] = []
         return state

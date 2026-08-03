@@ -90,15 +90,18 @@ def test_agent_picks_and_runs_a_read_tool_then_answers():
     assert "42" in result["tool_calls"][0]["result"]
 
 
-def test_write_tool_needs_approval_then_runs_once_approved():
+def test_write_tool_needs_approval_then_runs_once_approved(tmp_path):
     ingest = _FakeIngestTool()
+    report_file = tmp_path / "report.pdf"
+    report_file.write_text("dummy")
+    report_path = str(report_file).replace("\\", "/")
 
     # First ask: the model wants to ingest — must be blocked, not executed.
     llm_first_ask = _ScriptedLLM([
-        _tool_call_message("ingest_document", {"file_path": "/tmp/report.pdf"}),
+        _tool_call_message("ingest_document", {"file_path": report_path}),
     ])
     result = run_agent(
-        "please ingest /tmp/report.pdf",
+        f"please ingest {report_path}",
         config=_CONFIG,
         registry={"ingest_document": ingest},
         llm=llm_first_ask,
@@ -106,42 +109,50 @@ def test_write_tool_needs_approval_then_runs_once_approved():
 
     assert result["status"] == "needs_approval"
     assert result["answer"] is None
-    assert result["pending"] == [{"id": "call_1", "name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}]
+    assert result["pending"] == [{"id": "call_1", "name": "ingest_document", "args": {"file_path": report_path}}]
     assert ingest.calls == []  # blocked — must not have run
 
     # User approves; caller re-invokes with approved_writes=True AND echoes the
     # approved call back (approval is bound to the exact name+args shown).
     llm_approved = _ScriptedLLM([
-        _tool_call_message("ingest_document", {"file_path": "/tmp/report.pdf"}),
+        _tool_call_message("ingest_document", {"file_path": report_path}),
         AIMessage(content="Ingested — document_id doc-1, status ready."),
     ])
     result = run_agent(
-        "please ingest /tmp/report.pdf",
+        f"please ingest {report_path}",
         config=_CONFIG,
         registry={"ingest_document": ingest},
         llm=llm_approved,
         approved_writes=True,
-        approved_calls=[{"name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}],
+        approved_calls=[{"name": "ingest_document", "args": {"file_path": report_path}}],
     )
 
     assert result["status"] == "done"
-    assert ingest.calls == [{"file_path": "/tmp/report.pdf"}]
+    assert ingest.calls == [{"file_path": report_path}]
     assert "doc-1" in result["answer"]
 
 
-def test_approval_is_bound_to_approved_args():
+def test_approval_is_bound_to_approved_args(tmp_path):
     """Approving one file must NOT authorize a different one the model re-proposes."""
     ingest = _FakeIngestTool()
+    report_file = tmp_path / "report.pdf"
+    report_file.write_text("dummy")
+    report_path = str(report_file).replace("\\", "/")
+
+    evil_file = tmp_path / "EVIL.pdf"
+    evil_file.write_text("evil")
+    evil_path = str(evil_file).replace("\\", "/")
+
     llm = _ScriptedLLM([
-        _tool_call_message("ingest_document", {"file_path": "/tmp/EVIL.pdf"}),
+        _tool_call_message("ingest_document", {"file_path": evil_path}),
     ])
     result = run_agent(
-        "please ingest /tmp/report.pdf",
+        f"please ingest {report_path}",
         config=_CONFIG,
         registry={"ingest_document": ingest},
         llm=llm,
         approved_writes=True,
-        approved_calls=[{"name": "ingest_document", "args": {"file_path": "/tmp/report.pdf"}}],
+        approved_calls=[{"name": "ingest_document", "args": {"file_path": report_path}}],
     )
     assert result["status"] == "needs_approval"   # args mismatch => re-blocked
     assert ingest.calls == []                     # the un-approved file did NOT run
@@ -233,4 +244,63 @@ def test_prune_messages_for_llm_ignores_non_json_messages():
     pruned = _prune_messages_for_llm(messages)
     assert len(pruned) == 1
     assert pruned[0].content == "some raw error string"
+
+
+def test_ingest_document_missing_file_does_not_ask_approval():
+    """If ingest_document is called on a file that does not exist, the agent loops back
+    with an error immediately instead of blocking to ask for human approval."""
+    ingest = _FakeIngestTool()
+    llm = _ScriptedLLM([
+        _tool_call_message("ingest_document", {"file_path": "missing_file_path_123.pdf"}),
+        AIMessage(content="I cannot find that file. Please upload it first."),
+    ])
+    result = run_agent(
+        "please ingest missing_file_path_123.pdf",
+        config=_CONFIG,
+        registry={"ingest_document": ingest},
+        llm=llm,
+    )
+    # Since the file did not exist, the tools node did not return needs_approval status.
+    # It returned the error to the LLM, which then generated the final text answer.
+    assert result["status"] == "done"
+    assert "cannot find" in result["answer"]
+    assert ingest.calls == []
+
+
+def test_ingest_document_already_ready_bypasses_approval(tmp_path):
+    """If ingest_document is called on a file that is already ingested and ready,
+    the tools node returns the ready status immediately without asking approval."""
+    from unittest.mock import MagicMock, patch
+    ingest = _FakeIngestTool()
+    
+    # Create the physical file so that os.path.isfile returns True
+    report_file = tmp_path / "report.pdf"
+    report_file.write_text("dummy")
+    report_path = str(report_file).replace("\\", "/")
+
+    llm = _ScriptedLLM([
+        _tool_call_message("ingest_document", {"file_path": report_path}),
+        AIMessage(content="The document is already ready. I will search it now."),
+    ])
+
+    # Mock PostgresStore so it returns that the document is ready
+    mock_pg = MagicMock()
+    mock_cur = MagicMock()
+    mock_cur.fetchone.return_value = ("e27afb11-788e-44fa-8bb8-a7a9668a1b97", report_path, "ready")
+    mock_pg.conn.cursor.return_value = mock_cur
+
+    with patch("backend.storage.postgres_store.PostgresStore", return_value=mock_pg):
+        result = run_agent(
+            f"please ingest {report_path}",
+            config=_CONFIG,
+            registry={"ingest_document": ingest},
+            llm=llm,
+        )
+
+    # Since the file is already ready, it should be marked as "done" without blocking for approval
+    assert result["status"] == "done"
+    assert "already ready" in result["answer"]
+    assert ingest.calls == []  # Not actually called since it was already ingested and ready
+
+
 

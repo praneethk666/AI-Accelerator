@@ -28,7 +28,7 @@ def build_agent_registry() -> dict[str, AgentTool]:
     these to the LLM and dispatches calls by name."""
     from backend.agent.clarify_tool import RequestClarificationTool
     from backend.connectors.sql_read import SQLReadTool
-    from backend.extraction.excel.excel_tool import ExcelTstTool
+    from backend.extraction.excel.excel_tool import ExcelTool
     from backend.pipeline.ingest import IngestDocumentTool
     from backend.retrieval.get_page_context import GetPageContextTool
     from backend.retrieval.list_documents import ListDocumentsTool
@@ -43,6 +43,6 @@ def build_agent_registry() -> dict[str, AgentTool]:
         ListDocumentsTool(),
         SQLReadTool(),
         RequestClarificationTool(),
-        ExcelTstTool(),
+        ExcelTool(),
     ]
     return {t.name: t for t in tools}

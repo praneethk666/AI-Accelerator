@@ -5,7 +5,7 @@ This script runs:
    Extracts NormalizedBlocks containing the text and raw table chunks,
    saving them to output-2/extractor_text.txt and output-2/extractor_blocks.json.
 
-2. ExcelTstTool (from backend/extraction/excel/excel_tool.py)
+2. ExcelTool (from backend/extraction/excel/excel_tool.py)
    Runs code against the Excel data sheets,
    saving the query execution output to output-2/interpreter_result.txt.
 """
@@ -78,11 +78,11 @@ def main():
     print()
 
     # =========================================================================
-    # PART 2: Run ExcelTstTool (excel_tool.py)
+    # PART 2: Run ExcelTool (excel_tool.py)
     # =========================================================================
-    print("--- 2. Running ExcelTstTool (excel_tool.py) ---")
-    from backend.extraction.excel.excel_tool import ExcelTstTool
-    interpreter = ExcelTstTool()
+    print("--- 2. Running ExcelTool (excel_tool.py) ---")
+    from backend.extraction.excel.excel_tool import ExcelTool
+    interpreter = ExcelTool()
 
     # Python code to count rows, look at headers, and compute sheet statistics
     code_query = """
@@ -131,7 +131,7 @@ result = {
             print(f"Interpreter returned failure: {res.get('error')}")
 
     except Exception as e:
-        print(f"Failed running ExcelTstTool: {e}")
+        print(f"Failed running ExcelTool: {e}")
 
     print("\nAll done! Check the output-2 folder for results.")
 

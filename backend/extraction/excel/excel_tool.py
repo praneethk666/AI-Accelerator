@@ -21,6 +21,10 @@ import datetime
 import collections
 import re
 from collections import OrderedDict
+from dotenv import load_dotenv
+
+# Load environment variables (.env) for DB connection string
+load_dotenv()
 from typing import Any, Optional
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from contextlib import redirect_stdout, redirect_stderr
@@ -209,6 +213,14 @@ def get_sheets(
 
 def resolve_document_path(filename_or_id: str) -> str:
     """Find the original file path using the DB, falling back to local files."""
+    # 1. Clean the input filename/path to extract raw basename and strip UUID prefixes
+    base_name = os.path.basename(filename_or_id)
+    clean_name = base_name
+    parts = base_name.split("_", 1)
+    if len(parts) == 2 and len(parts[0]) == 36:  # UUID prefix pattern length (36 chars)
+        clean_name = parts[1]
+
+    # Try resolving via database
     try:
         from backend.storage.postgres_store import PostgresStore
         store = PostgresStore()
@@ -219,17 +231,35 @@ def resolve_document_path(filename_or_id: str) -> str:
                 WHERE document_id::text = %s
                    OR filename = %s
                    OR LOWER(filename) = LOWER(%s)
+                   OR filename = %s
+                   OR LOWER(filename) = LOWER(%s)
+                   OR file_path = %s
+                   OR LOWER(file_path) LIKE LOWER(%s)
                 """,
-                (filename_or_id, filename_or_id, filename_or_id),
+                (
+                    filename_or_id, 
+                    filename_or_id, filename_or_id,
+                    clean_name, clean_name,
+                    filename_or_id,
+                    f"%{base_name}"
+                ),
             ).fetchone()
-            if row:
-                return row[0]
+            if row and row[0]:
+                resolved = row[0]
+                if os.path.exists(resolved):
+                    return os.path.abspath(resolved)
+                # Try finding under typical paths relative to workspace root
+                for prefix in (".", "uploads", "staged"):
+                    for p in (os.path.join(prefix, resolved), os.path.join(prefix, os.path.basename(resolved))):
+                        if os.path.exists(p):
+                            return os.path.abspath(p)
         finally:
             store.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Database path resolution failed: %s", exc)
 
-    # Direct path
+    # 2. Direct path fallback
     if os.path.exists(filename_or_id):
         return os.path.abspath(filename_or_id)
 
@@ -238,12 +268,23 @@ def resolve_document_path(filename_or_id: str) -> str:
     if os.path.exists(root_path):
         return os.path.abspath(root_path)
 
+    # Check directly inside uploads/ or staged/ directories
+    for folder in ("uploads", "staged"):
+        p = os.path.join(folder, base_name)
+        if os.path.exists(p):
+            return os.path.abspath(p)
+        # Also try matching with clean name
+        p_clean = os.path.join(folder, clean_name)
+        if os.path.exists(p_clean):
+            return os.path.abspath(p_clean)
+
     # Walk workspace (skip heavy dirs)
     skip = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
     for root, dirs, files in os.walk("."):
         dirs[:] = [d for d in dirs if d not in skip]
         for f in files:
-            if f.lower() == filename_or_id.lower():
+            # Match clean name or raw base name
+            if f.lower() in (filename_or_id.lower(), base_name.lower(), clean_name.lower()):
                 return os.path.abspath(os.path.join(root, f))
 
     raise FileNotFoundError(
@@ -272,10 +313,10 @@ def serialize_result(
 
 # ── AGENT TOOL ────────────────────────────────────────────────────────────────
 
-class ExcelTstTool:
+class ExcelTool:
     """Agent-callable tool: runs Python/Pandas code on ingested Excel sheets."""
 
-    name = "excel_tst_tool"
+    name = "excel_tool"
     description = (
         "Execute Python code (using pandas, numpy, sqlite3) to filter, calculate, "
         "sum, or query columns in an Excel sheet.\n"
@@ -357,7 +398,7 @@ if __name__ == "__main__":
     import time
     import tempfile
 
-    tool = ExcelTstTool()
+    tool = ExcelTool()
     passed = 0
     failed = 0
 

@@ -37,6 +37,7 @@ per-call wiring needed here.
 from __future__ import annotations
 
 import os
+import random
 
 from langchain_core.language_models import BaseChatModel
 
@@ -209,9 +210,14 @@ def resolve_model_provider(config: dict, section: dict | None = None,
     return model, provider
 
 def _clean(value):
-    """Treat blank or unresolved ${VAR} placeholders as 'not set'."""
+    """Treat blank or unresolved ${VAR} placeholders as 'not set'.
+    If multiple keys are provided via comma-separation, randomly select one for load balancing."""
     if not value or (isinstance(value, str) and value.startswith("${")):
         return None
+    if isinstance(value, str) and "," in value:
+        keys = [k.strip() for k in value.split(",") if k.strip()]
+        if keys:
+            return random.choice(keys)
     return value
 
 

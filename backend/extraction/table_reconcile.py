@@ -104,6 +104,11 @@ def _llm_is_continuation(lead: dict, cur: dict, config: dict) -> bool:
         )
         llm = get_llm(config)
         reply = llm.invoke(prompt)
+        try:
+            from backend.core import usage
+            usage.record_from_message("table_stitch", reply, prompt=prompt, model=config.get("llm", {}).get("model"), provider=config.get("llm", {}).get("provider"))
+        except Exception:
+            pass
         ans = (getattr(reply, "content", str(reply)) or "").strip().upper()
         return "CONTINUATION" in ans and "SEPARATE" not in ans
     except Exception as e:

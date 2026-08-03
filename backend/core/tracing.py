@@ -41,6 +41,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.metrics import Observation
 from opentelemetry.trace import Status, StatusCode
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,13 @@ _REQUEST_DURATION = None
 _TOOL_CALLS = None
 _TOOL_DURATION = None
 _LLM_TOKENS = None
+_GOV_DECISIONS = None
+_GOV_RISK_SCORE = None
+_GOV_DECISION_LATENCY = None
+_GOV_BYPASS_RATE = None
+_GOV_BLOCK_RATE = None
+_GOV_REDACT_RATE = None
+_GOV_RECENT_DECISIONS = None
 
 # Set once per request (traced_request) and read by every nested traced_tool,
 # so session_id lands on every span in the turn without threading it through
@@ -70,8 +78,65 @@ def _resource() -> Resource:
     })
 
 
+def _guardrail_window() -> list[tuple[float, Any, str]]:
+    try:
+        from backend.guardrails.ring_buffer import get_recent
+
+        return get_recent(5)
+    except Exception:
+        return []
+
+
+def _guardrail_decision_attrs(decision: Any) -> dict[str, Any]:
+    return {
+        "stage": getattr(decision, "stage", "unknown"),
+        "policy": getattr(getattr(decision, "policy", None), "value", None)
+        or str(getattr(decision, "policy", "unknown")),
+        "event_type": getattr(decision, "event_type", "unknown"),
+        "bypassed": str(bool(getattr(decision, "bypassed", False))).lower(),
+        "hard_block": str(bool(getattr(decision, "hard_block", False))).lower(),
+    }
+
+
+def _guardrail_bypass_callback(options) -> list[Observation]:
+    recent = _guardrail_window()
+    total = len(recent)
+    bypassed = sum(1 for _, d, _ in recent if getattr(d, "bypassed", False))
+    rate = (bypassed / total) if total else 0.0
+    return [Observation(rate, {"window": "5m"})]
+
+
+def _guardrail_block_callback(options) -> list[Observation]:
+    recent = _guardrail_window()
+    total = len(recent)
+    blocked = sum(
+        1 for _, d, _ in recent
+        if getattr(getattr(d, "policy", None), "value", None) == "block"
+    )
+    rate = (blocked / total) if total else 0.0
+    return [Observation(rate, {"window": "5m"})]
+
+
+def _guardrail_redact_callback(options) -> list[Observation]:
+    recent = _guardrail_window()
+    total = len(recent)
+    redacted = sum(
+        1 for _, d, _ in recent
+        if getattr(getattr(d, "policy", None), "value", None) == "redact"
+    )
+    rate = (redacted / total) if total else 0.0
+    return [Observation(rate, {"window": "5m"})]
+
+
+def _guardrail_recent_count_callback(options) -> list[Observation]:
+    recent = _guardrail_window()
+    return [Observation(float(len(recent)), {"window": "5m"})]
+
+
 def _init() -> None:
-    global _INITIALIZED, _REQUEST_CALLS, _REQUEST_DURATION, _TOOL_CALLS, _TOOL_DURATION, _LLM_TOKENS
+    global _INITIALIZED, _REQUEST_CALLS, _REQUEST_DURATION, _TOOL_CALLS, _TOOL_DURATION
+    global _LLM_TOKENS, _GOV_DECISIONS, _GOV_RISK_SCORE, _GOV_DECISION_LATENCY
+    global _GOV_BYPASS_RATE, _GOV_BLOCK_RATE, _GOV_REDACT_RATE, _GOV_RECENT_DECISIONS
     if _INITIALIZED:
         return
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -102,6 +167,42 @@ def _init() -> None:
         "tool_call_duration_ms", description="Tool/step duration", unit="ms")
     _LLM_TOKENS = meter.create_counter(
         "llm_tokens_total", description="LLM/vision tokens consumed", unit="1")
+
+    _GOV_DECISIONS = meter.create_counter(
+        "guardrail_decisions_total",
+        description="Guardrail decisions emitted by governance checks",
+        unit="1",
+    )
+    _GOV_RISK_SCORE = meter.create_histogram(
+        "guardrail_risk_score",
+        description="Guardrail risk score distribution",
+        unit="1",
+    )
+    _GOV_DECISION_LATENCY = meter.create_histogram(
+        "guardrail_decision_latency_ms",
+        description="Guardrail decision latency",
+        unit="ms",
+    )
+    _GOV_BYPASS_RATE = meter.create_observable_gauge(
+        "guardrail_bypass_rate",
+        description="Fraction of recent guardrail events that bypassed enforcement",
+        callbacks=[_guardrail_bypass_callback],
+    )
+    _GOV_BLOCK_RATE = meter.create_observable_gauge(
+        "guardrail_block_rate",
+        description="Fraction of recent guardrail events that ended in block",
+        callbacks=[_guardrail_block_callback],
+    )
+    _GOV_REDACT_RATE = meter.create_observable_gauge(
+        "guardrail_redact_rate",
+        description="Fraction of recent guardrail events that ended in redact",
+        callbacks=[_guardrail_redact_callback],
+    )
+    _GOV_RECENT_DECISIONS = meter.create_observable_gauge(
+        "guardrail_recent_decisions",
+        description="Number of guardrail decisions seen in the recent window",
+        callbacks=[_guardrail_recent_count_callback],
+    )
 
     # ---- logs (correlated to traces automatically via the active span context) ----
     try:
@@ -260,6 +361,38 @@ def record_llm_usage(component: str, input_tokens: int, output_tokens: int,
             attrs["model"] = model
         _LLM_TOKENS.add(input_tokens, {**attrs, "token_type": "input"})
         _LLM_TOKENS.add(output_tokens, {**attrs, "token_type": "output"})
+
+
+def record_guardrail_decision(decision: Any) -> None:
+    """Record a guardrail decision into metrics and the active span."""
+    _init()
+    span = trace.get_current_span()
+    attrs = _guardrail_decision_attrs(decision)
+    if span is not None and span.is_recording():
+        for key, value in attrs.items():
+            span.set_attribute(f"guardrail.{key}", value)
+        span.set_attribute("guardrail.risk_score", getattr(decision, "risk_score", 0))
+        span.set_attribute("guardrail.latency_ms", getattr(decision, "latency_ms", 0.0))
+        reason = getattr(decision, "reason", None)
+        if reason:
+            span.set_attribute("guardrail.reason", _summarize(reason, 500))
+        rule_id = getattr(decision, "rule_id", None)
+        if rule_id:
+            span.set_attribute("guardrail.rule_id", _summarize(rule_id, 200))
+
+    if _GOV_DECISIONS is None:
+        return
+
+    metric_attrs = {
+        "stage": attrs["stage"],
+        "policy": attrs["policy"],
+        "event_type": attrs["event_type"],
+        "bypassed": attrs["bypassed"],
+        "hard_block": attrs["hard_block"],
+    }
+    _GOV_DECISIONS.add(1, metric_attrs)
+    _GOV_RISK_SCORE.record(float(getattr(decision, "risk_score", 0)), metric_attrs)
+    _GOV_DECISION_LATENCY.record(float(getattr(decision, "latency_ms", 0.0)), metric_attrs)
 
 
 def record_handled_error(error_type: str, message: str, **attrs: Any) -> None:

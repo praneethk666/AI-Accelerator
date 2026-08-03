@@ -37,7 +37,7 @@ class VectorStore:
         dim        = config["embeddings"]["dense_dim"]
         collection = config["database"]["qdrant_collection"]
 
-        store = QdrantStore(dim, collection)
+        store = QdrantStore(dim, collection, config=config)
         try:
             hits = store.search_dense(query_vector, filters=filters, top_n=top_k)
         finally:

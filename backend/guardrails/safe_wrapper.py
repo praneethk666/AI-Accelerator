@@ -21,6 +21,7 @@ from typing import Callable, Optional
 from backend.guardrails.guard_decision import (
     FailMode, GuardDecision, PolicyDecision, SAFE_REPLY_MESSAGE, STAGE_FAIL_MODES,
 )
+from backend.core.tracing import record_guardrail_decision
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,10 @@ def guardrail_safe(stage: str, version: str = "1.0.0"):
                     _ring_buffer()(decision, session_id="")
                 except Exception:
                     pass   # ring buffer itself must not crash anything
+                try:
+                    record_guardrail_decision(decision)
+                except Exception:
+                    pass
                 return decision
         return wrapper
     return decorator

@@ -15,6 +15,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from backend.guardrails.ring_buffer import add_event as rb_add
+from backend.core.tracing import record_guardrail_decision
 
 if TYPE_CHECKING:
     from backend.guardrails.guard_decision import GuardDecision
@@ -37,6 +38,10 @@ def log_event(decision: "GuardDecision", session_id: str = "", config: dict | No
     """
     # 1. Ring buffer (always, synchronously — never fails)
     rb_add(decision, session_id)
+    try:
+        record_guardrail_decision(decision)
+    except Exception:
+        pass
 
     # 2. Postgres (background thread — fire-and-forget)
     if (config or {}).get("guardrails", {}).get("logging", {}).get("enabled", True):
@@ -51,10 +56,10 @@ def log_event(decision: "GuardDecision", session_id: str = "", config: dict | No
 def _write_postgres(decision: "GuardDecision", session_id: str, config: dict | None) -> None:
     """Write to guardrail_events (and security_audit_log if applicable). Never raises."""
     try:
-        from backend.core.config import get_db_url
+        from backend.storage.postgres_store import dsn_from_env
         import psycopg2
 
-        db_url = get_db_url(config or {})
+        db_url = dsn_from_env()
         if not db_url:
             return
 

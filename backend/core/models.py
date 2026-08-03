@@ -100,6 +100,26 @@ def warm_up(config: dict | None = None) -> None:
     _try("reranker", get_reranker, 120)
 
 
+def _post_with_retry(url: str, headers: dict, json_data: dict, timeout: int = 30, max_retries: int = 5):
+    import time
+    import requests
+    backoff_factor = 2.0
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            status_code = getattr(e.response, "status_code", None) if e.response is not None else None
+            if (status_code == 429 or (status_code and 500 <= status_code < 600)) and attempt < max_retries - 1:
+                retry_after = e.response.headers.get("Retry-After") if e.response is not None else None
+                sleep_time = int(retry_after) if (retry_after and retry_after.isdigit()) else (backoff_factor ** attempt)
+                print(f"Jina API returned {status_code}. Retrying in {sleep_time}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(sleep_time)
+                continue
+            raise e
+
+
 class JinaEmbeddingsAPIClient:
     """API client that calls Jina AI's hosted Embeddings API instead of running SentenceTransformers locally."""
 
@@ -143,8 +163,64 @@ class JinaEmbeddingsAPIClient:
                 "input": chunk,
                 "truncate": True,
             }
-            response = requests.post(self.url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
+            response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
+            res_json = response.json()
+
+            # Ensure correct ordering based on response indices
+            sorted_data = sorted(res_json["data"], key=lambda x: x["index"])
+            all_embeddings.extend([item["embedding"] for item in sorted_data])
+
+        result = np.array(all_embeddings)
+        return result[0] if is_single else result
+
+
+class OpenAIEmbeddingsAPIClient:
+    """API client that calls OpenAI's hosted Embeddings API instead of running SentenceTransformers locally."""
+
+    def __init__(self, model_name: str, api_key: str | None = None, base_url: str | None = None, dimensions: int | None = None) -> None:
+        self.model_name = model_name
+        self.api_key = api_key
+        self.url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/embeddings"
+        self.dimensions = dimensions
+
+    def encode(
+        self,
+        sentences: str | list[str],
+        normalize_embeddings: bool = True,
+        batch_size: int = 16,
+    ):
+        """Replicates SentenceTransformer's encode method signature."""
+        if not self.api_key:
+            raise ValueError(
+                "OpenAI API Key is missing. Please set OPENAI_API_KEY in your environment or global.yaml."
+            )
+
+        is_single = isinstance(sentences, str)
+        input_list = [sentences] if is_single else list(sentences)
+
+        if not input_list:
+            import numpy as np
+            return np.array([])
+
+        import requests
+        import numpy as np
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        all_embeddings = []
+        for i in range(0, len(input_list), batch_size):
+            chunk = input_list[i : i + batch_size]
+            data = {
+                "model": self.model_name,
+                "input": chunk,
+            }
+            if self.dimensions is not None:
+                data["dimensions"] = self.dimensions
+
+            response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
             res_json = response.json()
 
             # Ensure correct ordering based on response indices
@@ -156,8 +232,8 @@ class JinaEmbeddingsAPIClient:
 
 
 def get_dense_model(config: dict):
-    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim)
-    or the JinaEmbeddingsAPIClient."""
+    """Return the shared SentenceTransformer dense embedder (default BAAI/bge-m3, 1024-dim),
+    the JinaEmbeddingsAPIClient, or the OpenAIEmbeddingsAPIClient."""
     global _dense_model
     if _dense_model is None:
         with _model_lock:
@@ -170,6 +246,23 @@ def get_dense_model(config: dict):
                     import os
                     api_key = embed_cfg.get("dense_api_key") or os.environ.get("JINA_API_KEY")
                     _dense_model = JinaEmbeddingsAPIClient(model_name, api_key)
+                elif provider == "openai":
+                    import os
+                    api_key = embed_cfg.get("dense_api_key") or os.environ.get("OPENAI_API_KEY")
+                    base_url = embed_cfg.get("dense_base_url") or os.environ.get("OPENAI_BASE_URL")
+                    dimensions = embed_cfg.get("dense_dim")
+                    # Convert dimensions to int if present
+                    if dimensions is not None:
+                        try:
+                            dimensions = int(dimensions)
+                        except (ValueError, TypeError):
+                            dimensions = None
+                    _dense_model = OpenAIEmbeddingsAPIClient(
+                        model_name=model_name,
+                        api_key=api_key,
+                        base_url=base_url,
+                        dimensions=dimensions
+                    )
                 else:
                     from sentence_transformers import SentenceTransformer
                     _dense_model = SentenceTransformer(model_name, trust_remote_code=True)
@@ -221,8 +314,7 @@ class JinaRerankerAPIClient:
             "documents": documents,
         }
 
-        response = requests.post(self.url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
+        response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
         res_json = response.json()
 
         # Jina returns a list of results sorted by score: [{"index": idx, "relevance_score": score}, ...]

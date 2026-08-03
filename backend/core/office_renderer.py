@@ -11,6 +11,78 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
+def _render_pptx_slides_com(input_path: str, output_dir: str) -> int:
+    import win32com.client
+    powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
+    presentations = None
+    deck = None
+    slides = None
+    slide = None
+    try:
+        presentations = powerpoint.Presentations
+        # Try opening hidden first (WithWindow=False)
+        try:
+            deck = presentations.Open(os.path.abspath(input_path), ReadOnly=True, WithWindow=False)
+        except Exception as e:
+            logger.warning("PowerPoint open hidden failed: %s. Retrying with default window context...", e)
+            deck = presentations.Open(os.path.abspath(input_path), ReadOnly=True)
+
+        slides = deck.Slides
+        total_slides = slides.Count
+        
+        # Try fast native batch export first!
+        try:
+            deck.Export(os.path.abspath(output_dir), "JPG")
+            # PowerPoint native export saves slides inside output_dir as Slide1.JPG, Slide2.JPG, etc.
+            # Let's check and rename them to p1.jpg, p2.jpg, etc.
+            import glob
+            slide_files = glob.glob(os.path.join(output_dir, "Slide*.JPG")) + glob.glob(os.path.join(output_dir, "Slide*.jpg"))
+            # If we found native export files, rename them
+            if len(slide_files) >= total_slides:
+                for s_path in slide_files:
+                    s_name = os.path.basename(s_path)
+                    # extract digits
+                    digits = "".join([c for c in s_name if c.isdigit()])
+                    if digits:
+                        idx = int(digits)
+                        dest_path = os.path.join(output_dir, f"p{idx}.jpg")
+                        # Remove existing if any
+                        if os.path.isfile(dest_path):
+                            os.remove(dest_path)
+                        os.rename(s_path, dest_path)
+                logger.info("Successfully rendered %d slides to JPEG using PowerPoint COM native Export", total_slides)
+                return total_slides
+        except Exception as export_err:
+            logger.warning("PowerPoint native batch Export failed: %s. Falling back to individual slide export loop...", export_err)
+
+        # Export each slide to the output directory via loop
+        for i in range(1, total_slides + 1):
+            slide = slides(i)
+            out_path = os.path.join(output_dir, f"p{i}.jpg")
+            if os.path.isfile(out_path):
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+            slide.Export(os.path.abspath(out_path), "JPG")
+            slide = None
+        
+        logger.info("Successfully rendered %d slides to JPEG using PowerPoint COM slide loop", total_slides)
+        return total_slides
+    finally:
+        # Release all COM wrapper references. Do not call deck.Close() or powerpoint.Quit()
+        # explicitly as they can trigger early termination of the PowerPoint process,
+        # which causes other active COM references (like slides/presentations) to become
+        # disconnected and raise RPC_E_DISCONNECTED exceptions during finalization.
+        slide = None
+        slides = None
+        deck = None
+        presentations = None
+        powerpoint = None
+        import gc
+        gc.collect()
+
+
 def render_pptx_slides(input_path: str, output_dir: str) -> int:
     """Render slides of a PPTX presentation to JPEG/PNG images.
 
@@ -25,73 +97,18 @@ def render_pptx_slides(input_path: str, output_dir: str) -> int:
     # Try Windows COM object first (since user is on Windows)
     if os.name == "nt":
         try:
-            import win32com.client
             import pythoncom
-            # Initialize COM for the active thread context
             pythoncom.CoInitialize()
-            
-            logger.info("Attempting PowerPoint COM slide rendering for %s", os.path.basename(input_path))
-            powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
-            deck = None
             try:
-                # Try opening hidden first (WithWindow=False)
-                try:
-                    deck = powerpoint.Presentations.Open(os.path.abspath(input_path), ReadOnly=True, WithWindow=False)
-                except Exception as e:
-                    logger.warning("PowerPoint open hidden failed: %s. Retrying with default window context...", e)
-                    deck = powerpoint.Presentations.Open(os.path.abspath(input_path), ReadOnly=True)
-
-                total_slides = deck.Slides.Count
-                
-                # Try fast native batch export first!
-                try:
-                    deck.Export(os.path.abspath(output_dir), "JPG")
-                    # PowerPoint native export saves slides inside output_dir as Slide1.JPG, Slide2.JPG, etc.
-                    # Let's check and rename them to p1.jpg, p2.jpg, etc.
-                    import glob
-                    slide_files = glob.glob(os.path.join(output_dir, "Slide*.JPG")) + glob.glob(os.path.join(output_dir, "Slide*.jpg"))
-                    # If we found native export files, rename them
-                    if len(slide_files) >= total_slides:
-                        for s_path in slide_files:
-                            s_name = os.path.basename(s_path)
-                            # extract digits
-                            digits = "".join([c for c in s_name if c.isdigit()])
-                            if digits:
-                                idx = int(digits)
-                                dest_path = os.path.join(output_dir, f"p{idx}.jpg")
-                                # Remove existing if any
-                                if os.path.isfile(dest_path):
-                                    os.remove(dest_path)
-                                os.rename(s_path, dest_path)
-                        logger.info("Successfully rendered %d slides to JPEG using PowerPoint COM native Export", total_slides)
-                        return total_slides
-                except Exception as export_err:
-                    logger.warning("PowerPoint native batch Export failed: %s. Falling back to individual slide export loop...", export_err)
-
-                # Export each slide to the output directory via loop
-                for i in range(1, total_slides + 1):
-                    slide = deck.Slides(i)
-                    out_path = os.path.join(output_dir, f"p{i}.jpg")
-                    if os.path.isfile(out_path):
-                        try:
-                            os.remove(out_path)
-                        except Exception:
-                            pass
-                    slide.Export(os.path.abspath(out_path), "JPG")
-                
-                logger.info("Successfully rendered %d slides to JPEG using PowerPoint COM slide loop", total_slides)
-                return total_slides
+                logger.info("Attempting PowerPoint COM slide rendering for %s", os.path.basename(input_path))
+                return _render_pptx_slides_com(input_path, output_dir)
             finally:
-                if deck:
-                    try:
-                        deck.Close()
-                    except Exception:
-                        pass
+                import gc
+                gc.collect()
                 try:
-                    powerpoint.Quit()
+                    pythoncom.CoUninitialize()
                 except Exception:
                     pass
-                pythoncom.CoUninitialize()
         except Exception as e:
             logger.warning("Windows COM slide rendering failed: %s. Trying LibreOffice...", e)
 

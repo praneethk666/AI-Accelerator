@@ -127,15 +127,45 @@ def record_from_message(kind: str, message, *, prompt=None, provider=None, model
     Safe to call even when the provider didn't return usage info (records zeros).
     `context_tokens` is set to that call's own input_tokens — the size of the
     context actually sent for THIS call — so the sink can track the largest one
-    across the whole run. Pass prompt/provider/model to also audit-log the raw
-    response (message.content)."""
+    across the whole run. Pass prompt/provider/model to audit-log the raw
+    prompt and response."""
     um = getattr(message, "usage_metadata", None) or {}
     input_tokens = um.get("input_tokens", 0) or 0
     output_tokens = um.get("output_tokens", 0) or 0
     reasoning_tokens = (um.get("output_token_details") or {}).get("reasoning", 0) or 0
+
+    # Extract raw response text or tool calls
+    raw_response = getattr(message, "content", None)
+    tool_calls = getattr(message, "tool_calls", None)
+    if (not raw_response or not str(raw_response).strip()) and tool_calls:
+        import json
+        try:
+            raw_response = json.dumps(tool_calls, default=str)
+        except Exception:
+            raw_response = str(tool_calls)
+    elif raw_response is None and message is not None:
+        raw_response = str(message)
+
+    # Format prompt safely if provided as a list of messages/dicts or other objects
+    formatted_prompt = prompt
+    if prompt is not None and not isinstance(prompt, str):
+        if isinstance(prompt, list):
+            lines = []
+            for item in prompt:
+                if isinstance(item, dict):
+                    lines.append(f"[{str(item.get('role', 'user')).upper()}]: {item.get('content', '')}")
+                elif hasattr(item, "content"):
+                    role = getattr(item, "type", item.__class__.__name__)
+                    lines.append(f"[{str(role).upper()}]: {getattr(item, 'content', '')}")
+                else:
+                    lines.append(str(item))
+            formatted_prompt = "\n\n".join(lines)
+        else:
+            formatted_prompt = str(prompt)
+
     record(kind, input_tokens, output_tokens,
            reasoning_tokens=reasoning_tokens, context_tokens=input_tokens,
-           prompt=prompt, raw_response=getattr(message, "content", None) if prompt is not None else None,
+           prompt=formatted_prompt, raw_response=str(raw_response) if raw_response is not None else None,
            provider=provider, model=model)
 
 

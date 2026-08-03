@@ -44,12 +44,15 @@ def search_documents(
         conversation_history=conversation_history,
     )
     citations = list(final.get("citations") or [])
-    return {
+    res = {
         "answer": final.get("answer", ""),
         "citations": citations,
         "sources": _build_sources(citations),
         "trace_id": final.get("trace_id"),
     }
+    if final.get("ambiguity"):
+        res["ambiguity"] = final["ambiguity"]
+    return res
 
 
 class SearchDocumentsTool:
@@ -109,7 +112,7 @@ class SearchDocumentsTool:
     }
 
     def run(self, query: str, document_scope: list[str] | str | None = None,
-            doc_type: str | None = None, industry: str | None = None) -> dict[str, Any]:
+            doc_type: str | None = None, industry: str | None = None, session_id: str | None = None) -> dict[str, Any]:
         if not document_scope or document_scope in ("null", "None"):
             document_scope = None
         elif isinstance(document_scope, str):
@@ -171,7 +174,7 @@ class SearchDocumentsTool:
                     resolved_scope.append(fid)
 
         final_scope = list(set(resolved_scope)) if resolved_scope else None
-        return search_documents(query, final_scope, doc_type=doc_type, industry=industry)
+        return search_documents(query, final_scope, doc_type=doc_type, industry=industry, session_id=session_id)
 
     __call__ = run
 
@@ -214,6 +217,6 @@ def _build_sources(citations: list[dict]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         sources.append(source)
-    # Sort by score descending — highest-confidence source first.
-    sources.sort(key=lambda s: (s.get("score") or 0.0), reverse=True)
+    # Preserve the exact citation order returned by the LLM answerer
+    # so the frontend PDF viewer opens directly to the primary cited page.
     return sources

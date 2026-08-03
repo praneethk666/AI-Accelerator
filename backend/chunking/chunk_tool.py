@@ -20,6 +20,8 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
+from concurrent.futures import ThreadPoolExecutor, Future
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -1062,10 +1064,15 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
         # for the real 429-storm evidence this fixes.
         pacing.pace("chunk_llm", float((config.get("chunking") or {}).get("min_interval_s", 0) or 0))
         llm = get_llm_for(config, config.get("chunking"))
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+        response = llm.invoke(messages)
         from backend.core import usage
-        usage.record_from_message("chunking", response)
+        from backend.core.llm_client import resolve_model_provider
+        model_name, provider_name = resolve_model_provider(config, config.get("chunking"))
+        usage.record_from_message("chunking", response, prompt=messages, model=model_name, provider=provider_name)
         res_text = (response.content or "").strip()
+
+        # Strip code block fences if returned by the LLM
         if res_text.startswith("```"):
             lines = res_text.splitlines()
             if lines and lines[0].startswith("```"):
@@ -1228,7 +1235,7 @@ def chunk_blocks(
     needs LOOKAHEAD — only carry short text forward if the upcoming heading
     itself turns out to be atomic-adjacent, which isn't knowable without peeking
     ahead in the block stream — bigger scope than a same-day fix."""
-    chunks: list[dict] = []
+    chunks: list[Any] = []
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
     buf_page = None               # page number of the first buffered block (cite start)
@@ -1264,6 +1271,50 @@ def chunk_blocks(
                 chunks.append(_make_chunk({"type": "text", "source_ref": _ref(buf_ref)},
                                           piece, document_id))
         buf_parts, buf_ref, buf_page, buf_heading_only = [], None, None, True
+
+    def _process_table_task(block_val, active_sec, prec_context, block_ref, heading_lead_val):
+        def _local_ref(x): return block_ref
+
+        # Real bug found live during this merge, 3-Aug: this used to call
+        # classify_table()/repair_table_with_llm() -- names that don't exist
+        # anywhere in this file (only _classify_table_for_repair/
+        # _repair_table_with_llm do), and the repair call was missing the
+        # required ref_fn argument. Also silently ignored repair_hard_tables
+        # (config gate to disable this LLM call entirely) -- restored below.
+        if repair_hard_tables and config is not None:
+            classification = _classify_table_for_repair(block_val, active_sec, prec_context)
+            if classification["needs_llm"]:
+                logger.info("Table needs LLM repair: %s (reasons: %s)", block_val.get("block_id"), classification["reasons"])
+                llm_chunks = _repair_table_with_llm(block_val, config, active_sec, prec_context, _local_ref)
+                if llm_chunks is not None:
+                    logger.info("Successfully repaired table with LLM, generated %d chunks", len(llm_chunks))
+                    return llm_chunks
+
+        trouble_chunks = _try_extract_troubleshooting_table_chunks(block_val, document_id, _local_ref)
+        if trouble_chunks: return trouble_chunks
+
+        alarm_chunks = _try_extract_alarm_table_chunks(block_val, document_id, _local_ref)
+        if alarm_chunks: return alarm_chunks
+
+        warning_chunks = _try_extract_warning_chunk(block_val, document_id, _local_ref)
+        if warning_chunks:
+            return warning_chunks if isinstance(warning_chunks, list) else [warning_chunks]
+
+        model_chunks = _try_extract_model_column_chunks(block_val, document_id, _local_ref)
+        if model_chunks: return model_chunks
+
+        text_val = (block_val.get("text") or "").strip()
+        if text_val or block_val.get("table_data"):
+            b = dict(block_val)
+            b["source_ref"] = block_ref
+            if split_large_tables:
+                return _split_table_block(b, size, document_id, heading_lead_val)
+            else:
+                l_text = f"{heading_lead_val}\n{text_val}".strip() if heading_lead_val else text_val
+                return [_make_chunk(b, l_text, document_id)]
+        return []
+
+    executor = ThreadPoolExecutor(max_workers=10)
 
     for block in blocks:
         btype = block.get("type")
@@ -1324,50 +1375,26 @@ def chunk_blocks(
                 continue
 
             if btype == "table":
-                # -1. Hard table (broken headers/rows, orphaned, or missing a context
-                # anchor like an alarm code the surrounding text names) -> LLM repair.
-                # Gated off by default (repair_hard_tables) since it's an LLM call per
-                # hard table; tried BEFORE the cheap deterministic extractors below
-                # specifically because a well-formed table with a missing context
-                # anchor would otherwise sail through them looking "fine" while still
-                # losing the one thing (e.g. the alarm code) that made it answerable.
-                if repair_hard_tables and config is not None:
-                    section_lead = _get_active_section()
-                    preceding_text = " ".join(preceding_blocks)
-                    classification = _classify_table_for_repair(block, section_lead, preceding_text)
-                    if classification["needs_llm"]:
-                        logger.info("table %s needs LLM repair (reasons: %s)",
-                                    block.get("block_id"), classification["reasons"])
-                        repaired = _repair_table_with_llm(block, config, section_lead, preceding_text, _ref)
-                        if repaired:
-                            chunks.extend(repaired)
-                            continue
-                        # else: fall through to the deterministic extractors below —
-                        # repair failing closed must never mean the table gets dropped.
+                # Hard-table LLM repair (repair_hard_tables gate), the alarm/
+                # troubleshooting/warning/model-column extractors, and the
+                # deterministic fallback are all inside _process_table_task now —
+                # submitted to the ThreadPoolExecutor below so slow LLM-repair
+                # calls for different tables run concurrently. pacing.pace()
+                # inside _repair_table_with_llm still serializes the actual
+                # rate-limited LLM calls via its per-key lock (see
+                # backend/core/pacing.py) — this only parallelizes the
+                # surrounding work (classification, deterministic extraction),
+                # not the pacing itself.
+                active_sec = _get_active_section()
+                prec_context = " ".join(preceding_blocks)
+                block_ref = _ref(block.get("source_ref"))
 
-                # 0. Check if table represents a Troubleshooting Cause & Action list
-                trouble_chunks = _try_extract_troubleshooting_table_chunks(block, document_id, _ref)
-                if trouble_chunks:
-                    chunks.extend(trouble_chunks)
-                    continue
-
-                alarm_chunks = _try_extract_alarm_table_chunks(block, document_id, _ref)
-                if alarm_chunks:
-                    chunks.extend(alarm_chunks)
-                    continue
-
-                warning_chunks = _try_extract_warning_chunk(block, document_id, _ref)
-                if warning_chunks:
-                    if isinstance(warning_chunks, list):
-                        chunks.extend(warning_chunks)
-                    else:
-                        chunks.append(warning_chunks)
-                    continue
-
-                model_chunks = _try_extract_model_column_chunks(block, document_id, _ref)
-                if model_chunks:
-                    chunks.extend(model_chunks)
-                    continue
+                fut = executor.submit(
+                    _process_table_task,
+                    block, active_sec, prec_context, block_ref, heading_lead
+                )
+                chunks.append(fut)
+                continue
 
             if btype == "image_caption":
                 # Compute dynamic confidence rating
@@ -1455,6 +1482,17 @@ def chunk_blocks(
                 preceding_blocks.pop(0)
 
     flush()
+    
+    final_chunks = []
+    for c in chunks:
+        if isinstance(c, Future):
+            final_chunks.extend(c.result())
+        else:
+            final_chunks.append(c)
+    chunks = final_chunks
+    
+    executor.shutdown(wait=True)
+    
     seen_texts: set[tuple] = set()
     deduped_chunks = []
     for c in chunks:

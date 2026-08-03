@@ -6,9 +6,11 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import axios from 'axios';
 import {
-  sendAgentChat, streamAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
+  sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
   patchAgentSession, stageFile, getFile, API_BASE_URL, getFiles,
+  ingestStagedFile, getProgress, initDirectIngest, cancelDirectIngest,
 } from '../api';
 import {
   PaperAirplaneIcon,
@@ -94,8 +96,7 @@ const buildViewableSources = (sources) => {
         return x.sheet === s.sheet;
       }
       return true;
-    }) === i)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    }) === i);
   console.log("buildViewableSources output result:", result);
   return result;
 };
@@ -204,7 +205,7 @@ const Tooltip = ({ children, content }) => {
 
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pageViewer, setPageViewer] = useState(null);
   // pageViewer: null | { pages: [{page, documentId, filename, score}], activeIdx: number }
   const [sessions, setSessions] = useState([]);
@@ -216,6 +217,12 @@ const ChatPage = () => {
   const setSessionLoading = (sessId, val) => {
     setLoadingSessions((prev) => ({ ...prev, [sessId]: val }));
   };
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  };
   const [error, setError] = useState(null);
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
@@ -226,6 +233,7 @@ const ChatPage = () => {
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const abortControllerRef = useRef(null);
   const chatContainerRef = useRef(null);
   const [showChatScrollDown, setShowChatScrollDown] = useState(false);
   const [allFiles, setAllFiles] = useState([]);
@@ -263,19 +271,75 @@ const ChatPage = () => {
     return () => clearTimeout(timer);
   }, [messages, loading]);
 
+  // Clean up direct ingestion intervals on unmount to prevent leaks and double updates
+  useEffect(() => {
+    return () => {
+      if (window.activeDirectPolls) {
+        Object.entries(window.activeDirectPolls).forEach(([msgId, poll]) => {
+          clearInterval(poll);
+        });
+        window.activeDirectPolls = {};
+      }
+      if (loadSessionsTimerRef.current) {
+        clearTimeout(loadSessionsTimerRef.current);
+      }
+    };
+  }, []);
+
   // Mirrors sessionId so an in-flight reply can check whether the user switched
   // conversations before it landed (otherwise A's answer appends under B).
   const sessionIdRef = useRef(sessionId);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
-  const streamControllerRef = useRef(null);
+  // Poll database for updates if the last message is a user message but we are not loading.
+  // This activates when the user reloads/reopens a session that is still being processed.
   useEffect(() => {
-    return () => {
-      if (streamControllerRef.current) {
-        streamControllerRef.current.abort();
-      }
-    };
-  }, []);
+    if (messages.length > 0 && messages[messages.length - 1].role === 'user' && !loading) {
+      const interval = setInterval(async () => {
+        try {
+          const res = await getAgentSession(sessionId);
+          const history = res.data || [];
+          if (history.length > 0) {
+            const latest = history[history.length - 1];
+            if (latest && latest.role === 'assistant') {
+              // Detect if this conversation had a file attachment so we can show
+              // "Ingesting..." instead of "Thinking..." on the assistant placeholder.
+              const hadFileAttachment = history.some(
+                (m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('📎')
+              );
+              setMessages(
+                history.map((m) => {
+                  let content = typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content) : '');
+                  if (m.role === 'user') {
+                    content = content
+                      // Replace path annotation with icon + filename
+                      .replace(/\s*\[Attached file:\s*(.+?)\s*(?:—|-)\s*path:[^\]]*\]/g, (_, fname) => `\n\n📎 ${fname.trim()}`)
+                      // Drop the now-redundant fallback sentinel (legacy stored messages)
+                      .replace(/^Please ingest this file\.\s*/i, '')
+                      .trim() || content;
+                  }
+                  return {
+                    role: m.role,
+                    content,
+                    toolCalls: m.tool_calls || [],
+                    tokenUsage: m.token_usage || null,
+                    traceId: m.trace_id || null,
+                    // Show "Ingesting..." on the empty placeholder if a file was attached
+                    ...(m.role === 'assistant' && !m.content && hadFileAttachment
+                      ? { isIngesting: true } : {}),
+                  };
+                })
+              );
+              clearInterval(interval);
+            }
+          }
+        } catch (err) {
+          console.error('Polling error:', err);
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [messages, loading, sessionId]);
 
 
   // Close dropdown on click outside (uses document listener, no shared ref)
@@ -301,7 +365,12 @@ const ChatPage = () => {
   }, []);
 
   // Automatically close sidebar when PDF Viewer opens, and open it when PDF Viewer closes
+  const isFirstMount = useRef(true);
   useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
     if (pageViewer) {
       setSidebarOpen(false);
     } else {
@@ -311,7 +380,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(); loadFiles(); }, []);
+  useEffect(() => { loadSessions(false, true); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {
@@ -319,12 +388,38 @@ const ChatPage = () => {
     getFile(fileId).then((res) => setContextFile(res.data)).catch(() => { });
   }, [fileId]);
 
-  const loadSessions = async () => {
-    try {
-      const res = await getAgentSessions();
-      setSessions(res.data || []);
-    } catch (err) {
-      console.error('Failed to load sessions:', err);
+  const loadSessionsTimerRef = useRef(null);
+  const loadSessions = async (autoSelect = false, immediate = false) => {
+    const fetchNow = async () => {
+      try {
+        const res = await getAgentSessions();
+        const loaded = res.data || [];
+        setSessions(loaded);
+        
+        if (autoSelect && loaded.length > 0) {
+          const sorted = [...loaded].sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return new Date(b.last_active) - new Date(a.last_active);
+          });
+          if (sorted[0]) {
+            handleSelectSession(sorted[0].session_id);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load sessions:', err);
+      }
+    };
+
+    if (immediate) {
+      if (loadSessionsTimerRef.current) {
+        clearTimeout(loadSessionsTimerRef.current);
+        loadSessionsTimerRef.current = null;
+      }
+      await fetchNow();
+    } else {
+      if (loadSessionsTimerRef.current) clearTimeout(loadSessionsTimerRef.current);
+      loadSessionsTimerRef.current = setTimeout(fetchNow, 600);
     }
   };
 
@@ -356,15 +451,58 @@ const ChatPage = () => {
     if (id === sessionId && messages.length > 0) return;
     try {
       const res = await getAgentSession(id);
-      setMessages(
-        (res.data || []).map((m) => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content) : ''),
-          toolCalls: m.tool_calls || [],
-          tokenUsage: m.token_usage || null,
-          traceId: m.trace_id || null,
-        }))
+      const rawHistory = res.data || [];
+      // Deduplicate consecutive identical user messages that can accumulate if
+      // the same session was submitted more than once (backend saves immediately).
+      const deduped = rawHistory.filter((m, i, arr) => {
+        if (m.role !== 'user') return true;
+        const prev = arr[i - 1];
+        return !(prev && prev.role === 'user' && prev.content === m.content);
+      });
+      const hadFile = deduped.some(
+        (m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('📎')
       );
+      setMessages(
+        deduped.map((m) => {
+          let content = typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content) : '');
+          if (m.role === 'user') {
+            content = content
+              .replace(/\s*\[Attached file:\s*(.+?)\s*(?:—|-)\s*path:[^\]]*\]/g, (_, fname) => `\n\n📎 ${fname.trim()}`)
+              .replace(/^Please ingest this file\.\s*/i, '')
+              .trim() || content;
+          }
+          return {
+            role: m.role,
+            content,
+            toolCalls: m.tool_calls || [],
+            tokenUsage: m.token_usage || null,
+            traceId: m.trace_id || null,
+            // Restore direct ingestion fields from DB metadata
+            type: m.type || m.metadata?.type,
+            filename: m.filename || m.metadata?.filename,
+            stagedPath: m.stagedPath || m.metadata?.stagedPath,
+            documentId: m.documentId || m.metadata?.documentId,
+            messageId: m.message_id || m.metadata?.message_id || m.messageId,
+            progressPct: m.progressPct || m.metadata?.progressPct || 0,
+            metrics: m.metrics || m.metadata?.metrics || [],
+            currentStep: m.currentStep || m.metadata?.currentStep || '',
+            // Show "Ingesting..." on an empty placeholder when a file was attached
+            ...(m.role === 'assistant' && !m.content && hadFile ? { isIngesting: true } : {}),
+          };
+        })
+      );
+
+      // Restart any active direct ingest progress polls
+      deduped.forEach((m) => {
+        const mType = m.type || m.metadata?.type;
+        const docId = m.documentId || m.metadata?.documentId;
+        const msgId = m.message_id || m.metadata?.message_id || m.messageId;
+        const fname = m.filename || m.metadata?.filename;
+        if (mType === 'ingest_progress' && docId && msgId) {
+          pollDirectIngest(msgId, docId, fname);
+        }
+      });
+
       setSessionId(id);
       setAttachedFile(null);
       setError(null);
@@ -448,10 +586,13 @@ const ChatPage = () => {
 
   // What the model sees vs. what the user sees in their own bubble differ when a
   // file is attached — the model gets an explicit path to reference.
+  // When the user typed nothing, skip the fallback sentinel entirely — the agent
+  // only needs the file path annotation; the bubble shows just "📎 filename".
   const composeSentText = (text, attachment) => {
     if (!attachment) return text;
-    const base = text.trim() || 'Please ingest this file.';
-    return `${base}\n\n[Attached file: ${attachment.filename} — path: ${attachment.file_path}]`;
+    const base = text.trim();
+    const annotation = `[Attached file: ${attachment.filename} — path: ${attachment.file_path}]`;
+    return base ? `${base}\n\n${annotation}` : annotation;
   };
 
   const agentMessageFromResponse = (data, originalText) => ({
@@ -470,6 +611,12 @@ const ChatPage = () => {
   // The agent asked the user to choose (needs_clarification): send their pick as the
   // next message so the agent proceeds scoped to that choice.
   const handleClarify = async (optionText, msgIdx) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqSession = sessionId;
     setMessages((prev) => [
       ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
@@ -493,207 +640,55 @@ const ChatPage = () => {
         tokenUsage: null,
         traceId: null,
         messageId,
-        isStreaming: true,
         originalText: optionText,
       },
     ]);
 
     try {
-      if (streamControllerRef.current) {
-        streamControllerRef.current.abort();
+      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal);
+      if (sessionIdRef.current !== reqSession) {
+        setSessionLoading(reqSession, false);
+        loadSessions();
+        return;
       }
-
-      const controller = await streamAgentChat(
-        optionText,
-        reqSession,
-        messageId,
-        false,
-        null,
-        {
-          onToken: (text) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId ? { ...m, content: m.content + text } : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: text,
-                    toolCalls: [],
-                    pending: [],
-                    messageId,
-                    isStreaming: true,
-                    originalText: optionText,
-                  }
-                ];
+      const data = res.data;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                status: data.status,
+                content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
+                toolCalls: data.tool_calls || [],
+                pending: data.pending || [],
+                question: data.question || null,
+                options: data.options || [],
+                tokenUsage: data.token_usage || null,
+                traceId: data.trace_id || null,
               }
-            });
-          },
-          onToolStart: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: '',
-                    toolCalls: [{ name, args: {}, status: 'running' }],
-                    pending: [],
-                    messageId,
-                    isStreaming: true,
-                    originalText: optionText,
-                  }
-                ];
-              }
-            });
-          },
-          onToolEnd: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        toolCalls: (m.toolCalls || []).map((t) =>
-                          t.name === name ? { ...t, status: 'completed' } : t
-                        ),
-                      }
-                    : m
-                );
-              } else {
-                return prev;
-              }
-            });
-          },
-          onDone: (fullText) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              loadSessions();
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: fullText,
-                    toolCalls: [],
-                    pending: [],
-                    messageId,
-                    isStreaming: false,
-                    originalText: optionText,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            loadSessions();
-          },
-          onMetadata: (metadata) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        status: metadata.status,
-                        content: metadata.answer,
-                        toolCalls: metadata.tool_calls || [],
-                        tokenUsage: metadata.token_usage || null,
-                        traceId: metadata.trace_id || null,
-                        isStreaming: false,
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    status: metadata.status,
-                    content: metadata.answer,
-                    toolCalls: metadata.tool_calls || [],
-                    tokenUsage: metadata.token_usage || null,
-                    traceId: metadata.trace_id || null,
-                    messageId,
-                    isStreaming: false,
-                    originalText: optionText,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            updatePageViewer(metadata);
-          },
-          onError: (errMsg) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        content: `Error: ${errMsg}`,
-                        isError: true,
-                        isStreaming: false,
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: `Error: ${errMsg}`,
-                    isError: true,
-                    isStreaming: false,
-                    messageId,
-                    originalText: optionText,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            setError(errMsg);
-          },
-        }
+            : m
+        )
       );
-
-      streamControllerRef.current = controller;
+      setSessionLoading(reqSession, false);
+      loadSessions();
+      updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Clarify error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
@@ -704,44 +699,24 @@ const ChatPage = () => {
                 ...m,
                 content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
                 isError: true,
-                isStreaming: false,
               }
             : m
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
+
   // Extract page-level sources from a response and open/close the page viewer.
   // Reuses parseSources (slide/sheet -> page remap) + buildViewableSources
   // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
   // per-message "View Source" button in MessageRow.
   const updatePageViewer = (data) => {
-    const allSources = parseSources(data.tool_calls || []);
-
-    const toolCalls = data.tool_calls || [];
-    for (const call of toolCalls) {
-      if (call.name === 'excel_tst_tool') {
-        const filenameOrId = call.args?.filename_or_id;
-        const sheetName = call.args?.sheet_name;
-        if (filenameOrId) {
-          const matched = allFiles.find(
-            f => f.id === filenameOrId || f.document_id === filenameOrId ||
-                 f.filename === filenameOrId || f.filename?.toLowerCase() === filenameOrId.toLowerCase()
-          );
-          if (matched) {
-            allSources.push({
-              document_id: matched.document_id || matched.id,
-              filename: matched.filename,
-              page: sheetName || 1,
-              sheet: sheetName || null,
-              score: 1.0
-            });
-          }
-        }
-      }
-    }
-
+    const allSources = parseSources(data.tool_calls || [], allFiles);
     const viewableSources = buildViewableSources(allSources);
 
     if (viewableSources.length > 0) {
@@ -754,22 +729,36 @@ const ChatPage = () => {
   const handleSend = async () => {
     if (!input.trim() && !attachedFile) return;
 
+    // ── Fast path: file only (no question text) ───────────────────────────────
+    // Bypass the LLM agent entirely: show an inline approval card → on approve,
+    // call /files/ingest-staged directly → show live progress → success message.
+    if (attachedFile && !input.trim()) {
+      handleDirectIngest();
+      return;
+    }
+
+    // ── Normal path: text (+ optional file) → send to agent ──────────────────
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const displayText = attachedFile
       ? `${input.trim()}${input.trim() ? '\n\n' : ''}📎 ${attachedFile.filename}`
       : input;
     const sentText = composeSentText(input, attachedFile);
     const rawInput = input.trim();
 
-    // If we have a placeholder for the current session, update its title immediately
     setSessions((prev) =>
       prev.map((s) =>
         s.session_id === sessionId
           ? {
-            ...s,
-            title: rawInput ? rawInput.slice(0, 60) : (attachedFile ? attachedFile.filename : 'New chat'),
-            last_active: new Date().toISOString(),
-            isPlaceholder: false,
-          }
+              ...s,
+              title: rawInput ? rawInput.slice(0, 60) : (attachedFile ? attachedFile.filename : 'New chat'),
+              last_active: new Date().toISOString(),
+              isPlaceholder: false,
+            }
           : s
       )
     );
@@ -782,7 +771,269 @@ const ChatPage = () => {
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
-    // Generate messageId for de-duplication and state mapping
+    const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        pending: [],
+        question: null,
+        options: [],
+        tokenUsage: null,
+        traceId: null,
+        messageId,
+        originalText: sentText,
+        isIngesting: !!attachedFile,
+      },
+    ]);
+
+    try {
+      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal);
+      if (sessionIdRef.current !== reqSession) {
+        setSessionLoading(reqSession, false);
+        loadSessions();
+        return;
+      }
+      const data = res.data;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                status: data.status,
+                content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
+                toolCalls: data.tool_calls || [],
+                pending: data.pending || [],
+                question: data.question || null,
+                options: data.options || [],
+                tokenUsage: data.token_usage || null,
+                traceId: data.trace_id || null,
+              }
+            : m
+        )
+      );
+      setSessionLoading(reqSession, false);
+      loadSessions();
+      updatePageViewer(data);
+    } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
+      console.error('Chat error:', err);
+      if (sessionIdRef.current !== reqSession) return;
+      setSessionLoading(reqSession, false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+                isError: true,
+              }
+            : m
+        )
+      );
+      setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+    }
+  };
+
+  // ── Direct (agent-free) ingestion handlers ────────────────────────────────
+
+  /** Polls progress of an active staged ingestion. Re-used on reload. */
+  function pollDirectIngest(messageId, documentId, filename) {
+    // Keep a local set of active polls to prevent starting duplicate intervals
+    if (!window.activeDirectPolls) window.activeDirectPolls = {};
+    if (window.activeDirectPolls[messageId]) return;
+    
+    const poll = setInterval(async () => {
+      try {
+        const prog = await getProgress(documentId);
+        const { status, metrics } = prog.data;
+
+        // Compute an overall % from completed steps
+        const steps = Array.isArray(metrics) ? metrics : [];
+        const done = steps.filter((s) => s.status === 'done').length;
+        const total = steps.length || 1;
+        const pct = Math.round((done / total) * 100);
+        const runningStep = steps.find((s) => s.status === 'running');
+        const currentStep = runningStep ? runningStep.step : (done === total ? 'Complete' : 'Processing…');
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.messageId === messageId
+              ? { ...m, progressPct: pct, currentStep, metrics: steps }
+              : m
+          )
+        );
+
+        const lowerStatus = (status || '').toLowerCase();
+        if (lowerStatus === 'ready' || lowerStatus === 'done' || lowerStatus === 'failed') {
+          clearInterval(poll);
+          delete window.activeDirectPolls[messageId];
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? { ...m, type: (lowerStatus === 'ready' || lowerStatus === 'done') ? 'ingest_done' : 'ingest_error', progressPct: 100 }
+                : m
+            )
+          );
+          // Refresh the ingestion page file list
+          loadFiles();
+          loadSessions();
+        }
+      } catch {
+        clearInterval(poll);
+        delete window.activeDirectPolls[messageId];
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.messageId === messageId ? { ...m, type: 'ingest_error' } : m
+          )
+        );
+      }
+    }, 2000);
+    
+    window.activeDirectPolls[messageId] = poll;
+  };
+
+  /** Called when user sends a file with no question text. Shows approval card. */
+  const handleDirectIngest = async () => {
+    const file = attachedFile; // { file_path, filename }
+    const msgId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Update session title to the filename
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.session_id === sessionId
+          ? { ...s, title: `📎 ${file.filename}`, last_active: new Date().toISOString(), isPlaceholder: false }
+          : s
+      )
+    );
+
+    // Add user bubble + the approval assistant card in one shot locally
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: `📎 ${file.filename}` },
+      {
+        role: 'assistant',
+        content: '',
+        type: 'ingest_approval',
+        messageId: msgId,
+        filename: file.filename,
+        stagedPath: file.file_path,
+      },
+    ]);
+
+    setInput('');
+    setAttachedFile(null);
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+
+    // Persist this initial state (approval card) to the database session history
+    try {
+      await initDirectIngest(sessionId, {
+        filename: file.filename,
+        staged_path: file.file_path,
+        message_id: msgId
+      });
+      loadSessions();
+    } catch (err) {
+      console.error('Failed to persist direct-ingest initial turns:', err);
+    }
+  };
+
+  /** Called when user clicks "Ingest" on the approval card. */
+  const handleIngestApprove = async (messageId, stagedPath, filename) => {
+    // Switch to progress state locally immediately
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.messageId === messageId
+          ? { ...m, type: 'ingest_progress', documentId: null, progressPct: 0, currentStep: 'Starting…' }
+          : m
+      )
+    );
+
+    try {
+      const res = await ingestStagedFile({
+        file_path: stagedPath,
+        filename,
+        session_id: sessionId,
+        message_id: messageId,
+      });
+      const documentId = res.data.document_id || res.data.id;
+
+      // Store documentId so the poll can use it
+      setMessages((prev) =>
+        prev.map((m) => (m.messageId === messageId ? { ...m, documentId } : m))
+      );
+
+      // Start progress polling
+      pollDirectIngest(messageId, documentId, filename);
+    } catch (err) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? { ...m, type: 'ingest_error', errorMsg: err.message }
+            : m
+        )
+      );
+    }
+  };
+
+  /** Called when user clicks "Cancel" on the approval card. */
+  const handleIngestCancel = async (messageId) => {
+    // Retrieve the filename from message
+    const msg = messages.find((m) => m.messageId === messageId);
+    const filename = msg ? msg.filename : '';
+
+    // Update state locally
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.messageId === messageId ? { ...m, type: 'ingest_cancelled' } : m
+      )
+    );
+
+    // Persist cancellation to DB
+    try {
+      await cancelDirectIngest(sessionId, { message_id: messageId, filename });
+    } catch (err) {
+      console.error('Failed to persist direct ingest cancel state:', err);
+    }
+  };
+
+  const handleRetryResponse = async () => {
+    if (messages.length === 0) return;
+    const lastUserMsg = messages[messages.length - 1];
+    if (lastUserMsg.role !== 'user') return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const reqSession = sessionId;
+    setSessionLoading(reqSession, true);
+    setError(null);
+
     const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     // Add empty placeholder assistant message
@@ -798,214 +1049,56 @@ const ChatPage = () => {
         tokenUsage: null,
         traceId: null,
         messageId,
-        isStreaming: true,
-        originalText: sentText,
-        isIngesting: !!attachedFile,
+        originalText: lastUserMsg.content,
       },
     ]);
 
     try {
-      if (streamControllerRef.current) {
-        streamControllerRef.current.abort();
+      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal);
+      if (sessionIdRef.current !== reqSession) {
+        setSessionLoading(reqSession, false);
+        loadSessions();
+        return;
       }
-
-      const controller = await streamAgentChat(
-        sentText,
-        reqSession,
-        messageId,
-        false,
-        null,
-        {
-          onToken: (text) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId ? { ...m, content: m.content + text } : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: text,
-                    toolCalls: [],
-                    pending: [],
-                    messageId,
-                    isStreaming: true,
-                    originalText: sentText,
-                    isIngesting: !!attachedFile,
-                  }
-                ];
+      const data = res.data;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                status: data.status,
+                content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
+                toolCalls: data.tool_calls || [],
+                pending: data.pending || [],
+                question: data.question || null,
+                options: data.options || [],
+                tokenUsage: data.token_usage || null,
+                traceId: data.trace_id || null,
               }
-            });
-          },
-          onToolStart: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: '',
-                    toolCalls: [{ name, args: {}, status: 'running' }],
-                    pending: [],
-                    messageId,
-                    isStreaming: true,
-                    originalText: sentText,
-                    isIngesting: !!attachedFile,
-                  }
-                ];
-              }
-            });
-          },
-          onToolEnd: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        toolCalls: (m.toolCalls || []).map((t) =>
-                          t.name === name ? { ...t, status: 'completed' } : t
-                        ),
-                      }
-                    : m
-                );
-              } else {
-                return prev;
-              }
-            });
-          },
-          onDone: (fullText) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              loadSessions();
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: fullText,
-                    toolCalls: [],
-                    pending: [],
-                    messageId,
-                    isStreaming: false,
-                    originalText: sentText,
-                    isIngesting: !!attachedFile,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            loadSessions();
-          },
-          onMetadata: (metadata) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        status: metadata.status,
-                        content: metadata.answer,
-                        toolCalls: metadata.tool_calls || [],
-                        tokenUsage: metadata.token_usage || null,
-                        traceId: metadata.trace_id || null,
-                        isStreaming: false,
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    status: metadata.status,
-                    content: metadata.answer,
-                    toolCalls: metadata.tool_calls || [],
-                    tokenUsage: metadata.token_usage || null,
-                    traceId: metadata.trace_id || null,
-                    messageId,
-                    isStreaming: false,
-                    originalText: sentText,
-                    isIngesting: !!attachedFile,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            updatePageViewer(metadata);
-          },
-          onError: (errMsg) => {
-            if (sessionIdRef.current !== reqSession) {
-              setSessionLoading(reqSession, false);
-              return;
-            }
-            setMessages((prev) => {
-              const exists = prev.some((m) => m.messageId === messageId);
-              if (exists) {
-                return prev.map((m) =>
-                  m.messageId === messageId
-                    ? {
-                        ...m,
-                        content: `Error: ${errMsg}`,
-                        isError: true,
-                        isStreaming: false,
-                      }
-                    : m
-                );
-              } else {
-                return [
-                  ...prev,
-                  {
-                    role: 'assistant',
-                    content: `Error: ${errMsg}`,
-                    isError: true,
-                    isStreaming: false,
-                    messageId,
-                    originalText: sentText,
-                    isIngesting: !!attachedFile,
-                  }
-                ];
-              }
-            });
-            setSessionLoading(reqSession, false);
-            setError(errMsg);
-          },
-        }
+            : m
+        )
       );
-
-      streamControllerRef.current = controller;
+      setSessionLoading(reqSession, false);
+      loadSessions();
+      updatePageViewer(data);
     } catch (err) {
-      console.error('Chat error:', err);
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
+      console.error('Retry error:', err);
       if (sessionIdRef.current !== reqSession) return;
       setSessionLoading(reqSession, false);
       setMessages((prev) =>
@@ -1015,12 +1108,15 @@ const ChatPage = () => {
                 ...m,
                 content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
                 isError: true,
-                isStreaming: false,
               }
             : m
         )
       );
       setError(err.message);
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -1030,13 +1126,20 @@ const ChatPage = () => {
       setMessages((prev) => prev.map((m, i) => (i === msgIdx ? { ...m, status: 'declined' } : m)));
       return;
     }
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const reqSession = sessionId;
     setSessionLoading(reqSession, true);
 
     // Re-use the existing messageId or generate one if not present
     const messageId = msg.messageId || (crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
-    // Reset this message state to prepare for streaming approval response
+    // Reset this message state to prepare for response
     setMessages((prev) =>
       prev.map((m, i) =>
         i === msgIdx
@@ -1050,95 +1153,59 @@ const ChatPage = () => {
               tokenUsage: null,
               traceId: null,
               messageId,
-              isStreaming: true,
             }
           : m
       )
     );
 
     try {
-      if (streamControllerRef.current) {
-        streamControllerRef.current.abort();
+      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal);
+      if (sessionIdRef.current !== reqSession) {
+        setSessionLoading(reqSession, false);
+        loadSessions();
+        return;
       }
-
-      const controller = await streamAgentChat(
-        msg.originalText,
-        reqSession,
-        messageId,
-        true,
-        msg.pending || [],
-        {
-          onToken: (text) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.messageId === messageId ? { ...m, content: m.content + text } : m
-              )
-            );
-          },
-          onToolStart: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.messageId === messageId
-                  ? {
-                      ...m,
-                      toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
-                    }
-                  : m
-              )
-            );
-          },
-          onToolEnd: (name) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.messageId === messageId
-                  ? {
-                      ...m,
-                      toolCalls: (m.toolCalls || []).map((t) =>
-                        t.name === name ? { ...t, status: 'completed' } : t
-                      ),
-                    }
-                  : m
-              )
-            );
-          },
-          onDone: (fullText) => {
-            if (sessionIdRef.current !== reqSession) {
-              loadSessions();
-              return;
-            }
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
-              )
-            );
-            loadSessions();
-          },
-          onError: (errMsg) => {
-            if (sessionIdRef.current !== reqSession) return;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.messageId === messageId
-                  ? {
-                      ...m,
-                      content: `Error: ${errMsg}`,
-                      isError: true,
-                      isStreaming: false,
-                    }
-                  : m
-              )
-            );
-            setError(errMsg);
-          },
-        }
+      const data = res.data;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                status: data.status,
+                content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
+                toolCalls: data.tool_calls || [],
+                pending: data.pending || [],
+                question: data.question || null,
+                options: data.options || [],
+                tokenUsage: data.token_usage || null,
+                traceId: data.trace_id || null,
+              }
+            : m
+        )
       );
-
-      streamControllerRef.current = controller;
+      setSessionLoading(reqSession, false);
+      loadSessions();
+      updatePageViewer(data);
     } catch (err) {
+      if (axios.isCancel(err) || err.name === 'CanceledError' || err.name === 'AbortError') {
+        if (sessionIdRef.current === reqSession) {
+          setSessionLoading(reqSession, false);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.messageId === messageId
+                ? {
+                    ...m,
+                    content: 'Generation stopped.',
+                  }
+                : m
+            )
+          );
+        }
+        return;
+      }
       console.error('Approval error:', err);
       if (sessionIdRef.current !== reqSession) return;
+      setSessionLoading(reqSession, false);
       setMessages((prev) =>
         prev.map((m) =>
           m.messageId === messageId
@@ -1146,14 +1213,15 @@ const ChatPage = () => {
                 ...m,
                 content: `Error: ${err.message || 'Failed to execute approved actions.'}`,
                 isError: true,
-                isStreaming: false,
               }
             : m
         )
       );
       setError(err.message);
     } finally {
-      setSessionLoading(reqSession, false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -1166,9 +1234,21 @@ const ChatPage = () => {
 
   return (
     <div className="flex h-screen bg-slate-900 text-gray-100 relative">
+      <style>{`
+        @keyframes slideInSide {
+          from {
+            opacity: 0;
+            transform: translateX(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+      `}</style>
       {/* Sidebar */}
       <div
-        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-300 ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
+        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-500 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
           }`}
       >
         {/* Sidebar Header */}
@@ -1206,7 +1286,7 @@ const ChatPage = () => {
               if (!a.pinned && b.pinned) return 1;
               return new Date(b.last_active) - new Date(a.last_active);
             })
-            .map((s) => (
+            .map((s, index) => (
               <div
                 key={s.session_id}
                 onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
@@ -1214,6 +1294,11 @@ const ChatPage = () => {
                   ? 'bg-slate-800 text-white'
                   : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
                   }`}
+                style={{
+                  animation: 'slideInSide 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+                  animationDelay: `${index * 30}ms`,
+                  opacity: 0,
+                }}
                 title={s.title}
               >
                 <div className="min-w-0 flex-1">
@@ -1349,17 +1434,20 @@ const ChatPage = () => {
               <MessageRow key={idx} msg={msg} onApprove={() => handleApproval(idx, true)}
                 onDecline={() => handleApproval(idx, false)}
                 onClarify={(opt) => handleClarify(opt, idx)} loading={loading}
-                onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })} />
+                onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })}
+                onIngestApprove={handleIngestApprove}
+                onIngestCancel={handleIngestCancel}
+                allFiles={allFiles} />
             ))}
 
-            {loading && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
-              <div className="py-3 flex justify-start">
+            {messages.length > 0 && messages[messages.length - 1].role === 'user' && (
+              <div className="py-3 flex justify-start animate-fade-in">
                 <div className="max-w-full w-full">
                   <div className="flex gap-3">
-                    <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
+                    <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1 animate-pulse" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center text-slate-400 text-sm py-1">
-                        <span className="font-medium">
+                        <span className="font-medium flex items-center">
                           Thinking<span className="animate-dots"></span>
                         </span>
                       </div>
@@ -1432,16 +1520,26 @@ const ChatPage = () => {
                 placeholder="Message the agent... (Shift+Enter for new line)"
                 disabled={loading}
               />
-              <button
-                onClick={handleSend}
-                disabled={loading || (!input.trim() && !attachedFile)}
-                className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${loading || (!input.trim() && !attachedFile)
-                  ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                  : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-              >
-                <PaperAirplaneIcon className="h-4 w-4" />
-              </button>
+              {loading ? (
+                <button
+                  onClick={handleStop}
+                  title="Stop generating"
+                  className="p-2.5 rounded-full flex-shrink-0 transition-colors bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  <div className="w-3 h-3 bg-white rounded-[2px]" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim() && !attachedFile}
+                  className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${(!input.trim() && !attachedFile)
+                    ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                >
+                  <PaperAirplaneIcon className="h-4 w-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1754,7 +1852,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     : null;
 
   return (
-    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
+    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-500 ease-in-out overflow-hidden ${sidebarOpen
       ? 'w-[40%] min-w-[40%] max-w-[40%]'
       : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>
@@ -1986,29 +2084,91 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
 // Best-effort: search_documents' tool result is a JSON string of
 // {answer, citations, sources}. Pull sources out for a citation strip; anything
 // else (a different tool, a malformed/blocked result) is skipped, not an error.
-const parseSources = (toolCalls) => {
+const parseSources = (toolCalls, allFiles = []) => {
   const sources = [];
+  const allFilesList = Array.isArray(allFiles) ? allFiles : [];
+
+  const resolveDoc = (nameOrId) => {
+    if (!nameOrId) return null;
+    const clean = String(nameOrId).trim().toLowerCase();
+    let found = allFilesList.find(
+      (f) => String(f.document_id || f.id).toLowerCase() === clean
+    );
+    if (!found) {
+      found = allFilesList.find(
+        (f) => String(f.filename).toLowerCase() === clean
+      );
+    }
+    return found ? { document_id: found.document_id || found.id, filename: found.filename } : null;
+  };
+
   for (const call of toolCalls || []) {
-    if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
-    try {
-      const parsed = JSON.parse(call.result);
-      if (Array.isArray(parsed.sources)) {
-        const mapped = parsed.sources.map(s => {
-          if (s.page == null && s.slide != null) {
-            return { ...s, page: s.slide };
-          }
-          if (s.page == null && s.sheet != null) {
-            return { ...s, page: s.sheet };
-          }
-          return s;
-        });
-        sources.push(...mapped);
+    if (call.name === 'search_documents' && typeof call.result === 'string') {
+      try {
+        const parsed = JSON.parse(call.result);
+        if (Array.isArray(parsed.sources)) {
+          const mapped = parsed.sources.map((s) => {
+            const res = { ...s };
+            if (s.page == null && s.slide != null) {
+              res.page = s.slide;
+            }
+            if (s.page == null && s.sheet != null) {
+              res.page = s.sheet;
+            }
+            const resolved = resolveDoc(s.filename || s.document_id);
+            if (resolved) {
+              res.document_id = resolved.document_id;
+              res.filename = resolved.filename;
+            }
+            return res;
+          });
+          sources.push(...mapped);
+        }
+      } catch {
+        // not JSON — nothing to show
       }
-    } catch {
-      // not JSON (e.g. a blocked/error string) — nothing to show
+    } else if (call.name === 'excel_tool') {
+      const filenameOrId = call.args?.filename_or_id;
+      const sheetName = call.args?.sheet_name;
+      if (filenameOrId) {
+        const resolved = resolveDoc(filenameOrId);
+        if (resolved) {
+          sources.push({
+            document_id: resolved.document_id,
+            filename: resolved.filename,
+            page: sheetName || 1,
+            sheet: sheetName || null,
+            score: 1.0,
+            snippet: call.args?.code || '',
+          });
+        }
+      }
+    } else if (call.name === 'get_page_context') {
+      const docId = call.args?.document_id;
+      const page = call.args?.page;
+      if (docId) {
+        const resolved = resolveDoc(docId);
+        if (resolved) {
+          sources.push({
+            document_id: resolved.document_id,
+            filename: resolved.filename,
+            page: page || 1,
+            score: 1.0,
+            snippet: `Fetched context of page ${page}`,
+          });
+        }
+      }
     }
   }
-  return sources;
+
+  // Deduplicate
+  const seen = new Set();
+  return sources.filter((s) => {
+    const key = `${s.filename || ''}::${s.page || ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 };
 
 // Best-effort: list_documents' tool result is a JSON string of
@@ -2210,14 +2370,29 @@ const CustomCodeBlock = ({ language, value }) => {
   );
 };
 
-const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages }) => {
+const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages, onIngestApprove, onIngestCancel, allFiles }) => {
   const isUser = msg.role === 'user';
-  const sources = !isUser ? parseSources(msg.toolCalls) : [];
-  const listedDocuments = !isUser ? parseListedDocuments(msg.toolCalls) : {
+  const sources = !isUser ? parseSources(msg.toolCalls, allFiles) : [];
+  const rawListed = !isUser ? parseListedDocuments(msg.toolCalls) : {
     documents: [],
     note: "",
     totalCount: 0,
     returnedCount: 0,
+  };
+
+  const filteredDocs = (rawListed.documents || []).filter(doc => {
+    if (sources.length === 0) return true;
+    return sources.some(s =>
+      String(s.document_id).toLowerCase() === String(doc.document_id).toLowerCase() ||
+      String(s.filename).toLowerCase() === String(doc.filename).toLowerCase()
+    );
+  });
+
+  const listedDocuments = {
+    ...rawListed,
+    documents: filteredDocs,
+    totalCount: sources.length > 0 ? filteredDocs.length : rawListed.totalCount,
+    returnedCount: sources.length > 0 ? filteredDocs.length : rawListed.returnedCount,
   };
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
@@ -2226,6 +2401,157 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
   // Covers PDF pages, docx (whole doc, snippet-matched), and images (whole file).
   const pageSources = buildViewableSources(sources);
   const hasPageSources = pageSources.length > 0;
+
+  // ── Direct-ingestion card types ──────────────────────────────────────────
+  if (!isUser && msg.type === 'ingest_approval') {
+    return (
+      <div className="py-3 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
+            <div className="min-w-0 flex-1">
+              <div className="inline-block bg-slate-800/80 border border-slate-700 rounded-2xl px-5 py-4 max-w-sm">
+                <p className="text-sm font-medium text-gray-200 mb-1">Ingest this file?</p>
+                <div className="flex items-center gap-2 mb-4 text-sm text-blue-300">
+                  <DocumentIcon className="h-4 w-4 flex-shrink-0" />
+                  <span className="truncate">{msg.filename}</span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onIngestApprove(msg.messageId, msg.stagedPath, msg.filename)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-all"
+                  >
+                    <CheckIcon className="h-3.5 w-3.5" /> Ingest
+                  </button>
+                  <button
+                    onClick={() => onIngestCancel(msg.messageId)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-gray-300 transition-all"
+                  >
+                    <XMarkIcon className="h-3.5 w-3.5" /> Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isUser && msg.type === 'ingest_progress') {
+    const steps = Array.isArray(msg.metrics) ? msg.metrics : [];
+    return (
+      <div className="py-3 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1 animate-pulse" />
+            <div className="min-w-0 flex-1">
+              <div className="inline-block bg-slate-800/80 border border-slate-700 rounded-2xl px-5 py-4 max-w-md w-full">
+                <div className="flex items-center gap-2 mb-3 text-sm text-gray-200">
+                  <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                  <span className="truncate font-medium">{msg.filename}</span>
+                </div>
+                
+                <div className="font-mono text-xs space-y-1.5 bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+                  {steps.length === 0 ? (
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      Initializing...
+                    </div>
+                  ) : (() => {
+                    const activeStep = steps.find((m) => m.status === 'running') || steps[steps.length - 1];
+                    if (!activeStep) return null;
+
+                    const durationStr = activeStep.ms != null ? `${(activeStep.ms / 1000).toFixed(1)}s` : '';
+                    let statusStr = 'running';
+                    let statusColor = 'text-blue-400';
+                    if (activeStep.status === 'done') {
+                      statusStr = 'ok';
+                      statusColor = 'text-emerald-400';
+                    } else if (activeStep.status === 'error' || activeStep.status === 'failed') {
+                      statusStr = 'failed';
+                      statusColor = 'text-red-400';
+                    }
+
+                    return (
+                      <div className="flex justify-between items-center text-slate-300">
+                        <div className="flex items-center gap-2 truncate">
+                          <span className={activeStep.status === 'running' ? 'text-blue-400 animate-pulse' : 'text-slate-500'}>·</span>
+                          <span className="truncate">{activeStep.step}</span>
+                        </div>
+                        <div className="flex items-center gap-4 flex-shrink-0">
+                          <span className={`font-semibold ${statusColor}`}>{statusStr}</span>
+                          {durationStr && <span className="text-slate-500 min-w-[36px] text-right">{durationStr}</span>}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isUser && msg.type === 'ingest_done') {
+    return (
+      <div className="py-3 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-emerald-400 flex-shrink-0 mt-1" />
+            <div className="min-w-0 flex-1">
+              <div className="inline-block bg-emerald-900/30 border border-emerald-700/40 rounded-2xl px-5 py-4 max-w-sm">
+                <div className="flex items-center gap-2 mb-1">
+                  <CheckIcon className="h-4 w-4 text-emerald-400 flex-shrink-0" />
+                  <p className="text-sm font-semibold text-emerald-300">Ingested successfully!</p>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  <span className="text-gray-300 font-medium">{msg.filename}</span> is now in the knowledge base.
+                  You can ask questions about it.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isUser && msg.type === 'ingest_cancelled') {
+    return (
+      <div className="py-3 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-slate-500 flex-shrink-0 mt-1" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-slate-500 italic py-1">Ingestion cancelled.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isUser && msg.type === 'ingest_error') {
+    return (
+      <div className="py-3 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex gap-3">
+            <SparklesIcon className="h-5 w-5 text-red-400 flex-shrink-0 mt-1" />
+            <div className="min-w-0 flex-1">
+              <div className="inline-block bg-red-900/20 border border-red-700/30 rounded-2xl px-5 py-4 max-w-sm">
+                <p className="text-sm font-semibold text-red-300">Ingestion failed</p>
+                <p className="text-xs text-slate-400 mt-1">{msg.errorMsg || 'Something went wrong. Please try again.'}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  // ── End direct-ingestion cards ───────────────────────────────────────────
 
   return (
     <div className={`py-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>

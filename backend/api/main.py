@@ -35,6 +35,28 @@ import os
 import shutil
 import uuid
 
+# ── Logging setup (before any imports that may emit logs) ─────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+)
+# Silence chatty third-party and internal libraries that add noise on startup
+_noisy_loggers = [
+    "httpx", "httpcore", "openai", "anthropic", "hpack", "h2",
+    "urllib3", "requests", "PIL", "fastembed",
+    "backend.pipeline.default_registry",
+    "backend.guardrails.startup_check",
+    "backend.core.health_probe"
+]
+for _logger_name in _noisy_loggers:
+    logging.getLogger(_logger_name).setLevel(logging.WARNING)
+
+from backend.core.db_logging import setup_db_logging
+# We don't hold the reference to listener here, it runs natively in background
+setup_db_logging(level=logging.INFO)
+
+
+
 import yaml
 from dotenv import load_dotenv
 
@@ -46,9 +68,14 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.agent.executor import run_agent, stream_agent  # noqa: E402
+from backend.agent.executor import run_agent  # noqa: E402
 from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
+from backend.core.yaml_handler import (  # noqa: E402
+    load_yaml_roundtrip,
+    dump_yaml_roundtrip,
+    apply_settings_in_place,
+)
 from backend.core.models import warm_up  # noqa: E402
 from backend.core.llm_client import clean_message_content  # noqa: E402
 from backend.pipeline.default_registry import build_default_registry  # noqa: E402
@@ -60,6 +87,8 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from backend.guardrails.token_quota import get_enforcer, get_reserve_tokens
 from backend.guardrails.startup_check import run_startup_self_test
 from backend.core.health_probe import background_health_loop
+from backend.storage.postgres_store import dsn_from_env as _pg_dsn
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +105,20 @@ EXT_TO_FILE_TYPE = {
 
 app = FastAPI(title="Document Intelligence + RAG Accelerator", version="1.0.0")
 
+# CORS origins: configurable via ALLOWED_ORIGINS env var (comma-separated).
+# Default covers local dev; set ALLOWED_ORIGINS in production .env.
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000",
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000",
-                   "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -184,7 +223,7 @@ def auto_ingestion_loop() -> None:
                     
                     logger.info("Auto-ingestion: Processing file %s...", item)
                     document_id = str(uuid.uuid4())
-                    print(f"\n=== Auto-Ingestion: Starting Ingestion of '{item}' (doc: {document_id}) ===", flush=True)
+                    logger.info("Auto-ingestion: Starting ingestion of '%s' (doc: %s)", item, document_id)
                     t0 = time.time()
                     
                     dest = os.path.join(UPLOAD_DIR, f"{document_id}_{item}")
@@ -292,7 +331,7 @@ async def on_startup():
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = os.getenv("QDRANT_API_KEY")
     
-    logger.info("Verifying connections to database and vector store...")
+    logger.info("Verifying database and vector store connections...")
     
     # 1. Verify / Initialize Postgres
     if postgres_url:
@@ -300,7 +339,7 @@ async def on_startup():
             conn = psycopg.connect(postgres_url, connect_timeout=5)
             with conn.cursor() as cur:
                 # Run init_db.sql idempotently to ensure all tables and indexes (including guardrails) exist
-                logger.info("Syncing database schema using scripts/init_db.sql...")
+                logger.debug("Syncing database schema using scripts/init_db.sql...")
                 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
                 schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
                 if os.path.exists(schema_path):
@@ -317,7 +356,7 @@ async def on_startup():
                     for stmt in statements:
                         cur.execute(stmt)
                     conn.commit()
-                    logger.info("Database schema synchronized successfully!")
+                    logger.debug("Database schema synchronized successfully!")
                 else:
                     logger.warning("scripts/init_db.sql not found at %s. Cannot synchronize schema.", schema_path)
             conn.close()
@@ -329,9 +368,9 @@ async def on_startup():
 
     # 2. Verify Qdrant
     try:
-        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, check_compatibility=False)
         client.get_collections()
-        logger.info("Qdrant connection verified successfully (Endpoint: %s)!", qdrant_url)
+        logger.info("Qdrant connection verified successfully!")
     except Exception as e:
         logger.error("Qdrant connection failed: %s", e)
 
@@ -379,11 +418,22 @@ _agent_sessions: dict[str, list] = {}
 # Same simplification _history_to_messages already applies to history reloaded
 # from Postgres — this just applies it to the in-memory cache too.
 def _qa_only(messages: list) -> list:
-    return [
-        m for m in messages
-        if isinstance(m, HumanMessage)
-        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None) and clean_message_content(m.content).strip())
-    ]
+    """Filter messages to retain strictly clean User Questions (HumanMessage)
+    and final Assistant Answers (AIMessage without tool calls). Excludes intermediate
+    tool messages, system prompts, and raw execution logs.
+    """
+    clean = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            text = clean_message_content(m.content).strip()
+            if text:
+                clean.append(HumanMessage(content=text))
+        elif isinstance(m, AIMessage) and not getattr(m, "tool_calls", None):
+            text = clean_message_content(m.content).strip()
+            if text:
+                clean.append(AIMessage(content=text))
+    return clean
+
 
 
 
@@ -464,6 +514,7 @@ _SETTINGS_MAP = {
     # embeddings & reranking
     "embeddings_dense_provider": ["embeddings", "dense_provider"],
     "embeddings_dense_model": ["embeddings", "dense_model"],
+    "embeddings_dense_dim": ["embeddings", "dense_dim"],
     "embeddings_reranker_provider": ["embeddings", "reranker_provider"],
     "embeddings_reranker_model": ["embeddings", "reranker_model"],
     # auto-ingestion
@@ -472,6 +523,15 @@ _SETTINGS_MAP = {
     "auto_ingestion_poll_interval": ["auto_ingestion", "poll_interval"],
     "auto_ingestion_on_success": ["auto_ingestion", "on_success"],
     "auto_ingestion_on_failure": ["auto_ingestion", "on_failure"],
+    # docling extraction mode
+    "docling_mode": ["extraction", "docling", "mode"],
+    "docling_server_url": ["extraction", "docling", "server_url"],
+    "docling_server_key": ["extraction", "docling", "server_key"],
+    # storage provider settings
+    "storage_provider": ["storage", "provider"],
+    "supabase_url": ["storage", "supabase_url"],
+    "supabase_key": ["storage", "supabase_key"],
+    "supabase_bucket": ["storage", "supabase_bucket"],
 }
 
 # Optional model-override fields: a BLANK value means "inherit the global llm block",
@@ -505,35 +565,7 @@ def _settings_view(cfg: dict) -> dict:
 
 
 def _apply_settings(raw: dict, settings: dict) -> dict:
-    for key, path in _SETTINGS_MAP.items():
-        if key not in settings:
-            continue
-        val = settings[key]
-        # optional override left blank => remove the key so the step inherits the global default
-        if key in _OPTIONAL_OVERRIDE_KEYS and (val is None or val == ""):
-            cur = raw
-            for k in path[:-1]:
-                if not isinstance(cur, dict) or k not in cur:
-                    cur = None
-                    break
-                cur = cur[k]
-            if isinstance(cur, dict):
-                cur.pop(path[-1], None)
-            continue
-        if val is None:
-            continue
-        cur = raw
-        for k in path[:-1]:
-            cur = cur.setdefault(k, {})
-        cur[path[-1]] = val
-    # structured settings (replace wholesale when provided)
-    if isinstance(settings.get("vision_prompts"), dict):
-        raw.setdefault("vision", {})["prompt"] = settings["vision_prompts"]
-    if isinstance(settings.get("ingestion_steps"), list):
-        raw.setdefault("ingestion", {})["steps"] = settings["ingestion_steps"]
-    if isinstance(settings.get("route_gates"), dict):
-        raw.setdefault("ingestion", {})["route_gates"] = settings["route_gates"]
-    return raw
+    return apply_settings_in_place(raw, settings, _SETTINGS_MAP, _OPTIONAL_OVERRIDE_KEYS)
 
 
 def _validate_yaml(text: str) -> dict:
@@ -550,11 +582,88 @@ def _file_type(filename: str) -> str:
     return EXT_TO_FILE_TYPE.get(os.path.splitext(filename)[1].lower(), "unknown")
 
 
+# ── Postgres connection pool ──────────────────────────────────────────────────
+# Reuses connections across requests instead of opening a new TCP connection
+# per poll. Eliminates the dominant source of Supabase PostgREST log spam
+# (previously: ~137 new connections/min from polling alone).
+import threading as _threading
+import queue as _queue
+import psycopg as _psycopg
+
+_PG_POOL_MIN = 2
+_PG_POOL_MAX = 10
+_pg_pool_lock = _threading.Lock()
+_pg_pool_queue: "_queue.Queue[_psycopg.Connection]" = _queue.Queue(maxsize=_PG_POOL_MAX)
+_pg_pool_count = 0  # total connections created
+
+
+def _pool_get_conn() -> "_psycopg.Connection":
+    """Get a healthy connection from the pool, creating one if below max."""
+    global _pg_pool_count
+    # Try to get an existing connection (non-blocking)
+    try:
+        conn = _pg_pool_queue.get_nowait()
+        # Test it's still alive
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with _pg_pool_lock:
+                _pg_pool_count -= 1
+    except _queue.Empty:
+        pass
+
+    # Create a new connection if under max
+    with _pg_pool_lock:
+        if _pg_pool_count < _PG_POOL_MAX:
+            _pg_pool_count += 1
+        else:
+            raise RuntimeError("Connection pool exhausted")
+
+    conn = _psycopg.connect(_pg_dsn(), autocommit=True)
+    return conn
+
+
+def _pool_return_conn(conn: "_psycopg.Connection") -> None:
+    """Return a connection to the pool, or close it if pool is full."""
+    global _pg_pool_count
+    try:
+        if not conn.closed:
+            _pg_pool_queue.put_nowait(conn)
+            return
+    except (_queue.Full, Exception):
+        pass
+    # Pool full or connection dead — close it
+    try:
+        conn.close()
+    except Exception:
+        pass
+    with _pg_pool_lock:
+        _pg_pool_count -= 1
+
+
+class _PooledPostgresStore(PostgresStore):
+    """PostgresStore backed by the pool. close() returns the connection to the
+    pool instead of closing it — safe to call in a finally block as usual."""
+
+    def __init__(self) -> None:  # type: ignore[override]
+        self.conn = _pool_get_conn()
+        # Migration flag is already class-level; no DDL needed after first run
+
+    def close(self) -> None:  # type: ignore[override]
+        _pool_return_conn(self.conn)
+
+
 def _pg() -> PostgresStore:
     try:
-        return PostgresStore()
+        return _PooledPostgresStore()
     except Exception as exc:
         raise HTTPException(503, f"database unavailable: {exc}") from exc
+
 
 
 # Ingestion runs in a FastAPI background task so /upload returns immediately. Progress
@@ -564,20 +673,45 @@ def _pg() -> PostgresStore:
 _INGEST_STEPS = list((_config.get("ingestion") or {}).get("steps") or [])
 
 
-def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -> None:
+def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str, session_id: str | None = None, message_id: str | None = None) -> None:
     """Run the full pipeline for one upload. Delegates run + status + finalize to the
     shared ingest_document entry point; the API-only tail (live DB progress + PDF
     page images) is injected via the on_step / on_complete hooks."""
+    
+    # Download staged/uploaded file if it starts with supabase://
+    if dest.startswith("supabase://"):
+        try:
+            parts = dest[11:].split("/", 1)
+            bucket = parts[0]
+            key = parts[1]
+            local_dest = os.path.join(UPLOAD_DIR, f"{document_id}_{filename}")
+            from backend.storage.supabase_store import download_from_supabase
+            download_from_supabase(bucket, key, local_dest, config=_config)
+            dest = local_dest
+        except Exception as e:
+            logger.exception("Failed to download staged document from Supabase: %s", dest)
+            if session_id and message_id:
+                try:
+                    from backend.storage.conversation_store import get_conversation_store
+                    get_conversation_store().update_turn_by_message_id(
+                        message_id,
+                        content=f"Ingestion failed: Failed to download from Supabase storage: {str(e)}",
+                        metadata={"type": "ingest_error", "filename": filename, "errorMsg": str(e), "message_id": message_id}
+                    )
+                except Exception:
+                    pass
+            raise e
+
     total = len(_INGEST_STEPS) or None
 
     # Pre-render slides if it is a PowerPoint file
     page_dir = os.path.join(_PAGES_DIR, document_id)
     if file_type == "ppt":
-        from backend.core.office_renderer import render_pptx_slides
-        try:
-            render_pptx_slides(dest, page_dir)
-        except Exception as e:
-            logger.exception("Failed to render PPTX slides for %s", document_id)
+      from backend.core.office_renderer import render_pptx_slides
+      try:
+          render_pptx_slides(dest, page_dir)
+      except Exception as e:
+          logger.exception("Failed to render PPTX slides for %s", document_id)
 
     # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
@@ -588,10 +722,9 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
                          document_id)
 
     def on_step(entry: dict, snapshot: dict) -> None:
-        # Print to stdout console for live visibility
         ms = entry.get("ms")
         dur = f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "?"
-        print(f"  · {entry.get('step'):<24} {entry.get('status'):<8} {dur}", flush=True)
+        logger.info("  · %-24s %-8s %s", entry.get('step', ''), entry.get('status', ''), dur)
 
         if pg is None:
             return
@@ -623,6 +756,28 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
     try:
         ingest_document(dest, document_id, config=_config, registry=_registry,
                         on_step=on_step, on_complete=on_complete)
+        if session_id and message_id:
+            try:
+                from backend.storage.conversation_store import get_conversation_store
+                get_conversation_store().update_turn_by_message_id(
+                    message_id,
+                    content=f"📎 {filename} ingested successfully!",
+                    metadata={"type": "ingest_done", "filename": filename, "message_id": message_id}
+                )
+            except Exception:
+                logger.exception("Failed to update direct ingest success status in DB")
+    except Exception as e:
+        if session_id and message_id:
+            try:
+                from backend.storage.conversation_store import get_conversation_store
+                get_conversation_store().update_turn_by_message_id(
+                    message_id,
+                    content=f"Ingestion failed: {str(e)}",
+                    metadata={"type": "ingest_error", "filename": filename, "errorMsg": str(e), "message_id": message_id}
+                )
+            except Exception:
+                logger.exception("Failed to update direct ingest failure status in DB")
+        raise e
     finally:
         if pg is not None:
             pg.close()
@@ -637,9 +792,25 @@ def upload(background: BackgroundTasks, file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
 
     file_type = _file_type(file.filename)
+    
+    # Supabase upload check
+    storage_cfg = _config.get("storage", {})
+    provider = storage_cfg.get("provider", "local")
+    if provider == "supabase":
+        bucket = storage_cfg.get("supabase_bucket", "documents")
+        key = f"{document_id}_{file.filename}"
+        from backend.storage.supabase_store import upload_to_supabase
+        try:
+            db_path = upload_to_supabase(bucket, key, dest, config=_config)
+        except Exception as e:
+            logger.exception("Failed to upload to Supabase storage")
+            raise HTTPException(500, f"Failed to upload to Supabase storage: {e}")
+    else:
+        db_path = dest
+
     pg = _pg()
     try:
-        pg.insert_document(document_id, file.filename, file_type, dest)
+        pg.insert_document(document_id, file.filename, file_type, db_path)
     finally:
         pg.close()
 
@@ -665,7 +836,119 @@ def stage_file(file: UploadFile = File(...)):
     dest = os.path.join(UPLOAD_DIR, f"{stage_id}_{file.filename}")
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    storage_cfg = _config.get("storage", {})
+    provider = storage_cfg.get("provider", "local")
+    if provider == "supabase":
+        bucket = storage_cfg.get("supabase_bucket", "documents")
+        key = f"staged/{stage_id}_{file.filename}"
+        from backend.storage.supabase_store import upload_to_supabase
+        try:
+            supabase_path = upload_to_supabase(bucket, key, dest, config=_config)
+            return {"file_path": supabase_path, "filename": file.filename}
+        except Exception as e:
+            logger.exception("Failed to upload staged file to Supabase")
+            raise HTTPException(500, f"Failed to upload staged file to Supabase: {e}")
+
     return {"file_path": dest, "filename": file.filename}
+
+
+@app.post("/files/ingest-staged")
+async def ingest_staged(body: dict, background: BackgroundTasks):
+    """Trigger ingestion on an already-staged file (one previously saved by /files/stage).
+    The chat UI calls this when the user drops a file with no question text — it bypasses
+    the LLM agent entirely, so ingestion starts immediately after the user approves inline.
+    The file bytes are already on disk; we just create the documents row and kick off the
+    background pipeline."""
+    file_path = body.get("file_path", "")
+    filename = body.get("filename", "")
+    session_id = body.get("session_id")
+    message_id = body.get("message_id")
+
+    is_supabase = file_path.startswith("supabase://")
+    if not is_supabase and (not file_path or not os.path.isfile(file_path)):
+        raise HTTPException(404, "staged file not found on disk")
+    if not filename:
+        filename = os.path.basename(file_path)
+        # Strip the stage_id prefix (format: <uuid>_<realname>) if present
+        parts = filename.split("_", 1)
+        if len(parts) == 2 and len(parts[0]) == 36:  # UUID length
+            filename = parts[1]
+
+    document_id = str(uuid.uuid4())
+    file_type = _file_type(filename)
+
+    pg = _pg()
+    try:
+        pg.insert_document(document_id, filename, file_type, file_path)
+    finally:
+        pg.close()
+
+    if session_id and message_id:
+        try:
+            from backend.storage.conversation_store import get_conversation_store
+            get_conversation_store().update_turn_by_message_id(
+                message_id,
+                content="",
+                metadata={
+                    "type": "ingest_progress",
+                    "filename": filename,
+                    "stagedPath": file_path,
+                    "documentId": document_id,
+                    "message_id": message_id,
+                }
+            )
+        except Exception:
+            logger.exception("Failed to update direct ingest progress status in DB")
+
+    background.add_task(_run_ingestion, document_id, file_path, file_type, filename, session_id, message_id)
+
+    return {
+        "id": document_id,
+        "document_id": document_id,
+        "filename": filename,
+        "file_type": file_type,
+        "status": "processing",
+        "metrics": [],
+    }
+
+
+@app.post("/agent/sessions/{session_id}/init-direct-ingest")
+def init_direct_ingest(session_id: str, body: dict):
+    filename = body.get("filename")
+    staged_path = body.get("staged_path")
+    message_id = body.get("message_id")
+    if not message_id:
+        message_id = str(uuid.uuid4())
+    
+    from backend.storage.conversation_store import get_conversation_store
+    store = get_conversation_store()
+    
+    # Save user turn
+    store.save_turn(session_id, "user", f"📎 {filename}")
+    
+    # Save assistant turn (the ingest approval card)
+    store.save_turn(
+        session_id,
+        "assistant",
+        "",
+        {"type": "ingest_approval", "filename": filename, "stagedPath": staged_path, "message_id": message_id}
+    )
+    return {"message_id": message_id}
+
+
+@app.post("/agent/sessions/{session_id}/cancel-direct-ingest")
+def cancel_direct_ingest(session_id: str, body: dict):
+    message_id = body.get("message_id")
+    filename = body.get("filename")
+    if message_id:
+        from backend.storage.conversation_store import get_conversation_store
+        get_conversation_store().update_turn_by_message_id(
+            message_id,
+            content="Ingestion cancelled.",
+            metadata={"type": "ingest_cancelled", "filename": filename, "message_id": message_id}
+        )
+    return {"ok": True}
 
 
 @app.get("/files/{file_id}/progress")
@@ -728,6 +1011,40 @@ def file_page(file_id: str, page: int):
     return rec
 
 
+def _ensure_local_file(document_id: str, doc: dict) -> str:
+    """Helper to ensure a document's original file is present on local disk.
+    If the file is backed by Supabase storage (stored as supabase:// URI in file_path)
+    and is missing from local disk, it is downloaded from Supabase to UPLOAD_DIR.
+    
+    Returns the resolved local file path.
+    """
+    file_path = doc.get("file_path") or ""
+    filename = doc.get("filename") or "document"
+    
+    if file_path.startswith("supabase://"):
+        local_dest = os.path.join(UPLOAD_DIR, f"{document_id}_{filename}")
+        if not os.path.isfile(local_dest):
+            try:
+                parts = file_path[11:].split("/", 1)
+                bucket = parts[0]
+                key = parts[1]
+                from backend.storage.supabase_store import download_from_supabase
+                download_from_supabase(bucket, key, local_dest, config=_config)
+            except Exception as e:
+                logger.exception("Failed to download file from Supabase: %s", file_path)
+                raise HTTPException(500, f"Failed to download file from Supabase storage: {e}")
+        return local_dest
+        
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{document_id}_*"))
+        if not matches:
+            raise HTTPException(404, "Original document file not found")
+        file_path = matches[0]
+        
+    return file_path
+
+
 @app.get("/files/{file_id}/pdf")
 def file_pdf(file_id: str):
     """Stream the original PDF file for this document so the frontend can
@@ -743,14 +1060,8 @@ def file_pdf(file_id: str):
         raise HTTPException(404, "document not found")
     if doc.get("file_type") != "pdf":
         raise HTTPException(400, "document is not a PDF")
-    file_path = doc.get("file_path") or ""
-    if not file_path or not os.path.isfile(file_path):
-        # Fall back: scan uploads dir for {file_id}_*.pdf
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
-        if not matches:
-            raise HTTPException(404, "PDF file not found on disk")
-        file_path = matches[0]
+    
+    file_path = _ensure_local_file(file_id, doc)
     filename = doc.get("filename") or os.path.basename(file_path)
     return FileResponse(
         path=file_path,
@@ -773,14 +1084,7 @@ def file_raw(file_id: str):
     if not doc:
         raise HTTPException(404, "document not found")
     
-    file_path = doc.get("file_path") or ""
-    if not file_path or not os.path.isfile(file_path):
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
-        if not matches:
-            raise HTTPException(404, "raw file not found on disk")
-        file_path = matches[0]
-
+    file_path = _ensure_local_file(file_id, doc)
     filename = doc.get("filename") or os.path.basename(file_path)
     media_type, _ = mimetypes.guess_type(file_path)
     media_type = media_type or "application/octet-stream"
@@ -907,6 +1211,7 @@ def file_original(file_id: str):
     PDF (needs page rasterization, see file_pdf/file_page_image_ondemand above)
     or docx (needs HTML conversion, see file_docx_html below)."""
     from fastapi.responses import FileResponse
+    import mimetypes
     pg = _pg()
     try:
         doc = pg.get_document(file_id)
@@ -917,14 +1222,7 @@ def file_original(file_id: str):
     if doc.get("file_type") != "image":
         raise HTTPException(400, "document is not an image")
 
-    file_path = doc.get("file_path") or ""
-    if not file_path or not os.path.isfile(file_path):
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
-        if not matches:
-            raise HTTPException(404, "image file not found on disk")
-        file_path = matches[0]
-
+    file_path = _ensure_local_file(file_id, doc)
     filename = doc.get("filename") or os.path.basename(file_path)
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return FileResponse(
@@ -960,13 +1258,7 @@ def file_docx_html(file_id: str):
     if doc.get("file_type") != "docx":
         raise HTTPException(400, "document is not a docx")
 
-    file_path = doc.get("file_path") or ""
-    if not file_path or not os.path.isfile(file_path):
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
-        if not matches:
-            raise HTTPException(404, "docx file not found on disk")
-        file_path = matches[0]
+    file_path = _ensure_local_file(file_id, doc)
 
     try:
         import mammoth
@@ -995,10 +1287,26 @@ def delete_file(file_id: str):
         vectors.close()
 
     pg = _pg()
+    file_path = None
     try:
+        doc = pg.get_document(file_id)
+        if doc:
+            file_path = doc.get("file_path")
         pg.delete_document(file_id)
     finally:
         pg.close()
+
+    # Delete from Supabase storage if file is stored there
+    if file_path and file_path.startswith("supabase://"):
+        try:
+            parts = file_path[11:].split("/", 1)
+            bucket = parts[0]
+            key = parts[1]
+            from backend.storage.supabase_store import delete_from_supabase
+            delete_from_supabase(bucket, key, config=_config)
+        except Exception:
+            logger.exception("Failed to delete document from Supabase storage: %s", file_path)
+
     return {"deleted": file_id}
 
 
@@ -1037,19 +1345,41 @@ def agent_chat(req: AgentChatRequest, response: Response):
     if history is None:
         try:
             history = _history_to_messages(
-                get_conversation_store().load_history(req.session_id, n=max_history)
+                get_conversation_store().load_history(req.session_id, n=max_history * 2)
             )
         except Exception:
             logger.debug("agent chat history load failed", exc_info=True)
             history = []
-    elif len(history) > max_history:
-        # sliding window, not summarization — see query.agent.max_history_messages
-        history = history[-max_history:]
 
-    # Save user message immediately so it's persisted and visible if user switches/reloads
+    # Ensure clean Q&A pairs only and slice to max_history (strictly last 10 Q&A pairs / 20 messages max)
+    history = _qa_only(history)[-max_history:]
+
+    # Save user message immediately so it's persisted and visible if user switches/reloads.
+    # The [Attached file: <name> — path: <disk_path>] annotation is an internal protocol
+    # marker sent to the agent; replace it with "📎 <name>" so reloaded history shows just
+    # the icon + filename. Also strip the legacy "Please ingest this file." sentinel that
+    # old builds inserted when the user typed nothing (the frontend no longer sends it).
+    import re as _re
+    def _to_display(m):
+        fname = m.group(1).strip()
+        return f"\n\n📎 {fname}"
+    _display_message = _re.sub(
+        r"\s*\[Attached file:\s*(.+?)\s*(?:—|-)\s*path:[^\]]*\]",
+        _to_display,
+        req.message,
+    )
+    # Strip the now-obsolete sentinel (may appear in messages from older clients)
+    _display_message = _re.sub(r"^Please ingest this file\.\s*", "", _display_message, flags=_re.IGNORECASE)
+    _display_message = _display_message.strip() or req.message
     try:
         store = get_conversation_store()
-        store.save_turn(req.session_id, "user", req.message)
+        # Guard against duplicate user messages: if the most recent turn in this session
+        # is already a user message with the same text, don't save again.  This prevents
+        # the double-bubble when the user navigates away and the ChatPage reloads, which
+        # can cause the same /agent/chat to be re-submitted.
+        recent = store.load_history(req.session_id, n=1)
+        if not (recent and recent[-1].get("role") == "user" and recent[-1].get("content") == _display_message):
+            store.save_turn(req.session_id, "user", _display_message)
     except Exception:
         logger.debug("agent user chat history save failed", exc_info=True)
 
@@ -1072,23 +1402,25 @@ def agent_chat(req: AgentChatRequest, response: Response):
         for c in result.get("tool_calls", [])
     ]
     if result["status"] == "done":
-        _agent_sessions[req.session_id] = _qa_only(result["messages"])
+        _agent_sessions[req.session_id] = _qa_only(result["messages"])[-max_history:]
         try:
             store = get_conversation_store()
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
                 metadata={
                     "tool_calls": tool_calls,
+                    "llm_calls": result.get("llm_calls"),
                     "token_usage": result.get("token_usage"),
                     "trace_id": result.get("trace_id"),
-                } if (tool_calls or result.get("token_usage")) else None,
+                } if (tool_calls or result.get("token_usage") or result.get("llm_calls")) else None,
             )
         except Exception:
             logger.debug("agent chat history save failed", exc_info=True)
     elif result["status"] == "needs_clarification":
         # Persist the question so the follow-up (the user's choice) carries context —
         # otherwise the agent gets a bare option token with no memory of what it asked.
-        _agent_sessions[req.session_id] = _qa_only(result["messages"])
+        _agent_sessions[req.session_id] = _qa_only(result["messages"])[-max_history:]
+
         try:
             store = get_conversation_store()
             store.save_turn(req.session_id, "assistant",
@@ -1103,73 +1435,13 @@ def agent_chat(req: AgentChatRequest, response: Response):
         "question": result.get("question"),
         "options": result.get("options"),
         "tool_calls": tool_calls,
+        "llm_calls": result.get("llm_calls") or [],
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),
     }
 
 
-@app.post("/agent/chat/stream")
-async def agent_chat_stream(req: AgentChatRequest, request: Request):
-    """SSE endpoint for streaming agent responses."""
-    import json
-    from fastapi.responses import StreamingResponse
-    from backend.storage.conversation_store import get_conversation_store
 
-    # 1. Token Quota Check (Reserve budget)
-    quota = get_enforcer(_config)
-    reserve = get_reserve_tokens(_config)
-    if not quota.reserve(req.session_id, reserve):
-        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
-
-    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
-    history = _agent_sessions.get(req.session_id)
-    if history is None:
-        try:
-            history = _history_to_messages(
-                get_conversation_store().load_history(req.session_id, n=max_history)
-            )
-        except Exception:
-            logger.debug("agent chat history load failed", exc_info=True)
-            history = []
-    elif len(history) > max_history:
-        history = history[-max_history:]
-
-    # Save user message immediately so it's persisted and visible if user switches/reloads
-    try:
-        store = get_conversation_store()
-        # Save user message using regular save_turn (requires no message_id/deduplication)
-        store.save_turn(req.session_id, "user", req.message)
-    except Exception:
-        logger.debug("agent user chat history save failed", exc_info=True)
-
-    tokens_tracker = {"used": 0}
-
-    async def event_generator():
-        try:
-            async for event in stream_agent(
-                session_id=req.session_id,
-                message=req.message,
-                request=request,
-                message_id=req.message_id,
-                config=_config,
-                registry=_agent_registry,
-                conversation_history=history,
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("event") == "usage":
-                    tokens_tracker["used"] = event["tokens"]
-        finally:
-            quota.reconcile(req.session_id, reserved=reserve, actual=tokens_tracker["used"])
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disables nginx buffering
-        },
-    )
 
 
 @app.get("/agent/sessions")
@@ -1187,7 +1459,7 @@ def get_agent_session(session_id: str):
     with the same component."""
     from backend.storage.conversation_store import get_conversation_store
 
-    history = get_conversation_store().load_history(session_id, n=200)
+    history = get_conversation_store().load_history(session_id, n=50)
     return [
         {"role": h["role"], "content": h["content"], **(h.get("metadata") or {})}
         for h in history
@@ -1266,18 +1538,17 @@ def config_save_profile(body: ProfileSave):
 @app.get("/config/settings")
 def config_settings():
     """Flat, form-friendly view of the editable settings (no YAML for the user)."""
-    return _settings_view(_config)
+    raw_config = load_yaml_roundtrip(CONFIG_PATH)
+    return _settings_view(raw_config)
 
 
 @app.put("/config/settings")
 def config_settings_save(body: SettingsSave):
     """Apply form settings to the active config (or save_as a new profile) + reload.
-    Preserves all other config keys; only the mapped fields change."""
+    Preserves all comments, formatting, and non-mapped keys."""
     global CONFIG_PATH
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        raw = yaml.safe_load(f.read()) or {}
+    raw = load_yaml_roundtrip(CONFIG_PATH)
     raw = _apply_settings(raw, body.settings)
-    text = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, width=100)
 
     target = CONFIG_PATH
     if body.save_as and body.save_as.strip():
@@ -1285,8 +1556,7 @@ def config_settings_save(body: SettingsSave):
         if not name.endswith(".yaml"):
             name += ".yaml"
         target = os.path.join(CONFIG_DIR, name)
-    with open(target, "w", encoding="utf-8") as f:
-        f.write(text)
+    dump_yaml_roundtrip(raw, target)
     CONFIG_PATH = target
     _reload_pipeline()
     return {"ok": True, "active": os.path.basename(CONFIG_PATH)}
@@ -1305,37 +1575,76 @@ def config_activate(body: ProfileActivate):
     return {"ok": True, "active": name}
 
 
-@app.get("/files/{file_id}/vision-calls")
-def get_vision_calls(file_id: str):
-    """Retrieve all LLM/vision calls made during ingestion for this document."""
+@app.get("/health/docling-server")
+def health_docling_server():
+    """Ping the configured remote Docling server and return its status."""
+    dcfg = (_config.get("extraction") or {}).get("docling") or {}
+    mode = (dcfg.get("mode") or "local").lower()
+    if mode != "remote":
+        return {"mode": "local", "reachable": None, "message": "Local mode — no server to check"}
+
+    server_url = dcfg.get("server_url") or os.environ.get("DOCLING_SERVER_URL", "")
+    if "${" in str(server_url):
+        server_url = os.environ.get("DOCLING_SERVER_URL", "")
+
+    if not server_url:
+        return {"mode": "remote", "reachable": False, "message": "No server URL configured"}
+
+    try:
+        import requests as _req
+        r = _req.get(f"{server_url.rstrip('/')}/health", timeout=5)
+        r.raise_for_status()
+        return {"mode": "remote", "reachable": True, "url": server_url, "detail": r.json()}
+    except Exception as e:
+        return {"mode": "remote", "reachable": False, "url": server_url, "message": str(e)}
+
+
+@app.get("/llm/calls")
+@app.get("/llm-calls")
+def get_all_llm_calls(
+    session_id: str | None = None,
+    document_id: str | None = None,
+    kind: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Retrieve all LLM and vision calls across the entire project (agent, answerer, query_planner, hyde, vision, categorize, enrichment, etc.)."""
     pg = _pg()
     try:
-        rows = pg.conn.execute(
-            """
-            SELECT kind, provider, model, prompt, raw_response, input_tokens, output_tokens, created_at
-            FROM llm_calls
-            WHERE document_id::text = %s
-            ORDER BY created_at ASC
-            """,
-            (file_id,)
-        ).fetchall()
-        return [
-            {
-                "kind": r[0],
-                "provider": r[1],
-                "model": r[2],
-                "prompt": r[3],
-                "raw_response": r[4],
-                "input_tokens": r[5],
-                "output_tokens": r[6],
-                "created_at": r[7].isoformat() if r[7] else None
-            }
-            for r in rows
-        ]
+        return pg.get_llm_calls(
+            document_id=document_id,
+            session_id=session_id,
+            kind=kind,
+            limit=limit,
+            offset=offset,
+        )
     finally:
         pg.close()
 
 
+@app.get("/agent/sessions/{session_id}/llm-calls")
+def get_session_llm_calls(session_id: str, limit: int = 100):
+    """Retrieve LLM calls associated with a specific agent chat session."""
+    pg = _pg()
+    try:
+        return pg.get_llm_calls(session_id=session_id, limit=limit)
+    finally:
+        pg.close()
+
+
+@app.get("/files/{file_id}/vision-calls")
+def get_vision_calls(file_id: str, limit: int = 200):
+    """Retrieve all LLM/vision calls made for this document."""
+    pg = _pg()
+    try:
+        return pg.get_llm_calls(document_id=file_id, limit=limit)
+    finally:
+        pg.close()
+
+
+
+
 @app.get("/")
 def root():
+    # Reload trigger comment v4
     return {"service": "Document Intelligence + RAG Accelerator", "docs": "/docs"}

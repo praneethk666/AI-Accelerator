@@ -134,7 +134,8 @@ def test_slide_sheet_expansion():
     ]
     with patch("backend.storage.postgres_store.PostgresStore", return_value=_fake_store(sheet_blocks)):
         out = _expand_thin_chunks([sheet_chunk])
-    assert "sheet data values" in out[0]["text"]
+    assert "sheet data values" not in out[0]["text"]
+    assert out[0]["text"] == "sheet intro"
 
 
 if __name__ == "__main__":

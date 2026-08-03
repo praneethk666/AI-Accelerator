@@ -45,6 +45,12 @@ def run_query(
     if history is None:
         history = _load_history(session_id, config)
 
+    current_turn = (len(history or []) // 2) + 1
+    if session_id:
+        from backend.agent.context_manager import process_query_context, update_context_from_metadata
+        from backend.guardrails.ambiguity_detector import check_ambiguity
+        query, _ = process_query_context(session_id, query, current_turn)
+
     # Initialize every field the query tools read by direct index, so a tool that
     # does state["sub_questions"] (not .get) can't KeyError on a fresh run.
     state: PipelineState = {
@@ -77,6 +83,15 @@ def run_query(
         # AnswererTool saves the turn (it holds question + answer).
         final = graph.invoke(state)
     final["trace_id"] = trace_info["trace_id"]
+
+    if session_id:
+        from backend.agent.context_manager import update_context_from_metadata
+        from backend.guardrails.ambiguity_detector import check_ambiguity
+        update_context_from_metadata(session_id, final.get("retrieved_chunks", []), current_turn)
+        is_ambiguous, options = check_ambiguity(final.get("retrieved_chunks", []))
+        if is_ambiguous:
+            final["ambiguity"] = {"is_ambiguous": True, "options": options}
+
     return final
 
 

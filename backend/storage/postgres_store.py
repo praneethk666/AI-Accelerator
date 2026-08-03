@@ -41,6 +41,19 @@ def _Json(value):
     return Json(value, dumps=lambda o: json.dumps(o, default=_json_default))
 
 
+def _strip_nul(obj):
+    """Recursively strip NUL bytes (\x00) from dicts/lists/strings, keeping types intact.
+    Postgres text fields strictly reject NUL bytes, which often sneak in from PDFs.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "").replace("\u0000", "")
+    if isinstance(obj, dict):
+        return {k: _strip_nul(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    return obj
+
+
 def dsn_from_env() -> str:
     """Postgres connection string. Prefer POSTGRES_URL (matches .env.example +
     config + docker-compose); otherwise assemble from POSTGRES_* parts."""
@@ -59,7 +72,12 @@ def dsn_from_env() -> str:
 class PostgresStore:
     """Thin wrapper over a Postgres connection (text + tags; no vectors)."""
 
-    def __init__(self, dsn: str | None = None) -> None:
+    _migration_done: bool = False  # class-level flag — runs DDL only once per process
+
+    def __init__(self, dsn: str | None = None, config: dict | None = None) -> None:
+        if not dsn and config and isinstance(config, dict):
+            from backend.core.config import get_db_url
+            dsn = get_db_url(config)
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
         # prepare_threshold=None: real finding, 28-Jul -- psycopg3's default
         # auto-prepare-after-repeated-use behavior breaks under Supabase's
@@ -77,6 +95,37 @@ class PostgresStore:
         # transaction-pooling deployments.
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True,
                                      prepare_threshold=None)
+        # Auto-migration: add file_path column to documents if it doesn't exist yet.
+        # Guard with a class-level flag so this runs ONCE per process, not per request.
+        if not PostgresStore._migration_done:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT"
+                )
+                self.conn.execute(
+                    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS session_id TEXT"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id, created_at)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)"
+                )
+                self.conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS terminal_logs (
+                        id BIGSERIAL PRIMARY KEY,
+                        ts TIMESTAMPTZ DEFAULT NOW(),
+                        level TEXT,
+                        logger_name TEXT,
+                        message TEXT,
+                        exception TEXT
+                    )
+                    """
+                )
+                PostgresStore._migration_done = True
+            except Exception:
+                pass  # DB might not be reachable yet (health probe) — never block startup
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk row (full record), keyed by chunk_id.
@@ -84,6 +133,7 @@ class PostgresStore:
         Persists table_data / image_path too — table and image_caption chunks
         carry these and retrieval/citations need them back (Qdrant holds only the
         vectors + tag payload; Postgres is the source of truth for content)."""
+        chunk = _strip_nul(chunk)
         self.conn.execute(
             """
             INSERT INTO chunks
@@ -111,12 +161,50 @@ class PostgresStore:
             ),
         )
 
+    def write_chunks(self, chunks: list[dict]) -> None:
+        """Upsert multiple chunks in bulk (batch optimization)."""
+        if not chunks:
+            return
+        chunks = _strip_nul(chunks)
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO chunks
+                    (chunk_id, document_id, text, token_count, tags, source_ref,
+                     table_data, image_path)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    document_id = EXCLUDED.document_id,
+                    text        = EXCLUDED.text,
+                    token_count = EXCLUDED.token_count,
+                    tags        = EXCLUDED.tags,
+                    source_ref  = EXCLUDED.source_ref,
+                    table_data  = EXCLUDED.table_data,
+                    image_path  = EXCLUDED.image_path
+                """,
+                [
+                    (
+                        c["chunk_id"],
+                        c.get("document_id"),
+                        c.get("text"),
+                        c.get("token_count", 0),
+                        _Json(c.get("tags", {})),
+                        _Json(c.get("source_ref")),
+                        _Json(c.get("table_data")) if c.get("table_data") else None,
+                        c.get("image_path"),
+                    )
+                    for c in chunks
+                ],
+            )
+
     def write_blocks(self, document_id: str, blocks: list[dict]) -> None:
         """Persist the raw extracted blocks (extractor output BEFORE chunking), in
         reading order. Lets chunking be re-run later without re-extracting, and
         gives full visibility into what was actually pulled from the document."""
         if not blocks:
             return
+            
+        blocks = _strip_nul(blocks)
         # psycopg3 returns a uuid.UUID object for this column elsewhere (e.g. a
         # chunk's document_id from get_chunks_by_ids) — str() defensively so a
         # caller passing that value straight through doesn't hit "operator does
@@ -149,6 +237,9 @@ class PostgresStore:
         """Upsert raw extracted blocks for a specific page/slide/sheet."""
         if not blocks:
             return
+            
+        import json
+        blocks = json.loads(json.dumps(blocks).replace("\\u0000", ""))
         document_id = str(document_id)
         # Delete existing blocks for this document and page
         self.conn.execute(
@@ -213,30 +304,111 @@ class PostgresStore:
             for r in rows
         ]
 
-    def write_llm_calls(self, document_id: str, calls: list[dict]) -> None:
+    def write_llm_calls(self, document_id: str | None, calls: list[dict], session_id: str | None = None) -> None:
         """Persist the raw prompt + raw response for every LLM/vision call made
-        during ingestion (categorize/vision/enrichment) — the full record, since
-        those steps only keep the fields they parsed out in their normal tables."""
+        during ingestion or agent chat into the llm_calls table."""
         if not calls:
             return
+        calls = _strip_nul(calls)
         import uuid
-        document_id = str(document_id)  # see write_blocks — caller may pass a uuid.UUID
+
+        # Validate document_id as a valid UUID, or None
+        doc_uuid = None
+        if document_id:
+            try:
+                doc_uuid = str(uuid.UUID(str(document_id)))
+            except (ValueError, AttributeError):
+                doc_uuid = None
+
         with self.conn.cursor() as cur:
             cur.executemany(
                 """
                 INSERT INTO llm_calls
-                    (call_id, document_id, kind, provider, model, prompt,
+                    (call_id, document_id, session_id, kind, provider, model, prompt,
                      raw_response, input_tokens, output_tokens)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
-                        str(uuid.uuid4()), document_id, c.get("kind"), c.get("provider"),
-                        c.get("model"), c.get("prompt"), c.get("raw_response"),
-                        c.get("input_tokens"), c.get("output_tokens"),
+                        str(uuid.uuid4()),
+                        doc_uuid,
+                        session_id or c.get("session_id"),
+                        str(c.get("kind") or "unknown"),
+                        c.get("provider"),
+                        c.get("model"),
+                        c.get("prompt") if (c.get("prompt") is None or isinstance(c.get("prompt"), str)) else json.dumps(c.get("prompt"), default=str),
+                        c.get("raw_response") if (c.get("raw_response") is None or isinstance(c.get("raw_response"), str)) else json.dumps(c.get("raw_response"), default=str),
+                        int(c.get("input_tokens") or 0),
+                        int(c.get("output_tokens") or 0),
                     )
                     for c in calls
                 ],
+            )
+
+    def get_llm_calls(
+        self,
+        document_id: str | None = None,
+        session_id: str | None = None,
+        kind: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Retrieve LLM/vision calls with optional filtering by document_id, session_id, or kind."""
+        query = (
+            "SELECT call_id, document_id, session_id, kind, provider, model, "
+            "prompt, raw_response, input_tokens, output_tokens, created_at "
+            "FROM llm_calls WHERE 1=1"
+        )
+        params: list[Any] = []
+        if document_id:
+            query += " AND document_id::text = %s"
+            params.append(str(document_id))
+        if session_id:
+            query += " AND session_id = %s"
+            params.append(str(session_id))
+        if kind:
+            query += " AND kind = %s"
+            params.append(str(kind))
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [
+            {
+                "call_id": str(r[0]),
+                "document_id": str(r[1]) if r[1] else None,
+                "session_id": r[2],
+                "kind": r[3],
+                "provider": r[4],
+                "model": r[5],
+                "prompt": r[6],
+                "raw_response": r[7],
+                "input_tokens": r[8],
+                "output_tokens": r[9],
+                "created_at": r[10].isoformat() if r[10] else None,
+            }
+            for r in rows
+        ]
+
+    def write_log_batch(self, logs: list[dict]) -> None:
+        """Persist a batch of application terminal logs to the database."""
+        if not logs:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO terminal_logs (level, logger_name, message, exception)
+                VALUES (%s, %s, %s, %s)
+                """,
+                [
+                    (
+                        r.get("level"),
+                        r.get("logger_name"),
+                        r.get("message"),
+                        r.get("exception"),
+                    )
+                    for r in logs
+                ]
             )
 
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
@@ -344,7 +516,7 @@ class PostgresStore:
         rows = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at,
+                   route, confidence, status, created_at, file_path,
                    current_step, metrics, token_usage, indexed_tokens,
                    chunk_count, progress, total_steps, updated_at, errors
             FROM documents ORDER BY created_at DESC
@@ -354,16 +526,16 @@ class PostgresStore:
         for row in rows:
             doc = _document_row(row)
             doc.update({
-                "current_step": row[9],
-                "metrics": row[10] or [],
-                "token_usage": row[11],
-                "indexed_tokens": row[12],
-                "chunk_count": row[13],
-                "chunks": row[13],            # alias the UI/older callers expect
-                "progress": row[14],
-                "total_steps": row[15],
-                "updated_at": row[16].isoformat() if row[16] else None,
-                "errors": row[17] or [],
+                "current_step": row[10],
+                "metrics": row[11] or [],
+                "token_usage": row[12],
+                "indexed_tokens": row[13],
+                "chunk_count": row[14],
+                "chunks": row[14],            # alias the UI/older callers expect
+                "progress": row[15],
+                "total_steps": row[16],
+                "updated_at": row[17].isoformat() if row[17] else None,
+                "errors": row[18] or [],
             })
             out.append(doc)
         return out
@@ -373,7 +545,7 @@ class PostgresStore:
         row = self.conn.execute(
             """
             SELECT document_id, filename, file_type, document_type, industry,
-                   route, confidence, status, created_at,
+                   route, confidence, status, created_at, file_path,
                    current_step, metrics, token_usage, indexed_tokens,
                    chunk_count, progress, total_steps, updated_at, errors
             FROM documents WHERE document_id::text = %s
@@ -384,16 +556,16 @@ class PostgresStore:
             return None
         doc = _document_row(row)
         doc.update({
-            "current_step": row[9],
-            "metrics": row[10] or [],
-            "token_usage": row[11],
-            "indexed_tokens": row[12],
-            "chunk_count": row[13],
-            "chunks": row[13],            # alias the UI/older callers expect
-            "progress": row[14],
-            "total_steps": row[15],
-            "updated_at": row[16].isoformat() if row[16] else None,
-            "errors": row[17] or [],
+            "current_step": row[10],
+            "metrics": row[11] or [],
+            "token_usage": row[12],
+            "indexed_tokens": row[13],
+            "chunk_count": row[14],
+            "chunks": row[14],            # alias the UI/older callers expect
+            "progress": row[15],
+            "total_steps": row[16],
+            "updated_at": row[17].isoformat() if row[17] else None,
+            "errors": row[18] or [],
         })
         return doc
 
@@ -476,4 +648,5 @@ def _document_row(r) -> dict:
         "confidence": r[6],
         "status": r[7],
         "created_at": r[8].isoformat() if r[8] else None,
+        "file_path": r[9] if len(r) > 9 else None,
     }

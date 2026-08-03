@@ -21,6 +21,13 @@ The tracing layer in `backend/core/tracing.py` creates these metric series:
 - `tool_calls_total`
 - `tool_call_duration_ms`
 - `llm_tokens_total`
+- `guardrail_decisions_total`
+- `guardrail_risk_score`
+- `guardrail_decision_latency_ms`
+- `guardrail_bypass_rate`
+- `guardrail_block_rate`
+- `guardrail_redact_rate`
+- `guardrail_recent_decisions`
 
 It also instruments LangChain so LLM calls can surface in Grafana with the
 `gen_ai_*` series used by the dashboard's LLM panels.
@@ -131,6 +138,7 @@ After import, the dashboard should show panels for:
 - Error rates for requests and tools
 - LLM token usage
 - LLM call latency
+- Governance decisions, block rate, bypass rate, risk score, and latency
 - Recent traces
 - Logs
 - Session explorer panels
@@ -233,7 +241,7 @@ data before sending it.
 
 | File | What it does |
 |---|---|
-| `backend/core/tracing.py` | Sets up OpenTelemetry tracing, metrics, and logs. It defines the request, tool, and token metrics and adds trace metadata like `service.name` and `session_id`. |
+| `backend/core/tracing.py` | Sets up OpenTelemetry tracing, metrics, and logs. It defines the request, tool, token, and guardrail governance metrics, and adds trace metadata like `service.name` and `session_id`. |
 | `backend/core/llm_client.py` | Builds the LLM clients that LangChain instrumentation can observe automatically. |
 | `backend/core/vision_client.py` | Wraps each vision provider call in a traced span. |
 | `backend/agent/executor.py` | Opens the root span for a chat turn and child spans for dispatched tools. |

@@ -132,17 +132,30 @@ def ingest_document(
           unsupported — file type we can't extract (e.g. .xdw DocuWorks); nothing run
           failed      — a pipeline step raised
     """
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(file_path)
-
     cfg = config if config is not None else load_config(CONFIG_PATH)
     reg = registry if registry is not None else build_default_registry()
-    document_id = document_id or _content_id(file_path)
-    file_type = file_type_of(file_path)
-    filename = display_filename(file_path)
+
+    local_path = None
+    if file_path.startswith("supabase://"):
+        parts = file_path[11:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1]
+        local_path = os.path.join("uploads", f"temp_{document_id or 'ingest'}_{os.path.basename(key)}")
+        from backend.storage.supabase_store import download_from_supabase
+        download_from_supabase(bucket, key, local_path, config=cfg)
+        file_path_for_pipeline = local_path
+    else:
+        file_path_for_pipeline = file_path
+
+    if not os.path.isfile(file_path_for_pipeline):
+        raise FileNotFoundError(file_path_for_pipeline)
+
+    document_id = document_id or _content_id(file_path_for_pipeline)
+    file_type = file_type_of(file_path_for_pipeline)
+    filename = display_filename(file_path_for_pipeline)
 
     # register the doc row (no-op if it exists) + clear prior chunks so re-ingest
-    # replaces rather than duplicates.
+    # replaces rather than duplicates. We record the original file_path (e.g. supabase://...) in the DB.
     pg = PostgresStore()
     try:
         pg.insert_document(document_id, filename, file_type, file_path)
@@ -153,7 +166,7 @@ def ingest_document(
     # Fail LOUD on formats we cannot extract: an "unknown" file_type enables no
     # extractor, so the pipeline would produce zero chunks yet still finalize
     # "ready" — hiding the file. Short-circuit to an explicit "unsupported" status.
-    ext = os.path.splitext(file_path)[1].lower()
+    ext = os.path.splitext(file_path_for_pipeline)[1].lower()
     unsupported_msg = None
     if file_type == "unknown":
         hint = _UNSUPPORTED_HINTS.get(ext)
@@ -165,7 +178,7 @@ def ingest_document(
         logger.warning("ingest %s (%s): %s", filename, document_id, unsupported_msg)
 
     # run the pipeline (graph owns routing/extraction; we just seed file_type)
-    state = {"document_id": document_id, "file_path": file_path,
+    state = {"document_id": document_id, "file_path": file_path_for_pipeline,
              "file_type": file_type, "errors": []}
 
     with traced_request(
@@ -215,6 +228,12 @@ def ingest_document(
         try:
             if not pg.document_exists(document_id):
                 logger.warning("Document %s was deleted mid-ingestion; aborting database finalization.", document_id)
+                # Clean up temporary file if any
+                if local_path and os.path.isfile(local_path):
+                    try:
+                        os.remove(local_path)
+                    except Exception:
+                        pass
                 return {"document_id": document_id, "status": "deleted",
                         "metrics": metrics, "errors": errors, "trace_id": trace_id}
                 
@@ -225,12 +244,12 @@ def ingest_document(
                     page_dir = os.path.join(pages_dir, document_id)
                     os.makedirs(page_dir, exist_ok=True)
                     
-                    ext = os.path.splitext(file_path)[1].lower()
+                    ext = os.path.splitext(file_path_for_pipeline)[1].lower()
                     file_type = result.get("document_type") or ""
                     
                     if ext in (".pptx", ".ppt") or file_type == "presentation":
                         from backend.core.office_renderer import render_pptx_slides
-                        render_pptx_slides(file_path, page_dir)
+                        render_pptx_slides(file_path_for_pipeline, page_dir)
                         
                         # Register PPT slide entries in DB
                         pages = {
@@ -259,7 +278,7 @@ def ingest_document(
                             and c["source_ref"].get("page") is not None
                         }
                         import fitz
-                        doc = fitz.open(file_path)
+                        doc = fitz.open(file_path_for_pipeline)
                         try:
                             for p in sorted(pages):
                                 if p < 1 or p > len(doc):
@@ -304,6 +323,13 @@ def ingest_document(
             pg.close()
     except Exception:
         logger.exception("finalize_document failed for %s", document_id)
+
+    # Clean up temporary file if any
+    if local_path and os.path.isfile(local_path):
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
 
     # caller tail work (page images, rich logging) gets the full result + status
     if on_complete is not None:

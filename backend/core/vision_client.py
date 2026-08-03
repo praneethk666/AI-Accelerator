@@ -91,16 +91,25 @@ def _retry_after(exc: Exception, attempt: int) -> float:
     return min((2 ** attempt) + random.uniform(0, 1.0), 30.0)
 
 
+def _get_api_key(vcfg: dict, default_env_var: str) -> str | None:
+    api_key = os.environ.get(default_env_var)
+    cfg_key = vcfg.get("api_key")
+    if cfg_key and not str(cfg_key).startswith("${"):
+        api_key = cfg_key
+    if api_key and "," in api_key:
+        keys = [k.strip() for k in api_key.split(",") if k.strip()]
+        if keys:
+            api_key = random.choice(keys)
+    return api_key
+
+
 def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) -> str:
     """OpenAI-compatible multimodal: send the image as a base64 data URL."""
     import base64
     from openai import OpenAI
 
     vcfg = config.get("vision") or config
-    api_key = os.environ.get("OPENAI_API_KEY")
-    cfg_key = vcfg.get("api_key")
-    if cfg_key and not str(cfg_key).startswith("${"):
-        api_key = cfg_key
+    api_key = _get_api_key(vcfg, "OPENAI_API_KEY")
 
     client = OpenAI(api_key=api_key, base_url=vcfg.get("base_url") or None)
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
@@ -161,7 +170,8 @@ def _describe_google(image_bytes: bytes, prompt: str, model: str, config: dict) 
     from google import genai
     from google.genai import types
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    vcfg = config.get("vision") or config
+    api_key = _get_api_key(vcfg, "GOOGLE_API_KEY")
     if not api_key:
         raise EnvironmentError("GOOGLE_API_KEY is not set. Add it to your .env file.")
 

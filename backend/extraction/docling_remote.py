@@ -106,6 +106,45 @@ def extract_docling_remote(
         "extract_docling_remote: %d blocks from %s (%d pages) in %.1fs",
         len(blocks), filename, n_pages, elapsed)
 
+    # Real gap found live, 3-Aug: the server flags complex tables with
+    # metadata.escalation_hint="vlm_or_local" (this module's own docstring says
+    # so) but NOTHING ever consumed that hint -- every complex table (exactly
+    # the hardest cases PaddleOCR-VL was integrated to fix) was silently left
+    # as raw TableFormer/pymupdf output whenever mode: remote was used. Fixed
+    # here: re-crop each flagged table from the SAME local pdf_path (we still
+    # have it -- we just uploaded it) and escalate through the same
+    # _local_table() the local extraction path uses, so remote mode gets
+    # identical table quality to local mode, not just identical speed.
+    n_escalated = 0
+    from backend.extraction.docling_pdf.docling_extract import (
+        _local_table, _local_table_engine, _render_table_markdown,
+    )
+    if _local_table_engine(config):
+        for block in blocks:
+            if block.get("type") != "table":
+                continue
+            if (block.get("metadata") or {}).get("escalation_hint") != "vlm_or_local":
+                continue
+            ref = block.get("source_ref") or {}
+            page_no, bbox = ref.get("page"), ref.get("bbox")
+            if not isinstance(page_no, int) or not bbox:
+                continue
+            try:
+                td = _local_table(pdf_path, page_no, bbox, config)
+            except Exception as e:
+                logger.warning("docling_remote: table escalation failed (page %s): %s",
+                               page_no, e)
+                continue
+            if td is not None:
+                block["table_data"] = td
+                block["text"] = _render_table_markdown(td) or block.get("text")
+                n_escalated += 1
+        if n_escalated:
+            logger.info("extract_docling_remote: escalated %d complex table(s) to local engine",
+                       n_escalated)
+    if report is not None:
+        report["tables_escalated_after_remote"] = n_escalated
+
     if on_page:
         on_page(n_pages, n_pages, "done")
 

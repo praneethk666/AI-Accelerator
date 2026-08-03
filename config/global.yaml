@@ -502,6 +502,24 @@ industries:
 default_industry: general
 
 # ── Categorization ────────────────────────────────────────────────────────────
+# ── Deployment (per-customer narrow-scope overrides) ──────────────────────────
+# For a deployment where the document type is ALWAYS known ahead of time (a
+# customer whose documents are exclusively, say, automotive service manuals, or
+# exclusively invoices) — force_document_type skips the categorize LLM/vision
+# call entirely (backend/categorize/categorize_tool.py::_forced_result), since
+# the classification would land on the same answer every single time anyway.
+# Cheap either way (~$0.0005-0.001/doc, one vision call on pages 1-3) but real,
+# avoidable cost+latency at high volume for a single-purpose install. Leave
+# force_document_type unset (the default) for a general-purpose multi-industry
+# deployment — classification then runs normally, as it does today.
+deployment:
+  # force_document_type:      # e.g. "manual" — see document_types below for the
+                               # full vocabulary. Setting this enables the bypass.
+  # force_industry:           # defaults to default_industry if unset
+  # force_route:              # defaults to type_to_route[force_document_type]
+  default_industry: general   # fallback when classification confidence is low
+                               # (used regardless of the bypass above)
+
 # Used by CategorizeTool.
 # config["categorization"]["industry_keywords"] — keyword lists per industry
 # config["categorization"]["confidence_thresholds"] — when to flag low confidence

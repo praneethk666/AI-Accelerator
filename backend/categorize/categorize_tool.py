@@ -17,7 +17,33 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .classifier import categorize
+from .classifier import categorize, detect_file_type
+
+
+def _forced_result(file_path: str, config: Dict[str, Any]) -> Dict[str, Any] | None:
+    """A narrow-scope deployment (a customer whose documents are ALWAYS one
+    known type -- e.g. "this install only ever ingests automotive service
+    manuals") can skip the classify LLM call entirely: the answer would be
+    identical every time anyway, so paying for it (and the page-render +
+    vision-call latency) is pure waste. Set deployment.force_document_type to
+    enable; force_industry/force_route default from it if unset.
+
+    file_type detection stays real/local (extension-based, free) since it's
+    needed for extractor routing regardless of whether classification ran."""
+    dep = config.get("deployment") or {}
+    doc_type = dep.get("force_document_type")
+    if not doc_type:
+        return None
+    type_to_route = config.get("type_to_route") or {}
+    return {
+        "route": dep.get("force_route") or type_to_route.get(doc_type, "text_default"),
+        "document_type": doc_type,
+        "industry": dep.get("force_industry") or config.get("default_industry", "general"),
+        "confidence": 1.0,
+        "file_type": detect_file_type(file_path),
+        "reasoning": "deployment.force_document_type set; classification skipped",
+        "errors": [],
+    }
 
 
 def _augment_pdf_kind(result: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
@@ -87,6 +113,10 @@ class CategorizeTool:
             }
 
         try:
+            forced = _forced_result(file_path, config)
+            if forced is not None:
+                return _augment_pdf_kind(forced, state)
+
             # Pass full config to categorize; it handles structure internally
             result = categorize(
                 file_path=file_path,

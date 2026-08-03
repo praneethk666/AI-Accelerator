@@ -12,6 +12,8 @@ import {
   ChatBubbleLeftIcon,
   ArrowPathIcon,
   Cog6ToothIcon,
+  ChevronDownIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline';
 
 // The real ingestion steps (match tool `name`s in the metrics the API returns).
@@ -79,8 +81,16 @@ const IngestionPage = () => {
   const [lastRun, setLastRun] = useState(null);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [doclingAlert, setDoclingAlert] = useState(null); // null | { url: string }
+  const [expandedFiles, setExpandedFiles] = useState({});
   const selectedDocIdRef = useRef(null);
   const activePolls = useRef({});
+
+  const toggleExpandFile = (fileId) => {
+    setExpandedFiles((prev) => ({
+      ...prev,
+      [fileId]: !prev[fileId],
+    }));
+  };
 
   const selectDocument = (docId, fileInfo = null) => {
     setSelectedDocId(docId);
@@ -400,23 +410,29 @@ const IngestionPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-gray-100">
-      {/* Header */}
-      <div className="bg-slate-900/50 border-b border-slate-700 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-6">
-          <div className="flex justify-between items-center">
+    <div className="min-h-screen pastel-mesh-bg text-[#1d1d1d]">
+      {/* Slacc Glassmorphic Top Header Bar */}
+      <div className="bg-white/80 backdrop-blur-md border-b border-[#e6e6e6] sticky top-0 z-50 shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-3.5">
+          <div className="flex flex-row justify-between items-center gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-white">Document Ingestion</h1>
-              <p className="text-gray-400 mt-2">Upload and categorize your documents for intelligent processing</p>
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold tracking-widest text-xs text-[#4a154b] uppercase">AI-ACCELERATOR</span>
+                <span className="text-[#696969] text-xs">/</span>
+                <span className="text-xs font-bold text-[#696969] uppercase">INGESTION</span>
+              </div>
+              <h1 className="text-xl font-extrabold text-[#4a154b] display-title tracking-tight mt-0.5" style={{ fontFamily: 'Inter, sans-serif' }}>
+                Document Ingestion & Pipeline
+              </h1>
             </div>
             <div className="flex items-center gap-3">
-              <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${serverConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                <div className={`w-2 h-2 rounded-full ${serverConnected ? 'bg-green-400' : 'bg-red-400'}`} />
+              <div className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-bold ${serverConnected ? 'bg-[#007a5a]/10 text-[#007a5a] border border-[#007a5a]/30' : 'bg-[#cc4117]/10 text-[#cc4117] border border-[#cc4117]/30'}`}>
+                <div className={`w-2 h-2 rounded-full ${serverConnected ? 'bg-[#007a5a]' : 'bg-[#cc4117]'}`} />
                 {serverConnected ? 'Backend Connected' : 'Backend Offline'}
               </div>
               <button
                 onClick={() => navigate('/chat')}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                className="btn-primary-pill !py-2 !px-6 text-xs inline-flex items-center gap-2 shadow-sm"
               >
                 <ChatBubbleLeftIcon className="h-4 w-4" />
                 Agent Chat
@@ -424,7 +440,7 @@ const IngestionPage = () => {
               <button
                 onClick={() => navigate('/settings')}
                 title="Configuration"
-                className="p-2 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-slate-700/50 transition-colors"
+                className="p-2.5 rounded-full bg-[#f9f0ff] hover:bg-[#f3e2ff] border border-[#e6e6e6] text-[#4a154b] transition-all shadow-sm flex items-center justify-center"
               >
                 <Cog6ToothIcon className="h-5 w-5" />
               </button>
@@ -437,43 +453,41 @@ const IngestionPage = () => {
       <div className="max-w-7xl mx-auto px-6 py-8">
         {/* Error Message */}
         {error && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 flex items-start gap-3">
+          <div className="mb-6 p-4 bg-[#cc4117]/10 border border-[#cc4117]/30 rounded-2xl text-[#cc4117] flex items-start gap-3 shadow-sm">
             <ExclamationCircleIcon className="h-5 w-5 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="font-medium">Error</p>
-              <p className="text-sm mt-1">{error}</p>
+              <p className="font-bold">Execution Error</p>
+              <p className="text-sm mt-0.5">{error}</p>
             </div>
           </div>
         )}
 
-        {/* Upload Area */}
+        {/* Upload Hero Dropzone Container — Compact */}
         <div
           {...getRootProps()}
-          className={`mb-8 border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer ${
+          className={`mb-8 border-2 border-dashed rounded-2xl py-6 px-8 text-center transition-all cursor-pointer shadow-sm ${
             isDragActive
-              ? 'border-blue-500 bg-blue-500/10'
+              ? 'border-[#4a154b] bg-[#f9f0ff]'
               : uploading || !serverConnected
-                ? 'border-gray-600 bg-slate-800/50 opacity-50 cursor-not-allowed'
-                : 'border-slate-600 bg-slate-800/30 hover:border-blue-500 hover:bg-blue-500/5'
+                ? 'border-[#e6e6e6] bg-white/60 opacity-50 cursor-not-allowed'
+                : 'border-[#4a154b]/30 bg-white hover:border-[#4a154b] hover:bg-[#f9f0ff]/40'
           }`}
         >
           <input {...getInputProps()} />
-          <CloudArrowUpIcon className="h-16 w-16 mx-auto text-slate-400 mb-3" />
-          <p className="text-xl font-semibold text-white mb-1">
-            {uploading ? 'Uploading...' : isDragActive ? 'Drop files here' : 'Drop files or click to browse'}
+          <CloudArrowUpIcon className="h-9 w-9 mx-auto text-[#4a154b] mb-2" />
+          <p className="text-base font-bold text-[#4a154b] display-title mb-0.5">
+            {uploading ? 'Processing Uploads…' : isDragActive ? 'Drop files into canvas' : 'Drop documents or click to browse'}
           </p>
-          <p className="text-sm text-gray-400 mb-4">
-            Supported: PDF, Docx, Excel, PowerPoint, Images (PNG, JPG, GIF, BMP)
+          <p className="text-xs text-[#696969] mb-4">
+            Supported formats: PDF (Digital &amp; Scanned OCR), DOCX, XLSX, PPTX, Images (PNG, JPG, GIF, BMP)
           </p>
           <button
             disabled={uploading || !serverConnected}
-            className={`inline-block px-6 py-2 rounded-lg font-medium transition-colors ${
-              uploading || !serverConnected
-                ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                : 'bg-blue-600 text-white hover:bg-blue-700'
+            className={`btn-primary-pill !py-2 !px-5 text-xs inline-block ${
+              uploading || !serverConnected ? 'opacity-50 cursor-not-allowed' : ''
             }`}
           >
-            {uploading ? 'Uploading...' : 'Browse Files'}
+            {uploading ? 'Uploading…' : 'Browse Local Files'}
           </button>
         </div>
 
@@ -481,11 +495,11 @@ const IngestionPage = () => {
         {Object.keys(uploadProgress).length > 0 && (
           <div className="mb-8 space-y-3">
             {Object.entries(uploadProgress).map(([filename, progress]) => (
-              <div key={filename} className="bg-slate-800/50 p-4 rounded-lg">
-                <p className="text-sm text-gray-300 mb-2">{filename}</p>
-                <div className="w-full bg-slate-700 rounded-full h-2">
+              <div key={filename} className="bg-white p-4 rounded-2xl border border-[#e6e6e6] shadow-sm">
+                <p className="text-xs font-bold text-[#4a154b] mb-2">{filename}</p>
+                <div className="w-full bg-[#f9f0ff] rounded-full h-2.5">
                   <div
-                    className="bg-blue-500 h-2 rounded-full transition-all"
+                    className="bg-[#4a154b] h-2.5 rounded-full transition-all"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
@@ -496,18 +510,17 @@ const IngestionPage = () => {
 
         {/* Pipeline Status — reflects the last upload's actual per-step metrics */}
         {lastRun && lastRun.status === 'processing' && (
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Processing Pipeline</h2>
-              <span className="text-xs text-gray-500 truncate max-w-[60%]">
-                {lastRun.name} · processing…
+          <div className="mb-8 bg-white border border-[#e6e6e6] rounded-2xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-5 pb-3 border-b border-[#e6e6e6]">
+              <h2 className="text-xs font-bold text-[#4a154b] uppercase tracking-wider">Active Ingestion Pipeline</h2>
+              <span className="text-xs font-semibold text-[#696969] truncate max-w-[60%] bg-[#f9f0ff] px-3 py-1 rounded-full border border-[#e6e6e6]">
+                {lastRun.name} · Processing…
               </span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
               {(() => {
                 const metrics = lastRun?.metrics || [];
                 const processing = lastRun?.status === 'processing';
-                // index of the last stage that already has a metric -> the next one is "running"
                 const lastDone = PIPELINE_STAGES.reduce(
                   (acc, s, i) => (metrics.some((x) => s.match.includes(x.step)) ? i : acc), -1);
                 return PIPELINE_STAGES.map((stage, i) => {
@@ -519,12 +532,12 @@ const IngestionPage = () => {
                   else if (processing) state = 'pending';
                   else state = 'skipped';
                   const box = {
-                    idle: 'border-slate-700 bg-slate-800/30',
-                    pending: 'border-slate-700 bg-slate-800/30 opacity-50',
-                    skipped: 'border-slate-700 bg-slate-800/20 opacity-50',
-                    running: 'border-blue-500/60 bg-blue-500/10 shadow-lg shadow-blue-500/20 animate-pulse',
-                    done: 'border-green-500/50 bg-green-500/10 shadow-lg shadow-green-500/10',
-                    error: 'border-red-500/50 bg-red-500/10',
+                    idle: 'border-[#e6e6e6] bg-[#f9f0ff]/30 text-[#696969]',
+                    pending: 'border-[#e6e6e6] bg-[#f9f0ff]/20 opacity-50 text-[#696969]',
+                    skipped: 'border-[#e6e6e6] bg-[#f9f0ff]/10 opacity-40 text-[#696969]',
+                    running: 'border-[#4a154b] bg-[#4a154b] text-white shadow-lg animate-pulse',
+                    done: 'border-[#e6e6e6] bg-[#f9f0ff] text-[#4a154b] font-bold shadow-sm',
+                    error: 'border-[#cc4117] bg-[#cc4117]/10 text-[#cc4117]',
                   }[state];
                   const note =
                     state === 'done' ? fmtDuration(m.ms)
@@ -536,70 +549,55 @@ const IngestionPage = () => {
                     : state === 'skipped' ? 'skipped'
                     : '';
                   const noteColor =
-                    state === 'error' ? 'text-red-400'
-                    : state === 'running' ? 'text-blue-300'
-                    : 'text-gray-500';
+                    state === 'error' ? 'text-[#cc4117]'
+                    : state === 'running' ? 'text-white'
+                    : 'text-[#696969]';
                   return (
                     <div
                       key={stage.label}
-                      className={`flex flex-col items-center p-3 rounded-lg border transition-all ${box}`}
+                      className={`flex flex-col items-center p-3.5 rounded-2xl border transition-all ${box}`}
                     >
-                      <span className="text-2xl mb-1">{stage.icon}</span>
-                      <span className="text-xs text-gray-300 text-center font-medium">{stage.label}</span>
-                      <span className={`text-[10px] mt-1 h-3 ${noteColor}`}>{note}</span>
+                      <span className="text-2xl mb-1.5">{stage.icon}</span>
+                      <span className="text-xs text-center font-bold">{stage.label}</span>
+                      <span className={`text-[10px] mt-1 font-mono h-3.5 ${noteColor}`}>{note}</span>
                     </div>
                   );
                 });
               })()}
             </div>
 
-            {/* Timing + token usage summary (from the last run) — labeled stat cards */}
+            {/* Timing + token usage summary */}
             {lastRun && (lastRun.tokenUsage || lastRun.indexedTokens != null || (lastRun.metrics || []).length > 0) && (() => {
               const tu = lastRun.tokenUsage || {};
               const totalMs = (lastRun.metrics || []).reduce((a, m) => a + (m.ms || 0), 0);
               const Stat = ({ label, value, sub }) => (
-                <div className="flex flex-col px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/60 min-w-[110px]">
-                  <span className="text-[10px] uppercase tracking-wider text-gray-500">{label}</span>
-                  <span className="text-sm font-semibold text-gray-100">{value}</span>
-                  {sub != null && <span className="text-[10px] text-gray-500 mt-0.5">{sub}</span>}
+                <div className="flex flex-col px-4 py-3 rounded-2xl bg-white border border-[#e6e6e6] min-w-[120px] shadow-sm">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-[#4a154b]">{label}</span>
+                  <span className="text-xl font-extrabold text-[#4a154b] display-stat mt-0.5">{value}</span>
+                  {sub != null && <span className="text-[10px] text-[#696969] mt-0.5">{sub}</span>}
                 </div>
               );
               return (
-                <div className="mt-4 space-y-2">
-                  {/* Row 1: Tokens */}
+                <div className="mt-5 space-y-3">
                   {(lastRun.tokenUsage || lastRun.indexedTokens != null) && (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-3">
                       {lastRun.tokenUsage && (
                         <>
-                          <Stat label="Total tokens" value={(tu.total_tokens || 0).toLocaleString()}
-                                sub={fmtLlmCallsSub(tu)} />
-                          <Stat label="Input tokens" value={(tu.input_tokens || 0).toLocaleString()} />
-                          <Stat label="Output tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                          <Stat label="Total Tokens" value={(tu.total_tokens || 0).toLocaleString()} sub={fmtLlmCallsSub(tu)} />
+                          <Stat label="Input Tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                          <Stat label="Output Tokens" value={(tu.output_tokens || 0).toLocaleString()} />
                         </>
                       )}
                       {lastRun.indexedTokens != null && (
-                        <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()}
-                              sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
+                        <Stat label="Indexed" value={(lastRun.indexedTokens || 0).toLocaleString()} sub={`tokens · ${lastRun.chunks ?? 0} chunks`} />
                       )}
-                      {tu.by_kind && Object.keys(tu.by_kind).length > 0 &&
-                        Object.entries(tu.by_kind).map(([k, v]) => (
-                          <Stat key={k} label={k}
-                                value={((v.input_tokens || 0) + (v.output_tokens || 0)).toLocaleString()}
-                                sub="tokens" />
-                        ))}
                     </div>
                   )}
-                  
-                  {/* Row 2: Time */}
-                  {(totalMs > 0 || (lastRun.metrics && lastRun.metrics.length > 0)) && (
-                    <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
-                      {totalMs > 0 && (
-                        <Stat label="Total time" value={fmtDuration(totalMs)}
-                              sub={`${(lastRun.metrics || []).length} steps`} />
-                      )}
+                  {totalMs > 0 && (
+                    <div className="flex flex-wrap gap-3 border-t border-[#e6e6e6] pt-3">
+                      <Stat label="Total Time" value={fmtDuration(totalMs)} sub={`${(lastRun.metrics || []).length} steps`} />
                       {(lastRun.metrics || []).map((m, i) => (
-                        <Stat key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)}
-                              sub={m.status === 'error' ? 'failed' : 'ok'} />
+                        <Stat key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)} sub={m.status === 'error' ? 'failed' : 'ok'} />
                       ))}
                     </div>
                   )}
@@ -612,16 +610,16 @@ const IngestionPage = () => {
         {/* Files Section */}
         <div>
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-semibold text-white">
-              Processed Files {files.length > 0 && `(${files.length})`}
+            <h2 className="text-2xl font-bold text-[#4a154b] display-title">
+              Processed Document Library {files.length > 0 && `(${files.length})`}
             </h2>
             {files.length > 0 && (
               <button
                 onClick={loadFiles}
-                className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors"
+                className="btn-secondary-pill flex items-center gap-2"
               >
                 <ArrowPathIcon className="h-4 w-4" />
-                Refresh
+                Refresh List
               </button>
             )}
           </div>
@@ -631,133 +629,68 @@ const IngestionPage = () => {
               {[1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className="bg-gradient-to-br from-slate-800/40 to-slate-800/20 border border-slate-700/50 rounded-lg p-6 animate-pulse"
+                  className="bg-white border border-[#e6e6e6] rounded-2xl p-6 animate-pulse shadow-sm"
                   style={{ animationDelay: `${i * 150}ms`, animationDuration: '1.5s' }}
                 >
                   <div className="flex items-start gap-4">
-                    <div className="p-3 bg-slate-700/30 rounded-lg border border-slate-700/30 w-12 h-12 flex-shrink-0" />
+                    <div className="p-3 bg-[#f9f0ff] rounded-xl w-12 h-12 flex-shrink-0 border border-[#e6e6e6]" />
                     <div className="flex-1 space-y-3">
-                      <div className="h-5 bg-slate-700/50 rounded w-1/3" />
-                      <div className="h-3 bg-slate-700/30 rounded w-1/4" />
+                      <div className="h-5 bg-[#f9f0ff] rounded w-1/3" />
+                      <div className="h-3 bg-[#f9f0ff] rounded w-1/4" />
                     </div>
                   </div>
                 </div>
               ))}
             </div>
           ) : files.length === 0 ? (
-            <div className="text-center py-12 bg-slate-800/20 rounded-lg border border-slate-700">
-              <DocumentIcon className="h-12 w-12 mx-auto text-gray-500 mb-3" />
-              <p className="text-gray-400">No files uploaded yet</p>
-              <p className="text-sm text-gray-500 mt-1">Upload files to get started</p>
+            <div className="text-center py-16 bg-white rounded-2xl border border-[#e6e6e6] shadow-sm">
+              <DocumentIcon className="h-14 w-14 mx-auto text-[#4a154b] mb-3 opacity-40" />
+              <p className="text-lg font-bold text-[#4a154b]">No documents uploaded yet</p>
+              <p className="text-xs text-[#696969] mt-1">Upload documents above to populate the vector search index</p>
             </div>
           ) : (
             <div className="grid gap-4">
               {files.map((file) => (
                 <div
                   key={file.id}
-                  onClick={() => selectDocument(file.document_id || file.id, file)}
-                  className={`group bg-gradient-to-br from-slate-800/60 to-slate-800/40 border rounded-lg p-6 hover:from-slate-800/80 hover:to-slate-800/60 transition-all duration-300 shadow-lg hover:shadow-blue-500/10 cursor-pointer ${
+                  onClick={() => {
+                    selectDocument(file.document_id || file.id, file);
+                    toggleExpandFile(file.id);
+                  }}
+                  className={`group bg-white border rounded-2xl p-6 hover:shadow-md transition-all duration-200 cursor-pointer ${
                     selectedDocId === (file.document_id || file.id)
-                      ? 'border-blue-500 ring-1 ring-blue-500/30'
-                      : 'border-slate-700 hover:border-slate-600'
+                      ? 'border-[#4a154b] ring-2 ring-[#4a154b]/20 shadow-md'
+                      : 'border-[#e6e6e6] hover:border-[#4a154b]/40'
                   }`}
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-4 flex-1">
-                      <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20 group-hover:bg-blue-500/20 transition-colors flex-shrink-0">
-                        <DocumentIcon className="h-6 w-6 text-blue-400" />
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4 flex-1 min-w-0">
+                      <div className="p-3.5 bg-[#f9f0ff] rounded-2xl border border-[#e6e6e6] group-hover:bg-[#4a154b] group-hover:text-white transition-all duration-200 flex-shrink-0 text-[#4a154b]">
+                        <DocumentIcon className="h-6 w-6" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h3 className="font-semibold text-white truncate text-lg">{file.filename}</h3>
-                        <p className="text-xs text-gray-500 mt-1">{file.file_type || 'Document'}</p>
-
-                        {/* Timing & Token stats breakdown */}
-                        {(file.token_usage || file.indexed_tokens != null || (file.metrics && file.metrics.length > 0)) && (() => {
-                          const tu = file.token_usage || {};
-                          const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <h3 className="font-bold text-[#4a154b] truncate text-base md:text-lg display-title">{file.filename}</h3>
+                          <span className="text-[10px] font-extrabold text-[#696969] px-2.5 py-0.5 rounded-full bg-[#f4ede4] uppercase tracking-wider">{file.file_type || 'Document'}</span>
                           
-                          const StatBlock = ({ label, value, sub }) => (
-                            <div className="flex flex-col px-2.5 py-1.5 rounded bg-slate-900/40 border border-slate-700/50 min-w-[100px]">
-                              <span className="text-[9px] uppercase tracking-wider text-gray-500 font-semibold">{label}</span>
-                              <span className="text-xs font-semibold text-gray-200">{value}</span>
-                              {sub && <span className="text-[9px] text-gray-500 mt-0.5">{sub}</span>}
-                            </div>
-                          );
-
-                          return (
-                            <div className="mt-4 pt-3 border-t border-slate-700/30 space-y-2">
-                              {/* Row 1: Tokens */}
-                              {(file.token_usage || file.indexed_tokens != null) && (
-                                <div className="flex flex-wrap gap-2">
-                                  {file.token_usage && (
-                                    <>
-                                      <StatBlock
-                                        label="Total Tokens"
-                                        value={(tu.total_tokens || 0).toLocaleString()}
-                                        sub={fmtLlmCallsSub(tu)}
-                                      />
-                                      <StatBlock
-                                        label="Input Tokens"
-                                        value={(tu.input_tokens || 0).toLocaleString()}
-                                      />
-                                      <StatBlock
-                                        label="Output Tokens"
-                                        value={(tu.output_tokens || 0).toLocaleString()}
-                                      />
-                                    </>
-                                  )}
-                                  {file.indexed_tokens != null && (
-                                    <StatBlock
-                                      label="Indexed"
-                                      value={(file.indexed_tokens || 0).toLocaleString()}
-                                      sub={`tokens · ${file.chunk_count || 0} chunks`}
-                                    />
-                                  )}
-                                  {tu.by_kind && Object.entries(tu.by_kind).map(([kind, data]) => {
-                                    const kindTotal = (data.input_tokens || 0) + (data.output_tokens || 0);
-                                    if (kindTotal === 0) return null;
-                                    return (
-                                      <StatBlock
-                                        key={kind}
-                                        label={`${kind}`}
-                                        value={kindTotal.toLocaleString()}
-                                        sub="tokens"
-                                      />
-                                    );
-                                  })}
-                                </div>
-                              )}
-
-                              {/* Row 2: Time */}
-                              {(totalMs > 0 || (file.metrics && file.metrics.length > 0)) && (
-                                <div className="flex flex-wrap gap-2 border-t border-slate-700/30 pt-2">
-                                  {totalMs > 0 && (
-                                    <StatBlock
-                                      label="Total Time"
-                                      value={fmtDuration(totalMs)}
-                                      sub={`${(file.metrics || []).length} steps`}
-                                    />
-                                  )}
-                                  {(file.metrics || []).map((m, i) => (
-                                    <StatBlock
-                                      key={i}
-                                      label={getStepLabel(m.step)}
-                                      value={fmtDuration(m.ms)}
-                                      sub={m.status === 'error' ? 'failed' : 'ok'}
-                                    />
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
+                          {/* Total Time Badge */}
+                          {(() => {
+                            const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
+                            return totalMs > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-xs font-bold text-[#4a154b]">
+                                <ClockIcon className="h-3.5 w-3.5 text-[#4a154b]" />
+                                Total Time: {fmtDuration(totalMs)}
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 flex-shrink-0 mt-4 md:mt-0">
-                      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold ${getStatusColor(file.status)}`}>
+                    <div className="flex items-center gap-2 flex-shrink-0 self-end md:self-center">
+                      <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-bold border bg-[#f9f0ff] text-[#4a154b] border-[#e6e6e6]">
                         {getStatusIcon(file.status)}
-                        <span>
+                        <span className="capitalize">
                           {file.status === 'processing' && file.current_step && file.current_step.includes('page')
                             ? file.current_step.replace('docling_pdf ', '').replace('pymupdf_pdf ', '')
                             : file.status}
@@ -765,20 +698,73 @@ const IngestionPage = () => {
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleOpenChat(file.id); }}
-                        className="p-2 hover:bg-blue-500/20 rounded-lg text-blue-400 hover:text-blue-300 transition-all border border-transparent hover:border-blue-500/30 group-hover:opacity-100"
+                        className="btn-primary-pill !p-2.5"
                         title="Chat about this document"
                       >
                         <ChatBubbleLeftIcon className="h-5 w-5" />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDelete(file.id, file.filename); }}
-                        className="p-2 hover:bg-red-500/20 rounded-lg text-red-400 hover:text-red-300 transition-all border border-transparent hover:border-red-500/30"
+                        className="btn-secondary-pill !p-2.5 !text-[#cc4117]"
                         title="Delete file"
                       >
                         <TrashIcon className="h-5 w-5" />
                       </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleExpandFile(file.id); }}
+                        className="btn-secondary-pill !p-2.5 text-[#4a154b] hover:bg-[#4a154b] hover:text-white transition-all group"
+                        title={expandedFiles[file.id] ? "Hide metrics breakdown" : "Show metrics breakdown"}
+                      >
+                        <ChevronDownIcon className={`h-5 w-5 transition-transform duration-200 ${expandedFiles[file.id] ? 'rotate-180' : ''}`} />
+                      </button>
                     </div>
                   </div>
+
+                  {/* Expandable Detailed Statistics Breakdown */}
+                  {expandedFiles[file.id] && (file.token_usage || file.indexed_tokens != null || (file.metrics && file.metrics.length > 0)) && (() => {
+                    const tu = file.token_usage || {};
+                    const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
+                    
+                    const StatBlock = ({ label, value, sub }) => (
+                      <div className="flex flex-col px-3.5 py-2.5 rounded-xl bg-[#f9f0ff]/50 border border-[#e6e6e6] min-w-[110px]">
+                        <span className="text-[9px] uppercase tracking-wider text-[#4a154b] font-bold">{label}</span>
+                        <span className="text-base font-extrabold text-[#4a154b] mt-0.5 display-stat">{value}</span>
+                        {sub && <span className="text-[9px] text-[#696969] mt-0.5 leading-none">{sub}</span>}
+                      </div>
+                    );
+
+                    return (
+                      <div className="mt-4 pt-4 border-t border-[#e6e6e6] space-y-3">
+                        {/* Row 1: Tokens */}
+                        {(file.token_usage || file.indexed_tokens != null) && (
+                          <div className="flex flex-wrap gap-2.5">
+                            {file.token_usage && (
+                              <>
+                                <StatBlock label="Total Tokens" value={(tu.total_tokens || 0).toLocaleString()} sub={fmtLlmCallsSub(tu)} />
+                                <StatBlock label="Input Tokens" value={(tu.input_tokens || 0).toLocaleString()} />
+                                <StatBlock label="Output Tokens" value={(tu.output_tokens || 0).toLocaleString()} />
+                              </>
+                            )}
+                            {file.indexed_tokens != null && (
+                              <StatBlock label="Indexed" value={(file.indexed_tokens || 0).toLocaleString()} sub={`tokens · ${file.chunk_count || 0} chunks`} />
+                            )}
+                          </div>
+                        )}
+
+                        {/* Row 2: Step Timings */}
+                        {(totalMs > 0 || (file.metrics && file.metrics.length > 0)) && (
+                          <div className="flex flex-wrap gap-2.5 border-t border-[#e6e6e6] pt-3">
+                            {totalMs > 0 && (
+                              <StatBlock label="Total Time" value={fmtDuration(totalMs)} sub={`${(file.metrics || []).length} steps`} />
+                            )}
+                            {(file.metrics || []).map((m, i) => (
+                              <StatBlock key={i} label={getStepLabel(m.step)} value={fmtDuration(m.ms)} sub={m.status === 'error' ? 'failed' : 'ok'} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -787,33 +773,33 @@ const IngestionPage = () => {
       </div>
 
       {doclingAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
-            <div className="flex items-center gap-3 text-amber-400">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1d1d1d]/60 backdrop-blur-sm p-4">
+          <div className="bg-white border border-[#e6e6e6] rounded-2xl p-7 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-[#cc4117]">
               <ExclamationCircleIcon className="h-7 w-7 flex-shrink-0" />
-              <h3 className="text-lg font-bold text-white">Docling GPU Server Unreachable</h3>
+              <h3 className="text-lg font-bold text-[#4a154b]">Docling GPU Server Unreachable</h3>
             </div>
-            <p className="text-sm text-gray-300">
+            <p className="text-sm text-[#1d1d1d]">
               The remote Docling server could not be reached.
             </p>
-            <p className="text-sm text-gray-400">
+            <p className="text-sm text-[#696969]">
               This PDF upload will automatically fall back to <strong>Local CPU mode</strong> instead.
             </p>
-            <div className="p-3 bg-slate-900/60 rounded-lg text-xs text-gray-400 border border-slate-700/60">
+            <div className="p-3.5 bg-[#f9f0ff] rounded-xl text-xs text-[#696969] border border-[#e6e6e6]">
               💡 To silence this warning, go to <strong>Settings</strong> and change Docling Extraction Mode to <strong>Local CPU</strong>.
             </div>
             <div className="flex justify-end gap-3 pt-2">
               <button
                 type="button"
                 onClick={() => navigate('/settings')}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-gray-200"
+                className="btn-secondary-pill"
               >
                 Open Settings
               </button>
               <button
                 type="button"
                 onClick={() => setDoclingAlert(null)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium text-white"
+                className="btn-primary-pill"
               >
                 Dismiss & Continue
               </button>

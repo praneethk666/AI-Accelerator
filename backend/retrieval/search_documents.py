@@ -174,6 +174,24 @@ class SearchDocumentsTool:
                     resolved_scope.append(fid)
 
         final_scope = list(set(resolved_scope)) if resolved_scope else None
+
+        # Prohibit search_documents on spreadsheet files; redirect to excel_tool
+        if final_scope:
+            for d in docs:
+                fid = str(d["document_id"])
+                if fid in final_scope:
+                    fname = d.get("filename", "")
+                    if fname.lower().endswith((".xlsx", ".xls", ".csv")):
+                        return {
+                            "answer": (
+                                f"Error: The document '{fname}' is a spreadsheet. "
+                                f"Using search_documents for spreadsheets is strictly prohibited. "
+                                f"Please call the 'excel_tool' tool with this filename/id to query and inspect its contents instead."
+                            ),
+                            "citations": [],
+                            "sources": [],
+                        }
+
         return search_documents(query, final_scope, doc_type=doc_type, industry=industry, session_id=session_id)
 
     __call__ = run

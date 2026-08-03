@@ -81,13 +81,14 @@ class QdrantStore:
                     ),
                 },
             )
-        # Create payload index for document_id (required by Qdrant Cloud for filtering/deletion)
+        # Create payload indexes required for filtering
         from qdrant_client.models import PayloadSchemaType
-        self.client.create_payload_index(
-            collection_name=self.collection,
-            field_name="document_id",
-            field_schema=PayloadSchemaType.KEYWORD
-        )
+        for field in ["document_id", "doc_type", "industry"]:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD
+            )
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk's dense + sparse vectors + tag payload (keyed by chunk_id)."""

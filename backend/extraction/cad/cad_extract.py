@@ -31,7 +31,6 @@ import uuid
 
 import fitz
 
-from backend.core import prompts
 from backend.core.paths import display_filename
 from backend.core.tool import PipelineState
 from backend.core.vision_client import describe_image
@@ -159,7 +158,7 @@ class CADExtractionTool:
             run_config["vision_ocr"] = cadcfg["vision"]
 
         cap = int(cadcfg.get("max_pages", 0) or 0)          # 0 = unlimited VLM pages
-        dpi = int((run_config.get("vision") or {}).get("dpi", 150))
+        dpi = int((run_config.get("vision") or {}).get("dpi", 200))
 
         from backend.extraction.page_router import profile_page, classify_page, should_tile
 
@@ -184,14 +183,12 @@ class CADExtractionTool:
                     page_class = classify_page(profile_page(page), document_type)
                     if should_tile(page, page_class, run_config):
                         # Oversized sheet: tile so small text/designators stay legible.
-                        from backend.extraction.large_format import transcribe_large_page
-                        md = transcribe_large_page(page, run_config, prompts.SCHEMATIC_TILE)
-                        from backend.extraction.vision_ocr import markdown_to_blocks
-                        page_blocks = markdown_to_blocks(md, document_id, pg, filename)
+                        from backend.extraction.large_format import transcribe_large_page_blocks
+                        tile_vbs = transcribe_large_page_blocks(page, run_config, prompt)
+                        page_blocks = [b for b in (_vb_to_block(vb, document_id, pg, filename) for vb in tile_vbs) if b]
                     else:
                         # Normal sheet: single-shot region-JSON extraction (precise boxes).
-                        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"),
-                                             prompt, run_config)
+                        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"), prompt, run_config)
                         page_blocks = _region_blocks(raw, document_id, pg, filename)
                     if page_blocks:
                         vlm_pages += 1

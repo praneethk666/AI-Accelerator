@@ -54,7 +54,8 @@ _ANSWER_SYSTEM = (
     "unless that exact form appears verbatim in the source. If you present multiple forms, "
     "every one must be cited from a specific passage.\n"
     "- If a relevant table or figure caption is in the context, use it and cite it.\n"
-    "- If the context partially answers or uses corresponding domain terms (e.g. danger/warning levels or safety procedures for incident/severity questions), answer what the context supports with citations and state plainly if specific aspects (like organizational escalation tiers) are not defined.\n"
+    "- If the context only partially answers, answer what it supports and state plainly "
+    "what is missing.\n"
     "- If the answer is not in the context, reply EXACTLY: "
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler.\n"
@@ -212,70 +213,11 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                             is_cited = True
                             
         if is_cited:
-            # Find earliest character position where this citation (index or page) appears in answer
-            pos = 999999
-            page_val = cit.get("page") or cit.get("slide")
-            # Check [idx] mention
-            m_idx = answer.find(f"[{idx}]")
-            if m_idx != -1:
-                pos = min(pos, m_idx)
-            # Check p.X mention
-            if page_val is not None:
-                for p_pat in (f"p.{page_val}", f"p. {page_val}", f"page {page_val}"):
-                    m_p = answer_lower.find(p_pat)
-                    if m_p != -1:
-                        pos = min(pos, m_p)
-            cit["_pos"] = pos
             filtered.append(cit)
             
     # 3. Fallback: if parsing failed to extract any valid citation matches, 
     # keep all retrieved chunks to ensure the sources list is not empty.
-    res = filtered if filtered else citations
-
-    # Rank citations primarily by CONTENT OVERLAP with the final answer
-    # (so the page/chunk containing the majority of the answer is ordered FIRST),
-    # then by mention frequency, retrieval score, and position.
-    def _content_overlap(ans: str, snip: str) -> float:
-        if not ans or not snip:
-            return 0.0
-        ans_words = set(re.findall(r'\b[a-zA-Z0-9_-]{3,}\b', ans.lower()))
-        snip_words = set(re.findall(r'\b[a-zA-Z0-9_-]{3,}\b', snip.lower()))
-        if not ans_words or not snip_words:
-            return 0.0
-        stop_words = {
-            "the", "and", "for", "with", "that", "this", "from", "are", "these",
-            "source", "page", "pages", "pdf", "docx", "xlsx", "manual", "document",
-            "include", "includes", "including", "system", "into", "their", "will",
-            "which", "also", "have", "been", "they", "were", "when", "what"
-        }
-        return float(len((ans_words & snip_words) - stop_words))
-
-    for c in res:
-        overlap = _content_overlap(answer, c.get("snippet") or "")
-        page_val = c.get("page") or c.get("slide")
-        mentions = 0
-        if page_val is not None:
-            for p_pat in (f"p.{page_val}", f"p. {page_val}", f"page {page_val}", f"page: {page_val}"):
-                mentions += answer_lower.count(p_pat)
-        c["_overlap"] = overlap
-        c["_mentions"] = mentions
-        c["_score_val"] = float(c.get("score") or 0.0)
-
-    res.sort(
-        key=lambda c: (
-            c.get("_overlap", 0.0),
-            c.get("_mentions", 0),
-            c.get("_score_val", 0.0),
-            -c.get("_pos", 999999),
-        ),
-        reverse=True
-    )
-    for c in res:
-        c.pop("_pos", None)
-        c.pop("_overlap", None)
-        c.pop("_mentions", None)
-        c.pop("_score_val", None)
-    return res
+    return filtered if filtered else citations
 
 
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
@@ -323,6 +265,19 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
         if filename.lower().endswith((".xlsx", ".xls", ".xlsm")) or ref.get("sheet") is not None:
             continue
 
+        # A chunk that already carries its own structured table_data (headers +
+        # rows) is complete on its own — it should NOT be flagged as "fragmented"
+        # just because other regions (views, title block, notes, etc.) happen to
+        # share its page. This matters a lot for single/few-page CAD/schematic
+        # sheets, where one page is *by design* split into many typed regions:
+        # without this guard, every retrieved chunk from such a page trips the
+        # page_counts > 1 branch below on essentially every query, and its real,
+        # already-correct text (with rows) gets overwritten by a reconstruction
+        # pulled from the pre-chunking extraction-blocks store further down —
+        # which is a different, less complete representation of the page.
+        if c.get("table_data"):
+            continue
+
         doc_id = c.get("document_id")
         page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
         key = (str(doc_id), page_val) if doc_id and page_val is not None else None
@@ -366,7 +321,29 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
                     b["source_ref"].get("sheet") == page_val
                 )
             ]
-            parts = [b.get("text") for b in page_blocks if (b.get("text") or "").strip()]
+            # Build each block's contribution from BOTH its prose text AND its
+            # structured table_data (if any). A raw extraction block's schema
+            # (see NormalizedBlock in schemas.py) allows "text" to be a short
+            # description while the real row data lives separately in
+            # "table_data" — pulling text alone silently drops every row of any
+            # table block swept into this reconstruction (this was the root
+            # cause of part-number lookups returning "could not find this":
+            # the table chunk's real, row-complete text was being replaced by
+            # this reconstruction, which used to take text only).
+            parts = []
+            for b in page_blocks:
+                t = (b.get("text") or "").strip()
+                if t:
+                    parts.append(t)
+                td = b.get("table_data")
+                if td and td.get("rows"):
+                    headers = td.get("headers") or []
+                    rows_str = "\n".join(
+                        " | ".join(str(v) for v in row) for row in td["rows"]
+                    )
+                    parts.append(
+                        f"Columns: {' | '.join(str(h) for h in headers)}\n{rows_str}"
+                    )
             if parts:
                 cache[key] = "\n\n".join(parts)
     finally:
@@ -464,13 +441,12 @@ class AnswererTool:
             model_name, provider_name = resolve_model_provider(
                 config, answerer_cfg, default_model=config["llm"].get("answer_model")
             )
-            llm = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
-            prompt_messages = [
+            llm      = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
+            response = llm.invoke([
                 {"role": "system", "content": _ANSWER_SYSTEM},
                 {"role": "user",   "content": user_msg},
-            ]
-            response = llm.invoke(prompt_messages)
-            usage.record_from_message("answer", response, prompt=prompt_messages, model=model_name, provider=provider_name)
+            ])
+            usage.record_from_message("answer", response, model=model_name, provider=provider_name)
             answer_text = clean_message_content(response.content).strip()
 
             # Build citations — image_path and table_data are top-level chunk fields.

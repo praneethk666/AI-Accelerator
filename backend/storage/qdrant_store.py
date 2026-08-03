@@ -104,7 +104,6 @@ class QdrantStore:
             vector[SPARSE] = SparseVector(
                 indices=sparse["indices"], values=sparse["values"]
             )
-
         self.client.upsert(
             self.collection,
             points=[
@@ -115,6 +114,34 @@ class QdrantStore:
                 )
             ],
         )
+    def write_chunks(self, chunks: list[dict], batch_size: int = 100) -> None:
+        """Upsert multiple chunks in bulk (batch optimization)."""
+        if not chunks:
+            return
+        
+        points = []
+        for chunk in chunks:
+            payload = {
+                "chunk_id": chunk["chunk_id"],
+                "document_id": chunk.get("document_id"),
+                **chunk.get("tags", {}),
+            }
+            vector: dict = {DENSE: chunk["vector"]}
+            sparse = chunk.get("sparse_vector")
+            if sparse and sparse.get("indices"):
+                vector[SPARSE] = SparseVector(
+                    indices=sparse["indices"], values=sparse["values"]
+                )
+            points.append(
+                PointStruct(
+                    id=_point_id(chunk["chunk_id"]),
+                    vector=vector,
+                    payload=payload,
+                )
+            )
+            
+        for i in range(0, len(points), batch_size):
+            self.client.upsert(self.collection, points=points[i:i + batch_size])
 
     def search_dense(
         self, query_vector: list[float], filters: dict | None = None, top_n: int = 5

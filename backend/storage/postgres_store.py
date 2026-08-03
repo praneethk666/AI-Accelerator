@@ -41,6 +41,19 @@ def _Json(value):
     return Json(value, dumps=lambda o: json.dumps(o, default=_json_default))
 
 
+def _strip_nul(obj):
+    """Recursively strip NUL bytes (\x00) from dicts/lists/strings, keeping types intact.
+    Postgres text fields strictly reject NUL bytes, which often sneak in from PDFs.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "").replace("\u0000", "")
+    if isinstance(obj, dict):
+        return {k: _strip_nul(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    return obj
+
+
 def dsn_from_env() -> str:
     """Postgres connection string. Prefer POSTGRES_URL (matches .env.example +
     config + docker-compose); otherwise assemble from POSTGRES_* parts."""
@@ -83,6 +96,18 @@ class PostgresStore:
                 self.conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)"
                 )
+                self.conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS terminal_logs (
+                        id BIGSERIAL PRIMARY KEY,
+                        ts TIMESTAMPTZ DEFAULT NOW(),
+                        level TEXT,
+                        logger_name TEXT,
+                        message TEXT,
+                        exception TEXT
+                    )
+                    """
+                )
                 PostgresStore._migration_done = True
             except Exception:
                 pass  # DB might not be reachable yet (health probe) — never block startup
@@ -93,6 +118,7 @@ class PostgresStore:
         Persists table_data / image_path too — table and image_caption chunks
         carry these and retrieval/citations need them back (Qdrant holds only the
         vectors + tag payload; Postgres is the source of truth for content)."""
+        chunk = _strip_nul(chunk)
         self.conn.execute(
             """
             INSERT INTO chunks
@@ -120,12 +146,50 @@ class PostgresStore:
             ),
         )
 
+    def write_chunks(self, chunks: list[dict]) -> None:
+        """Upsert multiple chunks in bulk (batch optimization)."""
+        if not chunks:
+            return
+        chunks = _strip_nul(chunks)
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO chunks
+                    (chunk_id, document_id, text, token_count, tags, source_ref,
+                     table_data, image_path)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chunk_id) DO UPDATE SET
+                    document_id = EXCLUDED.document_id,
+                    text        = EXCLUDED.text,
+                    token_count = EXCLUDED.token_count,
+                    tags        = EXCLUDED.tags,
+                    source_ref  = EXCLUDED.source_ref,
+                    table_data  = EXCLUDED.table_data,
+                    image_path  = EXCLUDED.image_path
+                """,
+                [
+                    (
+                        c["chunk_id"],
+                        c.get("document_id"),
+                        c.get("text"),
+                        c.get("token_count", 0),
+                        _Json(c.get("tags", {})),
+                        _Json(c.get("source_ref")),
+                        _Json(c.get("table_data")) if c.get("table_data") else None,
+                        c.get("image_path"),
+                    )
+                    for c in chunks
+                ],
+            )
+
     def write_blocks(self, document_id: str, blocks: list[dict]) -> None:
         """Persist the raw extracted blocks (extractor output BEFORE chunking), in
         reading order. Lets chunking be re-run later without re-extracting, and
         gives full visibility into what was actually pulled from the document."""
         if not blocks:
             return
+            
+        blocks = _strip_nul(blocks)
         # psycopg3 returns a uuid.UUID object for this column elsewhere (e.g. a
         # chunk's document_id from get_chunks_by_ids) — str() defensively so a
         # caller passing that value straight through doesn't hit "operator does
@@ -158,6 +222,9 @@ class PostgresStore:
         """Upsert raw extracted blocks for a specific page/slide/sheet."""
         if not blocks:
             return
+            
+        import json
+        blocks = json.loads(json.dumps(blocks).replace("\\u0000", ""))
         document_id = str(document_id)
         # Delete existing blocks for this document and page
         self.conn.execute(
@@ -227,8 +294,8 @@ class PostgresStore:
         during ingestion or agent chat into the llm_calls table."""
         if not calls:
             return
+        calls = _strip_nul(calls)
         import uuid
-        import json
 
         # Validate document_id as a valid UUID, or None
         doc_uuid = None
@@ -307,6 +374,27 @@ class PostgresStore:
             }
             for r in rows
         ]
+
+    def write_log_batch(self, logs: list[dict]) -> None:
+        """Persist a batch of application terminal logs to the database."""
+        if not logs:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO terminal_logs (level, logger_name, message, exception)
+                VALUES (%s, %s, %s, %s)
+                """,
+                [
+                    (
+                        r.get("level"),
+                        r.get("logger_name"),
+                        r.get("message"),
+                        r.get("exception"),
+                    )
+                    for r in logs
+                ]
+            )
 
     def get_chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Fetch full chunk rows by chunk_id (hydrate Qdrant search hits)."""

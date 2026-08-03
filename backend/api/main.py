@@ -51,6 +51,10 @@ _noisy_loggers = [
 for _logger_name in _noisy_loggers:
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
 
+from backend.core.db_logging import setup_db_logging
+# We don't hold the reference to listener here, it runs natively in background
+setup_db_logging(level=logging.INFO)
+
 
 
 import yaml
@@ -1553,7 +1557,8 @@ def config_save_profile(body: ProfileSave):
 @app.get("/config/settings")
 def config_settings():
     """Flat, form-friendly view of the editable settings (no YAML for the user)."""
-    return _settings_view(_config)
+    raw_config = load_yaml_roundtrip(CONFIG_PATH)
+    return _settings_view(raw_config)
 
 
 @app.put("/config/settings")

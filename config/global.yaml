@@ -273,11 +273,11 @@ enrichment:
   summarize: true
   keyword_count: 6
   min_interval_s: 0.3
-  batch_size: 20
+  batch_size: 15
   provider: openai
-  model: meta/llama-3.2-11b-vision-instruct
-  base_url: https://integrate.api.nvidia.com/v1
-  api_key: ${NVIDIA_API_KEY}
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  api_key: ${OPENAI_API_KEY}
   prompt: >
     You label document chunks for a technical search index. For each chunk produce a one-sentence
     summary stating what it is about and what a reader would learn (in the document's own terms), plus
@@ -539,5 +539,5 @@ guardrails:
 storage:
   provider: supabase
   supabase_url: ${SUPABASE_URL}
-  supabase_key: ${SUPABASE_KEY}
+  supabase_key: ${SUPABASE_SERVICE_KEY}
   supabase_bucket: documents

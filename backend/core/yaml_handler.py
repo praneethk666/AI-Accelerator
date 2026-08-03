@@ -9,12 +9,22 @@ from __future__ import annotations
 import io
 import os
 from typing import Any
-from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+try:
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    HAS_RUAMEL = True
+except ImportError:
+    import yaml
+    HAS_RUAMEL = False
+    CommentedMap = dict
+    CommentedSeq = list
 
 
-def get_yaml_instance() -> YAML:
+def get_yaml_instance():
     """Create a configured ruamel.yaml instance for round-trip operations."""
+    if not HAS_RUAMEL:
+        return None
     yaml_obj = YAML(typ="rt")  # round-trip
     yaml_obj.preserve_quotes = True
     yaml_obj.width = 4096  # Prevent unnecessary line-wrapping of long strings
@@ -24,16 +34,27 @@ def get_yaml_instance() -> YAML:
 
 def load_yaml_roundtrip(path_or_stream: str | io.IOBase) -> CommentedMap | dict:
     """Load YAML file or string while preserving comments and structure."""
-    yaml_obj = get_yaml_instance()
-    if isinstance(path_or_stream, str):
-        if os.path.isfile(path_or_stream):
-            with open(path_or_stream, "r", encoding="utf-8") as f:
-                data = yaml_obj.load(f)
+    if HAS_RUAMEL:
+        yaml_obj = get_yaml_instance()
+        if isinstance(path_or_stream, str):
+            if os.path.isfile(path_or_stream):
+                with open(path_or_stream, "r", encoding="utf-8") as f:
+                    data = yaml_obj.load(f)
+            else:
+                data = yaml_obj.load(path_or_stream)
         else:
             data = yaml_obj.load(path_or_stream)
+        return data if data is not None else CommentedMap()
     else:
-        data = yaml_obj.load(path_or_stream)
-    return data if data is not None else CommentedMap()
+        if isinstance(path_or_stream, str):
+            if os.path.isfile(path_or_stream):
+                with open(path_or_stream, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+            else:
+                data = yaml.safe_load(path_or_stream)
+        else:
+            data = yaml.safe_load(path_or_stream)
+        return data if data is not None else {}
 
 
 def dump_yaml_roundtrip(data: Any, target_path_or_stream: str | io.IOBase | None = None) -> str | None:
@@ -43,18 +64,29 @@ def dump_yaml_roundtrip(data: Any, target_path_or_stream: str | io.IOBase | None
     If target_path_or_stream is a stream, writes to the stream and returns None.
     If None, returns the YAML text as a string.
     """
-    yaml_obj = get_yaml_instance()
-    if target_path_or_stream is None:
-        buf = io.StringIO()
-        yaml_obj.dump(data, buf)
-        return buf.getvalue()
-    elif isinstance(target_path_or_stream, str):
-        with open(target_path_or_stream, "w", encoding="utf-8") as f:
-            yaml_obj.dump(data, f)
-        return None
+    if HAS_RUAMEL:
+        yaml_obj = get_yaml_instance()
+        if target_path_or_stream is None:
+            buf = io.StringIO()
+            yaml_obj.dump(data, buf)
+            return buf.getvalue()
+        elif isinstance(target_path_or_stream, str):
+            with open(target_path_or_stream, "w", encoding="utf-8") as f:
+                yaml_obj.dump(data, f)
+            return None
+        else:
+            yaml_obj.dump(data, target_path_or_stream)
+            return None
     else:
-        yaml_obj.dump(data, target_path_or_stream)
-        return None
+        if target_path_or_stream is None:
+            return yaml.dump(data, sort_keys=False, allow_unicode=True)
+        elif isinstance(target_path_or_stream, str):
+            with open(target_path_or_stream, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, sort_keys=False, allow_unicode=True)
+            return None
+        else:
+            yaml.dump(data, target_path_or_stream, sort_keys=False, allow_unicode=True)
+            return None
 
 
 def apply_settings_in_place(

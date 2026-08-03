@@ -104,11 +104,22 @@ class EnrichChunksTool:
                 if len((c.get("text") or "").strip()) >= 20 and i not in results
             ]
             eligible_indices = {i for i, _ in eligible}
-            for start in range(0, len(eligible), batch_size):
-                from backend.core.tool import check_cancelled
-                check_cancelled(state.get("document_id"))
-                _enrich_group(llm, instruction,
-                              eligible[start:start + batch_size], usage, results)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from backend.core.tool import check_cancelled
+            from backend.core.usage import copy_ctx
+
+            futures = []
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for start in range(0, len(eligible), batch_size):
+                    batch = eligible[start:start + batch_size]
+                    ctx = copy_ctx()
+                    futures.append(
+                        executor.submit(ctx.run, _enrich_group, llm, instruction, batch, usage, results)
+                    )
+                
+                for future in as_completed(futures):
+                    check_cancelled(state.get("document_id"))
+                    future.result()
 
         # Two DIFFERENT reasons a chunk ends up with frequency-only keywords, not one:
         # too_short chunks were never sent to the LLM at all (by design — not worth a
@@ -229,8 +240,8 @@ def _invoke_with_backoff(llm, prompt: str, attempts: int = 4):
             if not _is_rate_limit(exc) or i == attempts - 1:
                 raise
             wait = _retry_after_s(str(exc), delay)
-            logger.info("enrich: rate-limited; waiting %.1fs then retrying (%d/%d)",
-                        wait, i + 1, attempts - 1)
+            logger.warning("enrich: rate-limited; waiting %.1fs then retrying (%d/%d)",
+                           wait, i + 1, attempts - 1)
             time.sleep(wait)
             delay = min(delay * 2, 30.0)
 

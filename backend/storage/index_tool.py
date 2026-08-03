@@ -38,12 +38,11 @@ class IndexTool:
                 
             vectors = QdrantStore(dim, collection)
             try:
-                for chunk in chunks:
-                    pg.write_chunk(chunk)
-                    if chunk.get("vector"):
-                        vectors.write_chunk(chunk)
-                    else:
-                        skipped += 1
+                vector_chunks = [c for c in chunks if c.get("vector")]
+                skipped = len(chunks) - len(vector_chunks)
+                
+                pg.write_chunks(chunks)
+                vectors.write_chunks(vector_chunks)
             finally:
                 vectors.close()
         finally:

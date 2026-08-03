@@ -143,6 +143,7 @@ def _connect(dsn: str):
     # pg_sleep, accidental cross join, or huge scan can't pin a worker thread.
     return psycopg.connect(
         dsn, autocommit=True,
+        prepare_threshold=None,
         options=(
             "-c default_transaction_read_only=on "
             "-c statement_timeout=15000 "

@@ -92,7 +92,8 @@ class PostgresStore:
         # (caught by ingest.py's own best-effort try/except, so the run itself
         # reported success while this table stayed empty). Disabling prepared
         # statements entirely is the documented psycopg3 fix for pgbouncer/pgpool
-        # transaction-pooling deployments.
+        # transaction-pooling deployments. Independently found+fixed the same way
+        # by a teammate (Manoj, commit d8ecd57) — real confirmation this was right.
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True,
                                      prepare_threshold=None)
         # Auto-migration: add file_path column to documents if it doesn't exist yet.

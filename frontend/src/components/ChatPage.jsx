@@ -1293,7 +1293,7 @@ const ChatPage = () => {
                 className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${s.session_id === sessionId
                   ? 'bg-slate-800 text-white'
                   : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
-                  }`}
+                  } ${menuOpen === s.session_id ? 'relative z-50' : ''}`}
                 style={{
                   animation: 'slideInSide 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards',
                   animationDelay: `${index * 30}ms`,

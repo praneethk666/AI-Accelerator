@@ -55,13 +55,18 @@ class TestAutoIngestionWatcher(unittest.TestCase):
     @patch("backend.api.main._config")
     @patch("backend.api.main.PostgresStore")
     @patch("backend.api.main._run_ingestion")
-    @patch("backend.api.main.UPLOAD_DIR")
-    def test_watcher_loop_processes_file(self, mock_upload_dir, mock_run_ingest, mock_pg_store, mock_config):
+    def test_watcher_loop_processes_file(self, mock_run_ingest, mock_pg_store, mock_config):
         # Setup mocks
         mock_config.get.side_effect = lambda k, d=None: self.mock_config.get(k, d)
         mock_config.__getitem__.side_effect = lambda k: self.mock_config[k]
-        mock_upload_dir.__str__.return_value = self.uploads_dir
-        
+        # Real finding, 3-Aug: patching UPLOAD_DIR with a bare MagicMock() (no
+        # `new=`) let os.path.join(UPLOAD_DIR, ...) + os.makedirs(...) silently
+        # create a REAL directory literally named "MagicMock/..." in the repo
+        # root on every test run — patch with a real string path instead.
+        self._upload_dir_patch = patch("backend.api.main.UPLOAD_DIR", self.uploads_dir)
+        self._upload_dir_patch.start()
+        self.addCleanup(self._upload_dir_patch.stop)
+
         # Mock PostgresStore behavior
         mock_pg_instance = MagicMock()
         mock_pg_store.return_value = mock_pg_instance
@@ -103,10 +108,12 @@ class TestAutoIngestionWatcher(unittest.TestCase):
 
     @patch("backend.api.main._config")
     @patch("backend.api.main.PostgresStore")
-    @patch("backend.api.main.UPLOAD_DIR")
-    def test_watcher_loop_unsupported_file(self, mock_upload_dir, mock_pg_store, mock_config):
+    def test_watcher_loop_unsupported_file(self, mock_pg_store, mock_config):
         mock_config.get.side_effect = lambda k, d=None: self.mock_config.get(k, d)
-        
+        self._upload_dir_patch = patch("backend.api.main.UPLOAD_DIR", self.uploads_dir)
+        self._upload_dir_patch.start()
+        self.addCleanup(self._upload_dir_patch.stop)
+
         os.makedirs(self.watch_dir, exist_ok=True)
         test_unknown = os.path.join(self.watch_dir, "test.unsupported_extension")
         with open(test_unknown, "w") as f:

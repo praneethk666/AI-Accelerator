@@ -79,7 +79,7 @@ class PostgresStore:
             from backend.core.config import get_db_url
             dsn = get_db_url(config)
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
-        self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True)
+        self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True, prepare_threshold=None)
         # Auto-migration: add file_path column to documents if it doesn't exist yet.
         # Guard with a class-level flag so this runs ONCE per process, not per request.
         if not PostgresStore._migration_done:

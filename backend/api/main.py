@@ -336,7 +336,7 @@ async def on_startup():
     # 1. Verify / Initialize Postgres
     if postgres_url:
         try:
-            conn = psycopg.connect(postgres_url, connect_timeout=5)
+            conn = psycopg.connect(postgres_url, connect_timeout=5, prepare_threshold=None)
             with conn.cursor() as cur:
                 # Run init_db.sql idempotently to ensure all tables and indexes (including guardrails) exist
                 logger.debug("Syncing database schema using scripts/init_db.sql...")
@@ -624,7 +624,7 @@ def _pool_get_conn() -> "_psycopg.Connection":
         else:
             raise RuntimeError("Connection pool exhausted")
 
-    conn = _psycopg.connect(_pg_dsn(), autocommit=True)
+    conn = _psycopg.connect(_pg_dsn(), autocommit=True, prepare_threshold=None)
     return conn
 
 

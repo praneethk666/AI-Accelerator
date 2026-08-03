@@ -61,7 +61,8 @@ class QdrantStore:
         self.client = QdrantClient(
             url=url or url_from_env(),
             api_key=api_key or os.getenv("QDRANT_API_KEY"),
-            check_compatibility=False
+            check_compatibility=False,
+            timeout=120.0,
         )
         self._ensure_collection()
 

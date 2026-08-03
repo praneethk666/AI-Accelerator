@@ -37,6 +37,7 @@ User question: {query}
 Do two things:
 1. Rewrite the question so it stands alone without the conversation (resolve "it",
    "that", "they", etc.). If it is already standalone, keep it as-is.
+   If the user question is a single keyword, entity, or a name (e.g. "Manoj", "stipend"), rewrite it as a proper search question asking for information about that keyword (e.g., "who is Manoj" or "what is the information about Manoj", "details about stipend").
 2. Break it into 1 to {max_subs} focused sub-questions. A simple question becomes
    exactly one sub-question. Only split genuinely multi-part questions.
 

@@ -345,6 +345,15 @@ extraction:
                               # (torch/paddlepaddle-gpu have a hard, unresolvable
                               # nvidia-*-cu12 version conflict when installed together).
                               # Falls back to vlm automatically if the local call fails.
+    # Remote Docling server (optional). Set mode: remote to offload all Docling
+    # GPU work to the server at server_url instead of running it locally.
+    # When mode: remote, ALL table_source / figure detection happens on the server;
+    # figure captioning (VLM semantic gate) still runs locally via vision_ocr.
+    # Leave mode: local (default) to keep the current behavior unchanged.
+    mode: local               # local | remote
+    server_url: ${DOCLING_SERVER_URL:-http://100.49.250.232:8083}
+    server_key: ${DOCLING_API_KEY:-}
+    timeout_s: 600
   # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
   # per-page VLM rescue); the tunable knob is TABLES:
   #   auto    -> TableFormer for simple tables; for COMPLEX ones (merged cells or
@@ -758,3 +767,100 @@ database:
   postgres_url: ${POSTGRES_URL}
   qdrant_url: ${QDRANT_URL}
   qdrant_collection: chunks
+
+auto_ingestion:
+  enabled: true
+  watch_dir: auto_ingest
+  poll_interval: 10
+
+
+# ── Guardrails (v5 Configuration) ─────────────────────────────────────────────
+guardrails:
+  enabled: true
+  version: "1.0.0"
+
+  policy:
+    block_threshold:  80
+    warn_threshold:   40
+    bypass_alert_rate: 0.05
+    stage_weights:
+      input:     1.0
+      retrieval: 1.2
+      output:    1.5
+
+  input:
+    max_query_chars: 2000
+    pii_redact: true
+    injection_check: true
+    encoding_entropy_check: false   # gated: false-positive corpus audit required
+    off_topic_check: false
+    passport_pattern: false         # gated: corpus audit Phase 4
+    voter_id_pattern: false         # gated: corpus audit Phase 4
+
+  retrieval:
+    chunk_injection_scan: true
+    scan_max_bytes: 100000
+
+  output:
+    pii_mask: true
+    gstin_before_pan: true
+    groundedness:
+      enabled: false                # Phase 4 only
+      fail_open: true
+      timeout_ms: 3000
+
+  token_quota:
+    enabled: true
+    window_minutes: 60
+    tokens_per_window: 500000
+    reserve_tokens: 2000
+    fail_open: true
+
+  token_budget:
+    enabled: true
+    max_context_tokens: 20000
+
+  trust_registry:
+    manual:    1.0
+    datasheet: 1.0
+    contract:  0.95
+    invoice:   0.85
+    image:     0.60
+    unknown:   0.50
+
+  session_risk:
+    enabled: true
+    window_minutes: 30
+    session_block_threshold: 150
+    redis_url: null                 # left blank for single-worker in-memory enforcer
+
+  degradation:
+    qdrant_max_retries: 2
+    qdrant_base_delay_s: 0.5
+    reranker_max_retries: 2
+    reranker_base_delay_s: 0.5
+    reranker_max_pairs: 50
+    reranker_max_tokens_per_pair: 512
+    reranker_max_total_tokens: 10000
+
+  rollout:
+    input_guard_pct:     100
+    retrieval_guard_pct:  50
+    output_guard_pct:    100        # PII compliance requirement (must be 100)
+    token_quota_pct:       5
+    session_risk_pct:     20
+
+  logging:
+    enabled: true
+    ring_buffer_size: 500
+
+  health_probe:
+    enabled: true
+    interval_seconds: 60
+
+  cost:
+    enabled: true
+    llm_input_cost_per_1m:  0.075
+    llm_output_cost_per_1m: 0.30
+    embed_cost_per_1m:      0.0
+

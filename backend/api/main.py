@@ -12,6 +12,8 @@ Endpoints (match frontend/src/api.jsx):
     GET    /agent/sessions           list past agent-chat conversations (sidebar)
     GET    /agent/sessions/{id}      one conversation's full turn history
     DELETE /agent/sessions/{id}      delete a conversation
+    GET    /files/{id}/original      raw bytes of an image document, for direct <img> viewing
+    GET    /files/{id}/docx-html     docx converted to HTML, for in-panel viewing
     GET    /health         liveness
 
 Everything document-facing goes through the agent now — there is no direct
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import mimetypes
 import os
 import shutil
 import uuid
@@ -38,12 +41,12 @@ from dotenv import load_dotenv
 # Load .env BEFORE load_config so ${GROQ_API_KEY}/${POSTGRES_URL}/... resolve.
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile  # noqa: E402
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, Response, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from backend.agent.executor import run_agent  # noqa: E402
+from backend.agent.executor import run_agent, stream_agent  # noqa: E402
 from backend.agent_tools import build_agent_registry  # noqa: E402
 from backend.core.config import load_config  # noqa: E402
 from backend.core.models import warm_up  # noqa: E402
@@ -53,6 +56,10 @@ from backend.pipeline.ingest import ingest_document  # noqa: E402
 from backend.storage.postgres_store import PostgresStore  # noqa: E402
 from backend.storage.qdrant_store import QdrantStore  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+
+from backend.guardrails.token_quota import get_enforcer, get_reserve_tokens
+from backend.guardrails.startup_check import run_startup_self_test
+from backend.core.health_probe import background_health_loop
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +75,7 @@ EXT_TO_FILE_TYPE = {
 }
 
 app = FastAPI(title="Document Intelligence + RAG Accelerator", version="1.0.0")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000",
@@ -90,11 +98,193 @@ os.makedirs(_PAGES_DIR, exist_ok=True)
 app.mount("/pages", StaticFiles(directory=_PAGES_DIR), name="pages")
 
 
+def get_unique_path(directory: str, filename: str) -> str:
+    base, ext = os.path.splitext(filename)
+    counter = 1
+    unique_path = os.path.join(directory, filename)
+    while os.path.exists(unique_path):
+        unique_path = os.path.join(directory, f"{base}_{counter}{ext}")
+        counter += 1
+    return unique_path
+
+
+def auto_ingestion_loop() -> None:
+    import time
+    logger.info("Auto-ingestion watcher thread loop started.")
+    while True:
+        try:
+            # Note: _config is reloaded in-place by _reload_pipeline()
+            cfg = _config.get("auto_ingestion") or {}
+            enabled = cfg.get("enabled", False)
+            
+            if enabled:
+                watch_dir_raw = cfg.get("watch_dir", "auto_ingest")
+                poll_interval = cfg.get("poll_interval", 10)
+                on_success = cfg.get("on_success", "move")
+                on_failure = cfg.get("on_failure", "move")
+                
+                # Resolve watch_dir relative to the project root
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                watch_dir = os.path.abspath(watch_dir_raw) if os.path.isabs(watch_dir_raw) else os.path.abspath(os.path.join(base_dir, watch_dir_raw))
+                
+                if not os.path.exists(watch_dir):
+                    try:
+                        os.makedirs(watch_dir, exist_ok=True)
+                        logger.info("Created watch directory: %s", watch_dir)
+                    except Exception as e:
+                        logger.error("Failed to create watch directory %s: %s", watch_dir, e)
+                        time.sleep(poll_interval)
+                        continue
+                
+                # Ensure destination folders for move operations exist
+                processed_dir = os.path.join(watch_dir, "processed")
+                failed_dir = os.path.join(watch_dir, "failed")
+                if on_success == "move":
+                    os.makedirs(processed_dir, exist_ok=True)
+                if on_failure == "move":
+                    os.makedirs(failed_dir, exist_ok=True)
+                
+                # Scan watch directory for files
+                for item in sorted(os.listdir(watch_dir)):
+                    src_path = os.path.join(watch_dir, item)
+                    
+                    # Skip subdirectories (like processed/failed)
+                    if os.path.isdir(src_path):
+                        continue
+                    
+                    # Skip hidden files
+                    if item.startswith("."):
+                        continue
+                    
+                    # Wait for copy to complete (file size must be stable)
+                    try:
+                        initial_size = os.path.getsize(src_path)
+                        time.sleep(2)
+                        current_size = os.path.getsize(src_path)
+                        if initial_size != current_size or current_size == 0:
+                            continue
+                    except Exception:
+                        continue  # File might have been renamed or deleted
+                    
+                    # Map to known file type
+                    file_type = _file_type(item)
+                    if file_type == "unknown":
+                        logger.warning("Auto-ingestion: Unsupported file type for %s. Moving/Deleting file.", item)
+                        if on_failure == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(failed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move unsupported file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to remove unsupported file %s: %s", item, e)
+                        continue
+                    
+                    logger.info("Auto-ingestion: Processing file %s...", item)
+                    document_id = str(uuid.uuid4())
+                    print(f"\n=== Auto-Ingestion: Starting Ingestion of '{item}' (doc: {document_id}) ===", flush=True)
+                    t0 = time.time()
+                    
+                    dest = os.path.join(UPLOAD_DIR, f"{document_id}_{item}")
+                    os.makedirs(UPLOAD_DIR, exist_ok=True)
+                    
+                    try:
+                        shutil.copy2(src_path, dest)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to copy %s to upload dir: %s", item, e)
+                        print(f"=== Auto-Ingestion: Failed to copy '{item}' to upload dir ===\n", flush=True)
+                        continue
+                    
+                    # Insert record into DB as processing
+                    pg = PostgresStore()
+                    try:
+                        pg.insert_document(document_id, item, file_type, dest)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to insert document record for %s: %s", item, e)
+                        print(f"=== Auto-Ingestion: Failed to record database entry for '{item}' ===\n", flush=True)
+                        pg.close()
+                        if os.path.exists(dest):
+                            try:
+                                os.remove(dest)
+                            except Exception:
+                                pass
+                        continue
+                    finally:
+                        pg.close()
+                    
+                    # Run the ingestion synchronously in this thread
+                    try:
+                        _run_ingestion(document_id, dest, file_type, item)
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Exception while ingesting %s: %s", item, e)
+                    
+                    # Check final ingestion status from database
+                    status = "failed"
+                    pg = PostgresStore()
+                    try:
+                        doc = pg.get_document(document_id)
+                        if doc:
+                            status = doc.get("status", "failed")
+                    except Exception as e:
+                        logger.error("Auto-ingestion: Failed to check final status of %s: %s", item, e)
+                    finally:
+                        pg.close()
+                    
+                    elapsed = time.time() - t0
+                    if status == "ready":
+                        logger.info("Auto-ingestion: Ingested %s successfully.", item)
+                        print(f"=== Auto-Ingestion: Ingested '{item}' successfully in {elapsed:.1f}s ===\n", flush=True)
+                        if on_success == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(processed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move successful file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to delete successful file %s: %s", item, e)
+                    else:
+                        logger.error("Auto-ingestion: Failed to ingest %s (status=%s).", item, status)
+                        print(f"=== Auto-Ingestion: Failed to ingest '{item}' in {elapsed:.1f}s (status: {status}) ===\n", flush=True)
+                        if on_failure == "move":
+                            try:
+                                shutil.move(src_path, get_unique_path(failed_dir, item))
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to move failed file %s: %s", item, e)
+                        else:
+                            try:
+                                os.remove(src_path)
+                            except Exception as e:
+                                logger.error("Auto-ingestion: Failed to delete failed file %s: %s", item, e)
+            
+        except Exception as e:
+            logger.exception("Error in auto-ingestion loop: %s", e)
+        
+        # Determine poll interval from config or default to 10
+        try:
+            cfg = _config.get("auto_ingestion") or {}
+            poll_interval = int(cfg.get("poll_interval", 10))
+        except Exception:
+            poll_interval = 10
+            
+        time.sleep(max(1, poll_interval))
+
+
+def start_auto_ingestion_watcher() -> None:
+    import threading
+    t = threading.Thread(target=auto_ingestion_loop, name="AutoIngestionWatcher", daemon=True)
+    t.start()
+
+
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     """Verify connections and auto-initialize database schema if missing."""
     import psycopg
     import re
+    import asyncio
     from qdrant_client import QdrantClient
     
     from backend.storage.postgres_store import dsn_from_env
@@ -109,36 +299,27 @@ def on_startup():
         try:
             conn = psycopg.connect(postgres_url, connect_timeout=5)
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_name = 'documents'
-                    );
-                """)
-                exists = cur.fetchone()[0]
-                if not exists:
-                    logger.info("Table 'documents' not found. Auto-initializing schema using scripts/init_db.sql...")
-                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
-                    if os.path.exists(schema_path):
-                        with open(schema_path, "r", encoding="utf-8") as sf:
-                            sql_content = sf.read()
-                        
-                        sql_no_comments = re.sub(r"--[^\n]*", "", sql_content)
-                        statements = []
-                        for stmt in sql_no_comments.split(";"):
-                            stmt = stmt.strip()
-                            if stmt and not stmt.upper().startswith("CREATE DATABASE"):
-                                statements.append(stmt)
-                        
-                        for stmt in statements:
-                            cur.execute(stmt)
-                        conn.commit()
-                        logger.info("Database schema initialized successfully!")
-                    else:
-                        logger.warning("scripts/init_db.sql not found at %s. Cannot auto-initialize schema.", schema_path)
+                # Run init_db.sql idempotently to ensure all tables and indexes (including guardrails) exist
+                logger.info("Syncing database schema using scripts/init_db.sql...")
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                schema_path = os.path.join(base_dir, "scripts", "init_db.sql")
+                if os.path.exists(schema_path):
+                    with open(schema_path, "r", encoding="utf-8") as sf:
+                        sql_content = sf.read()
+                    
+                    sql_no_comments = re.sub(r"--[^\n]*", "", sql_content)
+                    statements = []
+                    for stmt in sql_no_comments.split(";"):
+                        stmt = stmt.strip()
+                        if stmt and not stmt.upper().startswith("CREATE DATABASE"):
+                            statements.append(stmt)
+                    
+                    for stmt in statements:
+                        cur.execute(stmt)
+                    conn.commit()
+                    logger.info("Database schema synchronized successfully!")
                 else:
-                    cur.execute("SELECT 1;")
+                    logger.warning("scripts/init_db.sql not found at %s. Cannot synchronize schema.", schema_path)
             conn.close()
             logger.info("Database connection verified successfully!")
         except Exception as e:
@@ -153,6 +334,20 @@ def on_startup():
         logger.info("Qdrant connection verified successfully (Endpoint: %s)!", qdrant_url)
     except Exception as e:
         logger.error("Qdrant connection failed: %s", e)
+
+    # 3. Start Auto-Ingestion watch thread
+    try:
+        start_auto_ingestion_watcher()
+    except Exception as e:
+        logger.error("Failed to start auto-ingestion watcher: %s", e)
+
+    # 4. Run Guardrail Self Test & Background Health Probe
+    try:
+        run_startup_self_test(_config)
+        asyncio.create_task(background_health_loop(_config))
+    except Exception as e:
+        logger.critical("Startup checks or health loop start failed: %s", e)
+        raise
 
 # Loaded once at import; the registry caches model singletons across requests.
 _config = load_config(CONFIG_PATH)
@@ -211,6 +406,7 @@ def _reload_pipeline() -> None:
 class AgentChatRequest(BaseModel):
     message: str
     session_id: str = "web"
+    message_id: str = ""  # Client-generated UUID for deduplication
     approved_writes: bool = False
     # the pending write(s) the user approved, echoed back so approval is bound to the
     # exact name+args that were shown (not whatever the model re-proposes).
@@ -270,6 +466,12 @@ _SETTINGS_MAP = {
     "embeddings_dense_model": ["embeddings", "dense_model"],
     "embeddings_reranker_provider": ["embeddings", "reranker_provider"],
     "embeddings_reranker_model": ["embeddings", "reranker_model"],
+    # auto-ingestion
+    "auto_ingestion_enabled": ["auto_ingestion", "enabled"],
+    "auto_ingestion_watch_dir": ["auto_ingestion", "watch_dir"],
+    "auto_ingestion_poll_interval": ["auto_ingestion", "poll_interval"],
+    "auto_ingestion_on_success": ["auto_ingestion", "on_success"],
+    "auto_ingestion_on_failure": ["auto_ingestion", "on_failure"],
 }
 
 # Optional model-override fields: a BLANK value means "inherit the global llm block",
@@ -368,6 +570,15 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
     page images) is injected via the on_step / on_complete hooks."""
     total = len(_INGEST_STEPS) or None
 
+    # Pre-render slides if it is a PowerPoint file
+    page_dir = os.path.join(_PAGES_DIR, document_id)
+    if file_type == "ppt":
+        from backend.core.office_renderer import render_pptx_slides
+        try:
+            render_pptx_slides(dest, page_dir)
+        except Exception as e:
+            logger.exception("Failed to render PPTX slides for %s", document_id)
+
     # One connection for the whole run (per-step progress UPDATEs + page images).
     pg = None
     try:
@@ -377,6 +588,11 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
                          document_id)
 
     def on_step(entry: dict, snapshot: dict) -> None:
+        # Print to stdout console for live visibility
+        ms = entry.get("ms")
+        dur = f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "?"
+        print(f"  · {entry.get('step'):<24} {entry.get('status'):<8} {dur}", flush=True)
+
         if pg is None:
             return
         metrics = snapshot.get("metrics", []) or []
@@ -398,20 +614,11 @@ def _run_ingestion(document_id: str, dest: str, file_type: str, filename: str) -
                            document_id, entry.get("step"))
 
     def on_complete(result: dict) -> None:
-        # API-only tail: full-page images for the PDF pages that produced chunks —
-        # for visual grounding ("pull up the page"). Only content pages; skip on
-        # failure or if the DB is down.
-        if pg is None or not pg.document_exists(document_id) or file_type != "pdf" or result.get("status") in ("failed", "deleted"):
-            return
-        try:
-            from backend.pipeline.page_images import pages_with_chunks, save_page_images
-            chunks = result.get("chunks", []) or []
-            pages = pages_with_chunks(chunks)
-            for p, web, w, h in save_page_images(document_id, dest, pages):
-                pg.insert_page_image(document_id, p, web, w, h)
-            logger.info("saved %d page images for %s", len(pages), document_id)
-        except Exception:
-            logger.exception("page-image save failed for %s", document_id)
+        # Page/slide image saving now happens INSIDE ingest_document() itself
+        # (backend/pipeline/ingest.py) — covers PDF pages AND PPT slides, and
+        # runs for every caller (API + CLI) automatically. This used to be an
+        # API-only tail here; superseded by that move.
+        pass
 
     try:
         ingest_document(dest, document_id, config=_config, registry=_registry,
@@ -553,11 +760,44 @@ def file_pdf(file_id: str):
     )
 
 
+@app.get("/files/{file_id}/raw")
+def file_raw(file_id: str):
+    """Serve the raw file for this document (e.g. PDF, XLSX, PPTX) so the client can download or parse it."""
+    from fastapi.responses import FileResponse
+    import mimetypes
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "raw file not found on disk")
+        file_path = matches[0]
+
+    filename = doc.get("filename") or os.path.basename(file_path)
+    media_type, _ = mimetypes.guess_type(file_path)
+    media_type = media_type or "application/octet-stream"
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @app.get("/files/{file_id}/pages/{page}/image")
 def file_page_image_ondemand(file_id: str, page: int):
-    """Render a specific page of a PDF to JPEG on the fly and return it."""
+    """Render a specific page of a PDF or serve an exported PPT slide image."""
+    from fastapi.responses import FileResponse, Response
     import fitz
-    from fastapi.responses import Response
 
     pg = _pg()
     try:
@@ -569,6 +809,26 @@ def file_page_image_ondemand(file_id: str, page: int):
         raise HTTPException(404, "document not found")
 
     file_path = doc.get("file_path") or ""
+    file_type = doc.get("file_type") or ""
+
+    if file_type == "ppt":
+        page_dir = os.path.join(_PAGES_DIR, file_id)
+        img_path = os.path.join(page_dir, f"p{page}.jpg")
+        if not os.path.isfile(img_path):
+            import glob as _glob
+            matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+            if matches:
+                ppt_path = matches[0]
+                from backend.core.office_renderer import render_pptx_slides
+                logger.info("On-demand slide rendering triggered for PPT: %s", ppt_path)
+                try:
+                    render_pptx_slides(ppt_path, page_dir)
+                except Exception as render_err:
+                    logger.exception("Failed on-demand PPT rendering: %s", render_err)
+        if os.path.isfile(img_path):
+            return FileResponse(img_path, media_type="image/jpeg")
+        raise HTTPException(404, f"Slide image not found: page {page}")
+
     if not file_path or not os.path.isfile(file_path):
         import glob as _glob
         matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
@@ -595,7 +855,7 @@ def file_page_image_ondemand(file_id: str, page: int):
 
 @app.get("/files/{file_id}/pdf-info")
 def file_pdf_info(file_id: str):
-    """Get metadata about the PDF (like total number of pages) using PyMuPDF."""
+    """Get metadata about the PDF (like total number of pages) using PyMuPDF or slide count for PPT."""
     import fitz
     pg = _pg()
     try:
@@ -606,6 +866,23 @@ def file_pdf_info(file_id: str):
         raise HTTPException(404, "document not found")
 
     file_path = doc.get("file_path") or ""
+    file_type = doc.get("file_type") or ""
+
+    if file_type == "ppt":
+        page_dir = os.path.join(_PAGES_DIR, file_id)
+        if os.path.isdir(page_dir):
+            import glob
+            files = glob.glob(os.path.join(page_dir, "p*.jpg"))
+            if files:
+                return {"total_pages": len(files)}
+        try:
+            from pptx import Presentation
+            prs = Presentation(file_path)
+            return {"total_pages": len(prs.slides)}
+        except Exception:
+            pass
+        return {"total_pages": 0}
+
     if not file_path or not os.path.isfile(file_path):
         import glob as _glob
         matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
@@ -617,9 +894,93 @@ def file_pdf_info(file_id: str):
         pdf = fitz.open(file_path)
         total_pages = len(pdf)
         pdf.close()
-        return {"total_pages": total_pages, "filename": doc.get("filename")}
+        return {"total_pages": total_pages}
     except Exception as exc:
+        logger.exception("Failed to get PDF info for %s", file_id)
         raise HTTPException(500, f"failed to read PDF: {exc}")
+
+
+@app.get("/files/{file_id}/original")
+def file_original(file_id: str):
+    """Stream the original file bytes for types that need no transformation to
+    view — currently just images. Browsers render image bytes natively, unlike
+    PDF (needs page rasterization, see file_pdf/file_page_image_ondemand above)
+    or docx (needs HTML conversion, see file_docx_html below)."""
+    from fastapi.responses import FileResponse
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    if doc.get("file_type") != "image":
+        raise HTTPException(400, "document is not an image")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "image file not found on disk")
+        file_path = matches[0]
+
+    filename = doc.get("filename") or os.path.basename(file_path)
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@app.get("/files/{file_id}/docx-html")
+def file_docx_html(file_id: str):
+    """Convert a docx to HTML for in-panel viewing.
+
+    Unlike PDF, Word has no fixed, ingest-time-knowable page number — pagination
+    is renderer-dependent (fonts/margins/zoom all shift it). So there's no
+    per-page endpoint here, and no page-image model: this returns the WHOLE
+    document as HTML, and the frontend (PageViewerPanel) matches a citation to
+    a location in it at VIEW TIME by searching for the citation's own snippet
+    text, rather than jumping to a persisted page/paragraph number. See
+    backend/extraction/word/tool.py for why paragraph_index is deliberately
+    NOT threaded into source_ref/tags for this — the team's existing
+    convention (see schemas.py's Excel cell_range note) keeps format-specific
+    locators out of the shared citation schema.
+    """
+    pg = _pg()
+    try:
+        doc = pg.get_document(file_id)
+    finally:
+        pg.close()
+    if not doc:
+        raise HTTPException(404, "document not found")
+    if doc.get("file_type") != "docx":
+        raise HTTPException(400, "document is not a docx")
+
+    file_path = doc.get("file_path") or ""
+    if not file_path or not os.path.isfile(file_path):
+        import glob as _glob
+        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
+        if not matches:
+            raise HTTPException(404, "docx file not found on disk")
+        file_path = matches[0]
+
+    try:
+        import mammoth
+        with open(file_path, "rb") as f:
+            result = mammoth.convert_to_html(f)
+    except Exception as exc:
+        logger.exception("docx->html conversion failed for %s", file_id)
+        raise HTTPException(500, f"failed to convert docx to HTML: {exc}")
+
+    return {
+        "html": result.value,
+        "warnings": [str(w) for w in (result.messages or [])],
+        "filename": doc.get("filename"),
+    }
 
 
 @app.delete("/files/{file_id}")
@@ -656,7 +1017,7 @@ def _history_to_messages(history: list[dict]) -> list:
 
 
 @app.post("/agent/chat")
-def agent_chat(req: AgentChatRequest):
+def agent_chat(req: AgentChatRequest, response: Response):
     """Agentic chat: the model picks which tool to call (ingest/search/sql) instead
     of always going straight to retrieval. Writes (ingest_document) stop and report
     what they want to run — POST again with approved_writes=true to actually run it.
@@ -664,6 +1025,12 @@ def agent_chat(req: AgentChatRequest):
     past conversations; the in-memory cache is just a fast path within one run.
     """
     from backend.storage.conversation_store import get_conversation_store
+
+    # 1. Token Quota Check (Reserve budget)
+    quota = get_enforcer(_config)
+    reserve = get_reserve_tokens(_config)
+    if not quota.reserve(req.session_id, reserve):
+        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
 
     max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
     history = _agent_sessions.get(req.session_id)
@@ -679,11 +1046,27 @@ def agent_chat(req: AgentChatRequest):
         # sliding window, not summarization — see query.agent.max_history_messages
         history = history[-max_history:]
 
+    # Save user message immediately so it's persisted and visible if user switches/reloads
+    try:
+        store = get_conversation_store()
+        store.save_turn(req.session_id, "user", req.message)
+    except Exception:
+        logger.debug("agent user chat history save failed", exc_info=True)
+
     result = run_agent(
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
         approved_calls=req.approved_calls, session_id=req.session_id,
     )
+
+    # 2. Reconcile token budget
+    actual_tokens = result.get("token_usage", {}).get("total", 0)
+    quota.reconcile(req.session_id, reserved=reserve, actual=actual_tokens)
+
+    # 3. Add guardrail headers
+    response.headers["X-Guardrail-Events"] = str(result.get("guard_policy", "allow"))
+    response.headers["X-Risk-Score"] = str(result.get("guard_risk_score", 0))
+
     tool_calls = [
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
         for c in result.get("tool_calls", [])
@@ -692,7 +1075,6 @@ def agent_chat(req: AgentChatRequest):
         _agent_sessions[req.session_id] = _qa_only(result["messages"])
         try:
             store = get_conversation_store()
-            store.save_turn(req.session_id, "user", req.message)
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
                 metadata={
@@ -709,7 +1091,6 @@ def agent_chat(req: AgentChatRequest):
         _agent_sessions[req.session_id] = _qa_only(result["messages"])
         try:
             store = get_conversation_store()
-            store.save_turn(req.session_id, "user", req.message)
             store.save_turn(req.session_id, "assistant",
                             result.get("question") or result.get("answer") or "")
         except Exception:
@@ -725,6 +1106,70 @@ def agent_chat(req: AgentChatRequest):
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),
     }
+
+
+@app.post("/agent/chat/stream")
+async def agent_chat_stream(req: AgentChatRequest, request: Request):
+    """SSE endpoint for streaming agent responses."""
+    import json
+    from fastapi.responses import StreamingResponse
+    from backend.storage.conversation_store import get_conversation_store
+
+    # 1. Token Quota Check (Reserve budget)
+    quota = get_enforcer(_config)
+    reserve = get_reserve_tokens(_config)
+    if not quota.reserve(req.session_id, reserve):
+        raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
+
+    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
+    history = _agent_sessions.get(req.session_id)
+    if history is None:
+        try:
+            history = _history_to_messages(
+                get_conversation_store().load_history(req.session_id, n=max_history)
+            )
+        except Exception:
+            logger.debug("agent chat history load failed", exc_info=True)
+            history = []
+    elif len(history) > max_history:
+        history = history[-max_history:]
+
+    # Save user message immediately so it's persisted and visible if user switches/reloads
+    try:
+        store = get_conversation_store()
+        # Save user message using regular save_turn (requires no message_id/deduplication)
+        store.save_turn(req.session_id, "user", req.message)
+    except Exception:
+        logger.debug("agent user chat history save failed", exc_info=True)
+
+    tokens_tracker = {"used": 0}
+
+    async def event_generator():
+        try:
+            async for event in stream_agent(
+                session_id=req.session_id,
+                message=req.message,
+                request=request,
+                message_id=req.message_id,
+                config=_config,
+                registry=_agent_registry,
+                conversation_history=history,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("event") == "usage":
+                    tokens_tracker["used"] = event["tokens"]
+        finally:
+            quota.reconcile(req.session_id, reserved=reserve, actual=tokens_tracker["used"])
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disables nginx buffering
+        },
+    )
 
 
 @app.get("/agent/sessions")

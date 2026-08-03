@@ -487,7 +487,32 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
         logger.warning("rescue: cannot open %s (%s)", pdf_path, e)
         return blocks
 
-    by_page: dict = defaultdict(list)
+    from backend.storage.postgres_store import PostgresStore
+    pg_store = PostgresStore()
+    try:
+        existing_blocks = pg_store.get_blocks(document_id)
+    except Exception:
+        existing_blocks = []
+    finally:
+        pg_store.close()
+
+    existing_by_page = defaultdict(list)
+    for b in existing_blocks:
+        p = _page_of(b)
+        if p is not None:
+            existing_by_page[p].append(b)
+
+    def _save_page_blocks_immediate(page_num: int, page_blocks: list[dict]):
+        pg_s = PostgresStore()
+        try:
+            pg_s.write_page_blocks(document_id, page_num, page_blocks)
+            logger.info("Saved page %d blocks immediately to database for %s", page_num, document_id)
+        except Exception:
+            logger.exception("Failed to save page %d blocks to database", page_num)
+        finally:
+            pg_s.close()
+
+    by_page = defaultdict(list)
     for b in blocks:
         by_page[_page_of(b)].append(b)
 
@@ -499,6 +524,20 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
     try:
         for pg in range(1, len(doc) + 1):
             check_cancelled(document_id)
+            
+            # If this page was already extracted successfully in a previous run, use it!
+            if pg in existing_by_page:
+                logger.info("Using cached blocks for page %d of document %s (resuming ingest)", pg, document_id)
+                p_blocks = existing_by_page[pg]
+                out.extend(p_blocks)
+                
+                # Re-tally metrics for skipped page
+                tbl_count = sum(1 for nb in p_blocks if nb.get("type") == "table")
+                if report is not None:
+                    if tbl_count:
+                        report["tables"]["total"] += tbl_count
+                continue
+
             pblocks = by_page.get(pg, [])
             native = doc[pg - 1].get_text()
             prof = profile_page(doc[pg - 1])
@@ -509,6 +548,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                 digital_kept += 1
                 _set_route(report, pg, "blank")
                 out.extend(pblocks)
+                _save_page_blocks_immediate(pg, pblocks)
                 continue
             # Diagram / large-format sheets (CAD, circuit schematics, oversized engineering
             # drawings) lose all their small text when sent to the VLM whole. Detect them
@@ -524,7 +564,8 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                         md = transcribe_large_page(doc[pg - 1], config, prompt)
                         figs = [b for b in pblocks if b.get("type") == "image_caption"]
                         new_blocks = markdown_to_blocks(md, document_id, pg, filename)
-                        out.extend(new_blocks + figs)
+                        page_out = new_blocks + figs
+                        out.extend(page_out)
                         rescued += 1
                         _set_route(report, pg, "tiled_diagram", page_class)
                         if report is not None:
@@ -534,6 +575,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                                 report["tables"]["vlm_escalated"] += tbl_count
                             report["pages"]["rescued"].append(
                                 {"page": pg, "via": "tiled", "reason": page_class})
+                        _save_page_blocks_immediate(pg, page_out)
                         continue
                     except Exception as e:
                         logger.warning("rescue: diagram tiling page %s failed (%s); "
@@ -551,6 +593,7 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                 digital_kept += 1
                 _set_route(report, pg, "digital")
                 out.extend(pblocks)
+                _save_page_blocks_immediate(pg, pblocks)
                 continue
             reason = "scanned" if is_scanned else ("garbled" if garbled else "duplicated")
             figs = [b for b in pblocks if b.get("type") == "image_caption"]
@@ -564,19 +607,27 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                 # text with no rescue at all.
                 txt = _paddle_page_text(doc[pg - 1])
                 if txt:
-                    out.extend(markdown_to_blocks(txt, document_id, pg, filename) + figs)
+                    page_out = markdown_to_blocks(txt, document_id, pg, filename) + figs
+                    out.extend(page_out)
                     paddle_used += 1
                     _set_route(report, pg, "paddle", reason)
                     if report is not None:
                         report["pages"]["rescued"].append({"page": pg, "via": "paddle", "reason": reason})
+                    _save_page_blocks_immediate(pg, page_out)
                 else:
                     _set_route(report, pg, "kept_original", reason)
                     out.extend(pblocks)
+                    _save_page_blocks_immediate(pg, pblocks)
                 continue
             engine = ((config.get("vision_ocr") or {}).get("engine", "vlm"))
             try:
+                # transcribe_page_blocks is the engine-aware dispatcher (vlm OR
+                # local/self-hosted, see its own docstring) — a strict superset
+                # of calling transcribe_page()+markdown_to_blocks() directly,
+                # which only covers the vlm path.
                 new_blocks = transcribe_page_blocks(doc[pg - 1], config, document_id, pg, filename)
-                out.extend(new_blocks + figs)
+                page_out = new_blocks + figs
+                out.extend(page_out)
                 rescued += 1
                 _set_route(report, pg, f"{engine}_rescue", reason)
                 if report is not None:
@@ -585,10 +636,12 @@ def route_and_rescue(blocks: list[dict], pdf_path: str, document_id: str,
                         report["tables"]["total"] += tbl_count
                         report["tables"]["vlm_escalated"] += tbl_count
                     report["pages"]["rescued"].append({"page": pg, "via": engine, "reason": reason})
+                _save_page_blocks_immediate(pg, page_out)
             except Exception as e:
                 logger.warning("rescue: page %s %s rescue failed (%s); keeping originals", pg, engine, e)
                 _set_route(report, pg, f"{engine}_failed", reason)
                 out.extend(pblocks)
+                _save_page_blocks_immediate(pg, pblocks)
     finally:
         doc.close()
     if report is not None:

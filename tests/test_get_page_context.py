@@ -69,10 +69,36 @@ def test_page_not_found_lists_available_pages():
     assert result["pages_available"] == [1, 3]
 
 
+def test_slide_matching_in_get_page_context():
+    blocks = [
+        {"block_id": "b1", "type": "text", "text": "slide 4 content",
+         "source_ref": {"slide": 4}},
+    ]
+    with patch("backend.storage.postgres_store.PostgresStore",
+              return_value=_fake_store(blocks)):
+        result = GetPageContextTool().run(document_id="doc-1", page=4)
+    assert result["page"] == 4
+    assert "slide 4 content" in result["content"]
+
+
+def test_sheet_matching_in_get_page_context():
+    blocks = [
+        {"block_id": "b1", "type": "table", "text": "sheet data",
+         "source_ref": {"sheet": "Overview"}},
+    ]
+    with patch("backend.storage.postgres_store.PostgresStore",
+              return_value=_fake_store(blocks)):
+        result = GetPageContextTool().run(document_id="doc-1", page="Overview")
+    assert result["page"] == "Overview"
+    assert "sheet data" in result["content"]
+
+
 if __name__ == "__main__":
     test_returns_all_blocks_on_the_requested_page_joined_in_order()
     test_page_as_string_is_coerced_to_int()
     test_missing_document_id_or_page_returns_error()
     test_no_blocks_for_document_returns_error()
     test_page_not_found_lists_available_pages()
+    test_slide_matching_in_get_page_context()
+    test_sheet_matching_in_get_page_context()
     print("get_page_context tests passed")

@@ -758,10 +758,15 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     on_page: optional callback(page_no, total_pages, elapsed_s) fired after each
     page finishes converting — real per-page progress for a long document, since
     Docling converts one page at a time here specifically to bound memory."""
+    dcfg = (config.get("extraction") or {}).get("docling") or {}
+    if dcfg.get("mode") == "remote":
+        from backend.extraction.docling_remote import extract_docling_remote
+        return extract_docling_remote(
+            pdf_path, document_id, config,
+            table_source=table_source, report=report, on_page=on_page)
+
     from docling_core.types.doc import TextItem, TableItem, PictureItem
     from backend.chunking.chunk_tool import _has_blank_continuation_rows
-
-    dcfg = (config.get("extraction") or {}).get("docling") or {}
     min_pic = float(dcfg.get("min_picture_pts", 24))   # drop tiny marks/logos
     min_area_frac = float(dcfg.get("min_picture_area_frac", 0.004))  # drop <0.4%-of-page icons
     table_source = (table_source or "docling").lower()

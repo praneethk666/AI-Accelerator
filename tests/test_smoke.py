@@ -6,8 +6,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch
-
 from backend.core.tool import PipelineState
 from backend.pipeline.graph import run_pipeline
 
@@ -23,11 +21,9 @@ class EchoTool:
 def test_pipeline_runs():
     tools = {"echo": EchoTool()}
     config = {"steps": ["echo"]}
-    # document_id "d1" is a fake id never inserted into Postgres — without this,
-    # each node's check_cancelled(document_id) call would treat the "missing" row
-    # as a cancelled ingestion and raise.
-    with patch("backend.pipeline.graph.check_cancelled"):
-        out = run_pipeline(tools, {"document_id": "d1"}, config)
+    # document_id "default" is exempted from check_cancelled's DB lookup (see
+    # backend/core/tool.py) — no mock needed.
+    out = run_pipeline(tools, {"document_id": "default"}, config)
     assert out["blocks"][0]["text"] == "hello"
     assert out["errors"] == []
 

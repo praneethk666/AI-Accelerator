@@ -145,6 +145,53 @@ class PostgresStore:
                 ],
             )
 
+    def write_page_blocks(self, document_id: str, page_no: int, blocks: list[dict]) -> None:
+        """Upsert raw extracted blocks for a specific page/slide/sheet."""
+        if not blocks:
+            return
+        document_id = str(document_id)
+        # Delete existing blocks for this document and page
+        self.conn.execute(
+            """
+            DELETE FROM document_blocks 
+            WHERE document_id::text = %s 
+              AND (
+                source_ref->>'page' = %s 
+                OR source_ref->>'slide' = %s 
+                OR source_ref->>'sheet' = %s
+              )
+            """,
+            (document_id, str(page_no), str(page_no), str(page_no)),
+        )
+        
+        # Get the current maximum block_order for this document to append
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(block_order), -1) FROM document_blocks WHERE document_id::text = %s",
+            (document_id,),
+        ).fetchone()
+        max_order = row[0] if row else -1
+        
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO document_blocks
+                    (block_id, document_id, block_order, type, text, table_data,
+                     source_ref, metadata, confidence, language)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (block_id) DO NOTHING
+                """,
+                [
+                    (
+                        b.get("block_id"), document_id, max_order + 1 + i, b.get("type"), b.get("text"),
+                        _Json(b.get("table_data")) if b.get("table_data") else None,
+                        _Json(b.get("source_ref")),
+                        _Json(b.get("metadata")) if b.get("metadata") else None,
+                        b.get("confidence"), b.get("language"),
+                    )
+                    for i, b in enumerate(blocks)
+                ],
+            )
+
     def get_blocks(self, document_id: str) -> list[dict]:
         """Fetch a document's raw extracted blocks, in reading order."""
         document_id = str(document_id)  # see write_blocks — caller may pass a uuid.UUID

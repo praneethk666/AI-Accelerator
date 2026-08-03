@@ -1,0 +1,17 @@
+[Unit]
+Description=Docling Extraction Server (port 8083)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user
+Environment=DOCLING_API_KEY=REPLACE_WITH_ACTUAL_KEY
+ExecStart=/home/ec2-user/docling_venv/bin/python /home/ec2-user/docling_server.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

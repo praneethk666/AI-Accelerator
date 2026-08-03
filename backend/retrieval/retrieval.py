@@ -100,7 +100,17 @@ class RetrievalTool:
                 errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
                 state["errors"] = errors
 
-        state["retrieved_chunks"] = all_chunks
+        # Checkpoint 4: Token Budget Manager (greedy context window selection)
+        tb_cfg = config.get("guardrails", {}).get("token_budget", {})
+        if tb_cfg.get("enabled", True):
+            from backend.guardrails.token_budget import TokenBudgetManager
+            tb_mgr = TokenBudgetManager.from_config(config)
+            selected_chunks, total_tokens, dropped_count = tb_mgr.select_chunks(
+                all_chunks, budget_tokens=tb_cfg.get("max_context_tokens", 8000)
+            )
+            state["retrieved_chunks"] = selected_chunks
+        else:
+            state["retrieved_chunks"] = all_chunks
         return state
 
 
@@ -115,21 +125,33 @@ def _retrieve_one(
     method = retrieval_cfg["method"]
     start  = time.perf_counter()
 
-    if method == "naive":
-        chunks = _naive(query, retrieval_cfg, full_config, filters)
-    elif method == "hybrid":
-        chunks = _hybrid(query, retrieval_cfg, full_config, filters)
-    elif method == "hybrid_rerank":
-        chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
-    elif method == "hyde":
-        chunks = _hyde(query, retrieval_cfg, full_config, filters)
-    elif method == "enriched":
-        chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
-    else:
-        raise ValueError(
-            f"Unknown method: {method!r}. "
-            "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
+    try:
+        if method == "naive":
+            chunks = _naive(query, retrieval_cfg, full_config, filters)
+        elif method == "hybrid":
+            chunks = _hybrid(query, retrieval_cfg, full_config, filters)
+        elif method == "hybrid_rerank":
+            chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
+        elif method == "hyde":
+            chunks = _hyde(query, retrieval_cfg, full_config, filters)
+        elif method == "enriched":
+            chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
+        else:
+            raise ValueError(
+                f"Unknown method: {method!r}. "
+                "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
+            )
+    except Exception as exc:
+        logger.warning(
+            "Retrieval method %s failed (Qdrant down?): %s — falling back to keyword search",
+            method, exc
         )
+        try:
+            chunks = KeywordIndex.search(query, full_config, top_k=retrieval_cfg.get("top_n", 20), filters=filters)
+            method = "keyword_fallback"
+        except Exception as k_exc:
+            logger.critical("Keyword index fallback also failed: %s", k_exc)
+            raise exc
 
     return {
         "chunks":     chunks,
@@ -186,25 +208,34 @@ def _hybrid_rerank(query, cfg, full_config, filters):
     if not candidates:
         return []
 
-    reranker = get_reranker(full_config)
-    scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
-    ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    try:
+        reranker = get_reranker(full_config)
+        scores   = reranker.predict([(query, c["text"] or "") for c in candidates])
+        ranked   = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
 
-    # Optional relevance gate: drop candidates below a calibrated cross-encoder score
-    # so an all-wrong-doc result returns nothing (answerer then refuses) instead of
-    # forcing 5 irrelevant chunks in. Unset by default — bge-reranker scores are
-    # logits (can be negative); calibrate on real queries before enabling.
-    min_score = cfg.get("rerank_min_score")
-    if min_score is not None:
-        ranked = [(s, c) for s, c in ranked if s >= min_score]
+        # Optional relevance gate: drop candidates below a calibrated cross-encoder score
+        # so an all-wrong-doc result returns nothing (answerer then refuses) instead of
+        # forcing 5 irrelevant chunks in. Unset by default — bge-reranker scores are
+        # logits (can be negative); calibrate on real queries before enabling.
+        min_score = cfg.get("rerank_min_score")
+        if min_score is not None:
+            ranked = [(s, c) for s, c in ranked if s >= min_score]
 
-    # Stamp the reranker score so it overrides the RRF _score from _hybrid.
-    result = []
-    for score, chunk in ranked[:rerank_top_k]:
-        c = dict(chunk)
-        c["_score"] = float(score)
-        result.append(c)
-    return result
+        # Stamp the reranker score so it overrides the RRF _score from _hybrid.
+        result = []
+        for score, chunk in ranked[:rerank_top_k]:
+            c = dict(chunk)
+            c["_score"] = float(score)
+            result.append(c)
+        return result
+    except Exception as exc:
+        logger.warning(
+            "Reranker failed (rate limited or API error), falling back to standard hybrid RRF results: %s",
+            exc,
+        )
+        fallback_limit = cfg.get("top_n", 20)
+        return candidates[:fallback_limit]
+
 
 
 def _hyde(query, cfg, full_config, filters):

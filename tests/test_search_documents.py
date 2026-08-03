@@ -64,3 +64,42 @@ def test_search_documents_wraps_run_query_and_formats_sources():
             }
         ],
     }
+
+def test_build_sources_deduplication_keeps_different_slides_and_sheets():
+    from backend.retrieval.search_documents import _build_sources
+    citations = [
+        # Slide 4
+        {
+            "document_id": "doc-1",
+            "filename": "deck.pptx",
+            "page": None,
+            "slide": 4,
+            "sheet": None,
+            "score": 0.9,
+            "snippet": "slide 4 snippet",
+        },
+        # Slide 5 (same doc, different slide)
+        {
+            "document_id": "doc-1",
+            "filename": "deck.pptx",
+            "page": None,
+            "slide": 5,
+            "sheet": None,
+            "score": 0.8,
+            "snippet": "slide 5 snippet",
+        },
+        # Slide 4 duplicate (same doc, same slide) - should be deduplicated
+        {
+            "document_id": "doc-1",
+            "filename": "deck.pptx",
+            "page": None,
+            "slide": 4,
+            "sheet": None,
+            "score": 0.7,
+            "snippet": "another slide 4 snippet",
+        },
+    ]
+    sources = _build_sources(citations)
+    assert len(sources) == 2
+    assert sources[0]["slide"] == 4
+    assert sources[1]["slide"] == 5

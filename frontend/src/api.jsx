@@ -108,6 +108,101 @@ export const sendAgentChat = async (message, sessionId, approvedWrites = false, 
   }, { timeout: AGENT_TIMEOUT_MS });
 };
 
+/**
+ * Stream agent response via Server-Sent Events (SSE).
+ * Correctly buffers incoming chunk boundaries to prevent JSON parser failures
+ * when network packets are split.
+ */
+export const streamAgentChat = async (
+  message,
+  sessionId,
+  messageId,
+  approvedWrites = false,
+  approvedCalls = null,
+  { onToken, onToolStart, onToolEnd, onDone, onError, onMetadata }
+) => {
+  const controller = new AbortController();
+  const response = await fetch(`${API_BASE_URL}/agent/chat/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      message_id: messageId,
+      approved_writes: approvedWrites,
+      approved_calls: approvedCalls,
+    }),
+    signal: controller.signal,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || 'Failed to start stream');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  // Read loop
+  (async () => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundary;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const rawEvent = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+
+          if (!rawEvent.startsWith('data: ')) continue;
+          
+          try {
+            const parsed = JSON.parse(rawEvent.slice(6));
+            switch (parsed.event) {
+              case 'token':
+                if (onToken) onToken(parsed.text);
+                break;
+              case 'tool_start':
+                if (onToolStart) onToolStart(parsed.name);
+                break;
+              case 'tool_end':
+                if (onToolEnd) onToolEnd(parsed.name);
+                break;
+              case 'done':
+                if (onDone) onDone(parsed.full_text);
+                break;
+              case 'metadata':
+                if (onMetadata) onMetadata(parsed);
+                break;
+              case 'error':
+                if (onError) onError(parsed.message);
+                break;
+              default:
+                break;
+            }
+          } catch (e) {
+            console.error('Failed to parse SSE event:', rawEvent, e);
+          }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error('Stream reading error:', e);
+        if (onError) onError(e.message);
+      }
+    }
+  })();
+
+  // Return controller so UI can call controller.abort() on unmount/cancellation
+  return controller;
+};
+
 /** Past agent-chat conversations, most recently active first (for the sidebar). */
 export const getAgentSessions = async () => API.get('/agent/sessions');
 

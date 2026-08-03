@@ -45,7 +45,7 @@ def _qdrant_up() -> bool:
 
         from backend.storage.qdrant_store import url_from_env
 
-        QdrantClient(url=url_from_env()).get_collections()
+        QdrantClient(url=url_from_env(), api_key=os.getenv("QDRANT_API_KEY")).get_collections()
         return True
     except Exception:
         return False
@@ -77,6 +77,13 @@ def test_chunk_round_trips_through_both_stores():
     chunk_id = str(uuid.uuid4())
     pg = PostgresStore()
     vectors = QdrantStore(DIM, collection="chunks_test")  # throwaway collection
+    # Create payload index for 'industry' (required by strict Qdrant Cloud setups for filtering)
+    from qdrant_client.models import PayloadSchemaType
+    vectors.client.create_payload_index(
+        collection_name="chunks_test",
+        field_name="industry",
+        field_schema=PayloadSchemaType.KEYWORD
+    )
     chunk = {
         "chunk_id": chunk_id,
         "document_id": doc_id,

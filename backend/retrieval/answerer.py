@@ -41,8 +41,8 @@ from backend.core.tracing import record_handled_error
 logger = logging.getLogger(__name__)
 
 _ANSWER_SYSTEM = (
-    "You are a precise document-intelligence assistant for technical and enterprise "
-    "documents (service manuals, datasheets, reports).\n"
+    "You are a precise document-intelligence assistant for enterprise documents "
+    "(manuals, reports, contracts, invoices, spreadsheets, presentations, and other technical or office documents).\n"
     "Rules:\n"
     "- Answer using ONLY the provided context passages. Never use outside knowledge "
     "or guess.\n"
@@ -78,6 +78,54 @@ def _looks_like_refusal(answer: str) -> bool:
     return any(m in a for m in _REFUSAL_MARKERS)
 
 
+def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
+    """
+    Parse the LLM's answer to identify which sources were actually cited.
+    Returns only the citations that match bracketed index numbers or filenames.
+    """
+    import re
+    
+    # 1. Extract all text content within brackets, e.g. [1], [2, p.3], [Vinod-Nerella.pdf, p.1]
+    brackets = re.findall(r'\[([^\]]+)\]', answer)
+    if not brackets:
+        # If the LLM did not generate any citations, fall back to returning all retrieved chunks
+        return citations
+        
+    cited_indices = set()
+    cited_filenames = set()
+    
+    for content in brackets:
+        # Extract individual integers (index references like [1], [1, 2])
+        for num_str in re.findall(r'\b\d+\b', content):
+            cited_indices.add(int(num_str))
+            
+        # Match by filename or cleaned filename (case-insensitive)
+        for cit in citations:
+            fname = cit.get("filename") or ""
+            if fname and fname.lower() in content.lower():
+                cited_filenames.add(fname.lower())
+                
+    # 2. Filter the citation list
+    filtered = []
+    for idx, cit in enumerate(citations, start=1):
+        is_cited = False
+        
+        # Check if cited by index [i]
+        if idx in cited_indices:
+            is_cited = True
+            
+        # Check if cited by filename reference
+        elif cit.get("filename") and cit["filename"].lower() in cited_filenames:
+            is_cited = True
+            
+        if is_cited:
+            filtered.append(cit)
+            
+    # 3. Fallback: if parsing failed to extract any valid citation matches, 
+    # keep all retrieved chunks to ensure the sources list is not empty.
+    return filtered if filtered else citations
+
+
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
 # summarization — missing tags.summary is a ready-made "this chunk is thin"
 # signal we don't have to invent (headings, bare labels like "Alarm code:
@@ -97,28 +145,30 @@ def _is_thin(chunk: dict) -> bool:
 
 def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     """Auto-Merging Retrieval: a chunk too thin or fragmented to be a useful standalone answer
-    source (see _is_thin, or multiple chunks from the same page) is replaced with its FULL PAGE content from
+    source (see _is_thin, or multiple chunks from the same page/slide/sheet) is replaced with its FULL PAGE content from
     document_blocks — same escape hatch the get_page_context agent tool offers,
     but applied automatically rather than depending on an LLM to notice a
     citation looks fragmented and decide to ask for it.
 
-    Caps how many DISTINCT pages get fetched (max_pages) to bound DB round
+    Caps how many DISTINCT pages/slides/sheets get fetched (max_pages) to bound DB round
     trips when many candidate chunks happen to be thin, and dedupes by
-    (document_id, page) since several thin chunks often share one page."""
-    # Count how many retrieved chunks come from each page to detect fragmented pages
+    (document_id, page/slide/sheet) since several thin chunks often share one page."""
+    # Count how many retrieved chunks come from each page/slide/sheet to detect fragmented pages
     page_counts: dict[tuple, int] = {}
     for c in chunks:
         ref = c.get("source_ref") or {}
-        doc_id, page = c.get("document_id"), ref.get("page")
-        if doc_id and page is not None:
-            key = (str(doc_id), page)
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        if doc_id and page_val is not None:
+            key = (str(doc_id), page_val)
             page_counts[key] = page_counts.get(key, 0) + 1
 
     thin_ids = set()
     for c in chunks:
         ref = c.get("source_ref") or {}
-        doc_id, page = c.get("document_id"), ref.get("page")
-        key = (str(doc_id), page) if doc_id and page is not None else None
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        key = (str(doc_id), page_val) if doc_id and page_val is not None else None
         if _is_thin(c) or (key and page_counts.get(key, 0) > 1):
             thin_ids.add(c["chunk_id"])
 
@@ -134,12 +184,13 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
             if chunk["chunk_id"] not in thin_ids or len(cache) >= max_pages:
                 continue
             ref = chunk.get("source_ref") or {}
-            doc_id, page = chunk.get("document_id"), ref.get("page")
-            if not doc_id or page is None:
+            doc_id = chunk.get("document_id")
+            page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+            if not doc_id or page_val is None:
                 continue
             doc_id = str(doc_id)  # psycopg returns uuid.UUID for this column; keep
                                   # the cache key + get_blocks() param a plain str
-            key = (doc_id, page)
+            key = (doc_id, page_val)
             if key in cache:
                 continue
             if store is None:
@@ -147,12 +198,16 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
             try:
                 blocks = store.get_blocks(doc_id)
             except Exception:
-                logger.exception("get_blocks failed expanding thin chunk (doc %s, page %s)",
-                                 doc_id, page)
+                logger.exception("get_blocks failed expanding thin chunk (doc %s, page/slide/sheet %s)",
+                                 doc_id, page_val)
                 continue
             page_blocks = [
                 b for b in blocks
-                if isinstance(b.get("source_ref"), dict) and b["source_ref"].get("page") == page
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_val or
+                    b["source_ref"].get("slide") == page_val or
+                    b["source_ref"].get("sheet") == page_val
+                )
             ]
             parts = [b.get("text") for b in page_blocks if (b.get("text") or "").strip()]
             if parts:
@@ -168,7 +223,8 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     for chunk in chunks:
         ref = chunk.get("source_ref") or {}
         doc_id = chunk.get("document_id")
-        key = (str(doc_id) if doc_id else doc_id, ref.get("page"))
+        page_val = ref.get("page") or ref.get("slide") or ref.get("sheet")
+        key = (str(doc_id) if doc_id else doc_id, page_val)
         if chunk["chunk_id"] in thin_ids and key in cache:
             c = dict(chunk)
             c["text"] = cache[key]
@@ -292,6 +348,7 @@ class AnswererTool:
 
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         query:   str         = state["query"]
+        standalone_query: str = state.get("standalone_query") or query
         chunks:  list[Chunk] = state["retrieved_chunks"] or []
         session_id: str      = state["session_id"]
         turn:    int         = len(state["conversation_history"] or []) + 1
@@ -326,7 +383,7 @@ class AnswererTool:
             user_msg = (
                 "Context:\n\n"
                 + "\n\n".join(context_blocks)
-                + f"\n\nQuestion: {query}"
+                + f"\n\nQuestion: {standalone_query}"
             )
 
             # answering is reasoning-heavy. Resolution: query.answerer.model ->
@@ -396,6 +453,8 @@ class AnswererTool:
             # Don't attach a source list to a 'not found' answer — it drew on nothing.
             if _looks_like_refusal(answer_text):
                 citations = []
+            else:
+                citations = _filter_cited_citations(answer_text, citations)
 
             state["answer"]    = answer_text
             state["citations"] = citations

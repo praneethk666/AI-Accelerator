@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import * as XLSX from 'xlsx';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import {
-  sendAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
-  patchAgentSession, stageFile, getFile, API_BASE_URL,
+  sendAgentChat, streamAgentChat, getAgentSessions, getAgentSession, deleteAgentSession,
+  patchAgentSession, stageFile, getFile, API_BASE_URL, getFiles,
 } from '../api';
 import {
   PaperAirplaneIcon,
@@ -49,6 +50,55 @@ const relativeTime = (iso) => {
 
 const newSessionId = () =>
   crypto.randomUUID ? crypto.randomUUID() : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+// Which viewer mode a citation's file should open in.
+const VIEWABLE_EXT_TYPE = {
+  pdf: 'pdf',
+  docx: 'docx', doc: 'docx',
+  pptx: 'ppt', ppt: 'ppt',
+  xlsx: 'excel', xls: 'excel', xlsm: 'excel',
+  png: 'image', jpg: 'image', jpeg: 'image', tif: 'image', tiff: 'image',
+};
+const fileTypeFromName = (filename) => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase();
+  return VIEWABLE_EXT_TYPE[ext] || null;
+};
+
+// Sources the right-side viewer panel can actually render: PDF pages and PPT
+// slides (both need a page/slide number, remapped from s.slide by
+// parseSources), docx (whole document, no page concept — matched to a
+// citation by snippet text at view time), excel (whole workbook, parsed
+// client-side — matched to a citation's sheet), and standalone images (whole
+// file, no pagination). Shared by both the auto-open-on-response path
+// (ChatPage.updatePageViewer) and the per-message "View Source" button
+// (MessageRow) so the two stay in sync.
+const buildViewableSources = (sources) => {
+  console.log("buildViewableSources input sources:", sources);
+  const result = (sources || [])
+    .map((s) => ({ ...s, fileType: fileTypeFromName(s.filename) }))
+    .filter((s) => {
+      if (!s.document_id) return false;
+      if (s.fileType === 'pdf') return s.page != null;
+      if (s.fileType === 'ppt') return s.page != null;
+      if (s.fileType === 'docx') return true;
+      if (s.fileType === 'excel') return true;
+      if (s.fileType === 'image') return true;
+      return false;
+    })
+    .filter((s, i, arr) => arr.findIndex((x) => {
+      if ((x.filename || '').toLowerCase() !== (s.filename || '').toLowerCase()) return false;
+      if (s.fileType === 'pdf' || s.fileType === 'ppt') {
+        return x.page === s.page;
+      }
+      if (s.fileType === 'excel') {
+        return x.sheet === s.sheet;
+      }
+      return true;
+    }) === i)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  console.log("buildViewableSources output result:", result);
+  return result;
+};
 
 /**
  * Pre-render $$..$$ (display) and $..$  (inline) math with KaTeX before the
@@ -161,7 +211,11 @@ const ChatPage = () => {
   const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState({});
+  const loading = !!loadingSessions[sessionId];
+  const setSessionLoading = (sessId, val) => {
+    setLoadingSessions((prev) => ({ ...prev, [sessId]: val }));
+  };
   const [error, setError] = useState(null);
   const [attachedFile, setAttachedFile] = useState(null); // {file_path, filename}
   const [attaching, setAttaching] = useState(false);
@@ -174,6 +228,16 @@ const ChatPage = () => {
   const textareaRef = useRef(null);
   const chatContainerRef = useRef(null);
   const [showChatScrollDown, setShowChatScrollDown] = useState(false);
+  const [allFiles, setAllFiles] = useState([]);
+
+  const loadFiles = async () => {
+    try {
+      const res = await getFiles();
+      setAllFiles(res.data || []);
+    } catch (err) {
+      console.error('Failed to load files:', err);
+    }
+  };
 
   const checkChatScroll = () => {
     const el = chatContainerRef.current;
@@ -203,6 +267,16 @@ const ChatPage = () => {
   // conversations before it landed (otherwise A's answer appends under B).
   const sessionIdRef = useRef(sessionId);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+
+  const streamControllerRef = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+    };
+  }, []);
+
 
   // Close dropdown on click outside (uses document listener, no shared ref)
   useEffect(() => {
@@ -237,7 +311,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(); }, []);
+  useEffect(() => { loadSessions(); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {
@@ -397,48 +471,281 @@ const ChatPage = () => {
   // next message so the agent proceeds scoped to that choice.
   const handleClarify = async (optionText, msgIdx) => {
     const reqSession = sessionId;
-    // Mark the originating prompt answered so its option buttons go inert (otherwise
-    // they stay clickable and a stray click re-fires the choice as a whole new turn).
     setMessages((prev) => [
       ...prev.map((m, i) => (i === msgIdx ? { ...m, clarifyAnswered: true } : m)),
       { role: 'user', content: optionText },
     ]);
-    setLoading(true);
+    setSessionLoading(reqSession, true);
     setError(null);
+
+    const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Add empty placeholder assistant message
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        pending: [],
+        question: null,
+        options: [],
+        tokenUsage: null,
+        traceId: null,
+        messageId,
+        isStreaming: true,
+        originalText: optionText,
+      },
+    ]);
+
     try {
-      const res = await sendAgentChat(optionText, reqSession, false);
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, optionText)]);
-      updatePageViewer(res.data);
-      loadSessions();
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        optionText,
+        reqSession,
+        messageId,
+        false,
+        null,
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: m.content + text } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: text,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [{ name, args: {}, status: 'running' }],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: (m.toolCalls || []).map((t) =>
+                          t.name === name ? { ...t, status: 'completed' } : t
+                        ),
+                      }
+                    : m
+                );
+              } else {
+                return prev;
+              }
+            });
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              loadSessions();
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: fullText,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: false,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            loadSessions();
+          },
+          onMetadata: (metadata) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        status: metadata.status,
+                        content: metadata.answer,
+                        toolCalls: metadata.tool_calls || [],
+                        tokenUsage: metadata.token_usage || null,
+                        traceId: metadata.trace_id || null,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    status: metadata.status,
+                    content: metadata.answer,
+                    toolCalls: metadata.tool_calls || [],
+                    tokenUsage: metadata.token_usage || null,
+                    traceId: metadata.trace_id || null,
+                    messageId,
+                    isStreaming: false,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            updatePageViewer(metadata);
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        content: `Error: ${errMsg}`,
+                        isError: true,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: `Error: ${errMsg}`,
+                    isError: true,
+                    isStreaming: false,
+                    messageId,
+                    originalText: optionText,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            setError(errMsg);
+          },
+        }
+      );
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Clarify error:', err);
-      if (sessionIdRef.current === reqSession) setError(err.message);
-    } finally {
-      setLoading(false);
+      if (sessionIdRef.current !== reqSession) return;
+      setSessionLoading(reqSession, false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setError(err.message);
     }
   };
-
   // Extract page-level sources from a response and open/close the page viewer.
+  // Reuses parseSources (slide/sheet -> page remap) + buildViewableSources
+  // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
+  // per-message "View Source" button in MessageRow.
   const updatePageViewer = (data) => {
-    const toolCalls = data.tool_calls || [];
-    const allSources = [];
-    for (const call of toolCalls) {
-      if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
-      try {
-        const parsed = JSON.parse(call.result);
-        if (Array.isArray(parsed.sources)) allSources.push(...parsed.sources);
-      } catch { /* skip malformed */ }
-    }
-    const pageSources = allSources
-      .filter(s => s.page != null && s.document_id)
-      // Deduplicate by (document_id, page)
-      .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
-      // Already sorted by score desc from backend, but re-sort just in case
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const allSources = parseSources(data.tool_calls || []);
 
-    if (pageSources.length > 0) {
-      setPageViewer({ pages: pageSources, activeIdx: 0 });
+    const toolCalls = data.tool_calls || [];
+    for (const call of toolCalls) {
+      if (call.name === 'excel_tst_tool') {
+        const filenameOrId = call.args?.filename_or_id;
+        const sheetName = call.args?.sheet_name;
+        if (filenameOrId) {
+          const matched = allFiles.find(
+            f => f.id === filenameOrId || f.document_id === filenameOrId ||
+                 f.filename === filenameOrId || f.filename?.toLowerCase() === filenameOrId.toLowerCase()
+          );
+          if (matched) {
+            allSources.push({
+              document_id: matched.document_id || matched.id,
+              filename: matched.filename,
+              page: sheetName || 1,
+              sheet: sheetName || null,
+              score: 1.0
+            });
+          }
+        }
+      }
+    }
+
+    const viewableSources = buildViewableSources(allSources);
+
+    if (viewableSources.length > 0) {
+      setPageViewer({ pages: viewableSources, activeIdx: 0 });
     } else {
       setPageViewer(null);
     }
@@ -467,36 +774,253 @@ const ChatPage = () => {
       )
     );
 
+    const reqSession = sessionId;
     setMessages((prev) => [...prev, { role: 'user', content: displayText }]);
     setInput('');
     setAttachedFile(null);
-    setLoading(true);
+    setSessionLoading(reqSession, true);
     setError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
-    const reqSession = sessionId;
+    // Generate messageId for de-duplication and state mapping
+    const messageId = crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    // Add empty placeholder assistant message
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        pending: [],
+        question: null,
+        options: [],
+        tokenUsage: null,
+        traceId: null,
+        messageId,
+        isStreaming: true,
+        originalText: sentText,
+        isIngesting: !!attachedFile,
+      },
+    ]);
+
     try {
-      const res = await sendAgentChat(sentText, reqSession, false);
-      // Drop the reply if the user switched conversations while it was in flight —
-      // it's already persisted server-side under reqSession.
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) => [...prev, agentMessageFromResponse(res.data, sentText)]);
-      updatePageViewer(res.data);
-      loadSessions();
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        sentText,
+        reqSession,
+        messageId,
+        false,
+        null,
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: m.content + text } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: text,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [{ name, args: {}, status: 'running' }],
+                    pending: [],
+                    messageId,
+                    isStreaming: true,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        toolCalls: (m.toolCalls || []).map((t) =>
+                          t.name === name ? { ...t, status: 'completed' } : t
+                        ),
+                      }
+                    : m
+                );
+              } else {
+                return prev;
+              }
+            });
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              loadSessions();
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: fullText,
+                    toolCalls: [],
+                    pending: [],
+                    messageId,
+                    isStreaming: false,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            loadSessions();
+          },
+          onMetadata: (metadata) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        status: metadata.status,
+                        content: metadata.answer,
+                        toolCalls: metadata.tool_calls || [],
+                        tokenUsage: metadata.token_usage || null,
+                        traceId: metadata.trace_id || null,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    status: metadata.status,
+                    content: metadata.answer,
+                    toolCalls: metadata.tool_calls || [],
+                    tokenUsage: metadata.token_usage || null,
+                    traceId: metadata.trace_id || null,
+                    messageId,
+                    isStreaming: false,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            updatePageViewer(metadata);
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) {
+              setSessionLoading(reqSession, false);
+              return;
+            }
+            setMessages((prev) => {
+              const exists = prev.some((m) => m.messageId === messageId);
+              if (exists) {
+                return prev.map((m) =>
+                  m.messageId === messageId
+                    ? {
+                        ...m,
+                        content: `Error: ${errMsg}`,
+                        isError: true,
+                        isStreaming: false,
+                      }
+                    : m
+                );
+              } else {
+                return [
+                  ...prev,
+                  {
+                    role: 'assistant',
+                    content: `Error: ${errMsg}`,
+                    isError: true,
+                    isStreaming: false,
+                    messageId,
+                    originalText: sentText,
+                    isIngesting: !!attachedFile,
+                  }
+                ];
+              }
+            });
+            setSessionLoading(reqSession, false);
+            setError(errMsg);
+          },
+        }
+      );
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Chat error:', err);
       if (sessionIdRef.current !== reqSession) return;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
-          isError: true,
-        },
-      ]);
+      setSessionLoading(reqSession, false);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to reach the agent. Make sure the backend is running.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
       setError(err.message);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -506,21 +1030,130 @@ const ChatPage = () => {
       setMessages((prev) => prev.map((m, i) => (i === msgIdx ? { ...m, status: 'declined' } : m)));
       return;
     }
-    setLoading(true);
     const reqSession = sessionId;
+    setSessionLoading(reqSession, true);
+
+    // Re-use the existing messageId or generate one if not present
+    const messageId = msg.messageId || (crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    // Reset this message state to prepare for streaming approval response
+    setMessages((prev) =>
+      prev.map((m, i) =>
+        i === msgIdx
+          ? {
+              ...m,
+              content: '',
+              toolCalls: [],
+              pending: [],
+              question: null,
+              options: [],
+              tokenUsage: null,
+              traceId: null,
+              messageId,
+              isStreaming: true,
+            }
+          : m
+      )
+    );
+
     try {
-      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || []);
-      if (sessionIdRef.current !== reqSession) { loadSessions(); return; }
-      setMessages((prev) =>
-        prev.map((m, i) => (i === msgIdx ? agentMessageFromResponse(res.data, msg.originalText) : m))
+      if (streamControllerRef.current) {
+        streamControllerRef.current.abort();
+      }
+
+      const controller = await streamAgentChat(
+        msg.originalText,
+        reqSession,
+        messageId,
+        true,
+        msg.pending || [],
+        {
+          onToken: (text) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId ? { ...m, content: m.content + text } : m
+              )
+            );
+          },
+          onToolStart: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      toolCalls: [...(m.toolCalls || []), { name, args: {}, status: 'running' }],
+                    }
+                  : m
+              )
+            );
+          },
+          onToolEnd: (name) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      toolCalls: (m.toolCalls || []).map((t) =>
+                        t.name === name ? { ...t, status: 'completed' } : t
+                      ),
+                    }
+                  : m
+              )
+            );
+          },
+          onDone: (fullText) => {
+            if (sessionIdRef.current !== reqSession) {
+              loadSessions();
+              return;
+            }
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId ? { ...m, content: fullText, isStreaming: false } : m
+              )
+            );
+            loadSessions();
+          },
+          onError: (errMsg) => {
+            if (sessionIdRef.current !== reqSession) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.messageId === messageId
+                  ? {
+                      ...m,
+                      content: `Error: ${errMsg}`,
+                      isError: true,
+                      isStreaming: false,
+                    }
+                  : m
+              )
+            );
+            setError(errMsg);
+          },
+        }
       );
-      updatePageViewer(res.data);
-      loadSessions();
+
+      streamControllerRef.current = controller;
     } catch (err) {
       console.error('Approval error:', err);
-      if (sessionIdRef.current === reqSession) setError(err.message);
+      if (sessionIdRef.current !== reqSession) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === messageId
+            ? {
+                ...m,
+                content: `Error: ${err.message || 'Failed to execute approved actions.'}`,
+                isError: true,
+                isStreaming: false,
+              }
+            : m
+        )
+      );
+      setError(err.message);
     } finally {
-      setLoading(false);
+      setSessionLoading(reqSession, false);
     }
   };
 
@@ -578,8 +1211,8 @@ const ChatPage = () => {
                 key={s.session_id}
                 onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
                 className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${s.session_id === sessionId
-                    ? 'bg-slate-800 text-white'
-                    : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
+                  ? 'bg-slate-800 text-white'
+                  : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
                   }`}
                 title={s.title}
               >
@@ -719,23 +1352,22 @@ const ChatPage = () => {
                 onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })} />
             ))}
 
-            {loading && (() => {
-              let text = 'Thinking...';
-              if (messages.length > 0) {
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg.role === 'assistant' && lastMsg.pending?.some(p => p.name === 'ingest_document')) {
-                  text = 'Ingesting...';
-                } else if (lastMsg.role === 'user' && (lastMsg.content?.includes('📎') || lastMsg.content?.includes('[Attached file:'))) {
-                  text = 'Ingesting...';
-                }
-              }
-              return (
-                <div className="flex items-center gap-2 text-gray-500 text-sm py-4">
-                  <ArrowPathIcon className="h-4 w-4 animate-spin" />
-                  {text}
+            {loading && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
+              <div className="py-3 flex justify-start">
+                <div className="max-w-full w-full">
+                  <div className="flex gap-3">
+                    <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center text-slate-400 text-sm py-1">
+                        <span className="font-medium">
+                          Thinking<span className="animate-dots"></span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              );
-            })()}
+              </div>
+            )}
 
             <div ref={messagesEndRef} />
           </div>
@@ -804,8 +1436,8 @@ const ChatPage = () => {
                 onClick={handleSend}
                 disabled={loading || (!input.trim() && !attachedFile)}
                 className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${loading || (!input.trim() && !attachedFile)
-                    ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                  ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
                   }`}
               >
                 <PaperAirplaneIcon className="h-4 w-4" />
@@ -829,11 +1461,35 @@ const ChatPage = () => {
 };
 
 // ── PageViewerPanel ───────────────────────────────────────────────────────────
-// Right-side panel that shows the PDF page image for the current page.
-// Supports page navigation, button-based zoom, and trackpad/mouse-wheel zoom.
+// Right-side panel for a citation. Dispatches on fileType (set by
+// fileTypeFromName in buildViewableSources): pdf/ppt share a paginated page/
+// slide-image canvas with nav + zoom; docx renders the whole document as HTML
+// and scroll/highlights the cited snippet at view time (no fixed page
+// numbers); excel is parsed client-side from the raw file and shows the
+// cited sheet; image is a single whole-file image, no pagination.
 const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const { pages, activeIdx } = viewer;
   const active = pages[activeIdx];
+  const fileType = active?.fileType;
+  const isPaginated = fileType === 'pdf' || fileType === 'ppt';
+
+  const getBadgeLabel = (p) => {
+    if (p.fileType === 'pdf') return `P.${p.page}`;
+    if (p.fileType === 'ppt') return `Slide ${p.page}`;
+    if (p.fileType === 'excel') return p.sheet ? `Sheet: ${p.sheet}` : 'Excel';
+    if (p.fileType === 'docx') return 'Word';
+    if (p.fileType === 'image') return 'Image';
+    return 'Doc';
+  };
+
+  const handleSelectSource = (idx) => {
+    onPageChange(idx);
+    const target = pages[idx];
+    if (target.fileType === 'pdf' || target.fileType === 'ppt') {
+      setCurrentPage(target.page || 1);
+      setScale(1);
+    }
+  };
 
   const [currentPage, setCurrentPage] = useState(active?.page || 1);
   const [totalPages, setTotalPages] = useState(null);
@@ -842,17 +1498,30 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const [scale, setScale] = useState(1);
   const containerRef = useRef(null);
 
-  // When active page changes from parent, sync currentPage and reset scale
+  const [docxHtml, setDocxHtml] = useState(null);
+  const [docxLoading, setDocxLoading] = useState(false);
+  const [docxError, setDocxError] = useState(false);
+  const docxContainerRef = useRef(null);
+  const lastHighlightRef = useRef(null);
+
+  const [workbook, setWorkbook] = useState(null);
+  const [excelLoading, setExcelLoading] = useState(false);
+  const [excelError, setExcelError] = useState(false);
+  const [activeSheet, setActiveSheet] = useState(null);
+
+  // PDF/PPT: when active page changes from parent, sync currentPage and reset scale
   useEffect(() => {
-    if (active?.page) {
+    if (isPaginated && active?.page) {
       setCurrentPage(active.page);
       setScale(1);
     }
-  }, [activeIdx, active?.page]);
+  }, [fileType, activeIdx, active?.page]);
 
-  // Fetch total page count for active document
+  // PDF/PPT: fetch total page/slide count for active document.
+  // pdf-info dispatches on the doc's own file_type server-side, so the same
+  // endpoint returns a slide count for ppt and a page count for pdf.
   useEffect(() => {
-    if (!active?.document_id) return;
+    if (!isPaginated || !active?.document_id) return;
     setTotalPages(null);
     fetch(`${API_BASE_URL}/files/${active.document_id}/pdf-info`)
       .then((res) => {
@@ -863,18 +1532,179 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         setTotalPages(data.total_pages);
       })
       .catch((err) => {
-        console.error("Failed to load PDF info:", err);
+        console.error("Failed to load page info:", err);
       });
-  }, [active?.document_id]);
+  }, [fileType, active?.document_id]);
 
-  // Reset image status when current page changes
+  // PDF/PPT: reset image load status when current page changes
   useEffect(() => {
+    if (!isPaginated) return;
     setImgLoaded(false);
     setImgError(false);
-  }, [currentPage, active?.document_id]);
+  }, [fileType, currentPage, active?.document_id]);
 
-  // Trap Ctrl + MouseWheel / trackpad pinch zooms on the viewer container
-  // to zoom the document internally and prevent the browser from zooming the dashboard.
+  // Docx: fetch the rendered HTML whenever the active document changes
+  useEffect(() => {
+    if (fileType !== 'docx' || !active?.document_id) return;
+    setDocxHtml(null);
+    setDocxError(false);
+    setDocxLoading(true);
+    lastHighlightRef.current = null;
+    fetch(`${API_BASE_URL}/files/${active.document_id}/docx-html`)
+      .then((res) => {
+        if (!res.ok) throw new Error();
+        return res.json();
+      })
+      .then((data) => setDocxHtml(data.html))
+      .catch((err) => {
+        console.error("Failed to load docx HTML:", err);
+        setDocxError(true);
+      })
+      .finally(() => setDocxLoading(false));
+  }, [fileType, active?.document_id]);
+
+  // Docx: once the HTML is in the DOM, scroll to + highlight this citation's
+  // snippet. Word has no fixed page numbers, so this is a view-time text
+  // match against the rendered HTML rather than a jump to a persisted
+  // page/paragraph number (see backend file_docx_html docstring for why).
+  useEffect(() => {
+    if (fileType !== 'docx' || !docxHtml || !docxContainerRef.current) return;
+    const container = docxContainerRef.current;
+
+    if (lastHighlightRef.current) {
+      lastHighlightRef.current.style.backgroundColor = '';
+      lastHighlightRef.current.style.transition = '';
+      lastHighlightRef.current = null;
+    }
+
+    const snippet = (active?.snippet || '').trim();
+    if (!snippet) return;
+
+    // Word's smart quotes/dashes survive into the docx run text and mammoth
+    // renders them verbatim, but the chunk text used for the snippet may have
+    // been normalized to plain ASCII somewhere upstream (or vice versa). Fold
+    // both sides to the same canonical form so a single curly quote doesn't
+    // silently sink an otherwise-good match.
+    const normalizeForMatch = (s) =>
+      (s || '')
+        .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
+    // Table chunks store text as markdown (df.to_markdown(): pipes and a
+    // "| --- | --- |" separator row — see schemas.py), but mammoth renders
+    // the same table as a real <table> with plain cell text. Strip the
+    // markdown scaffolding so a table citation's needle reduces to the same
+    // words the rendered cells contain, instead of characters that can never
+    // appear in the HTML.
+    const stripTableMarkdown = (s) =>
+      (s || '')
+        .split('\n')
+        .filter((line) => !/^[\s|:-]+$/.test(line))
+        .join(' ')
+        .replace(/\|/g, ' ');
+
+    const cleanedSnippet = normalizeForMatch(stripTableMarkdown(snippet));
+    if (!cleanedSnippet) return;
+
+    // Match against the whole document's text, not node-by-node. A needle can
+    // straddle multiple text nodes — e.g. a heading mammoth renders as its own
+    // <h2> immediately followed by the paragraph chunk_tool merged it with, or
+    // a sentence split across a bold/italic run or a hyperlink. Concatenate
+    // every text node into one normalized string (in DOM order), track which
+    // node each slice of that string came from, search the combined string,
+    // then map the match position back to the node(s) it falls in.
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodeRanges = []; // { node, start, end } offsets into fullText
+    let fullText = '';
+    let node;
+    while ((node = walker.nextNode())) {
+      const normalized = normalizeForMatch(node.textContent);
+      if (!normalized) continue;
+      // Keep a boundary space between nodes so words from adjacent elements
+      // (end of a heading, start of the next paragraph) don't fuse together,
+      // while still letting the needle span across the boundary.
+      if (fullText && !fullText.endsWith(' ') && !normalized.startsWith(' ')) {
+        fullText += ' ';
+      }
+      const start = fullText.length;
+      fullText += normalized;
+      nodeRanges.push({ node, start, end: fullText.length });
+    }
+
+    // Try progressively shorter windows of the cleaned snippet. A long window
+    // is more specific (less chance of matching the wrong passage) but is
+    // also more likely to snag on some remaining stray character; shrinking
+    // on failure trades specificity for resilience instead of giving up
+    // after one attempt.
+    let matchStart = -1;
+    let needleLen = 0;
+    for (const len of [80, 50, 30, 18]) {
+      const candidate = cleanedSnippet.slice(0, len).trim();
+      if (!candidate) continue;
+      const idx = fullText.indexOf(candidate);
+      if (idx !== -1) {
+        matchStart = idx;
+        needleLen = candidate.length;
+        break;
+      }
+    }
+
+    if (matchStart !== -1) {
+      const matchEnd = matchStart + needleLen;
+      const hit = nodeRanges.find((r) => r.start < matchEnd && r.end > matchStart);
+      const el = hit?.node.parentElement;
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.style.transition = 'background-color 0.3s ease';
+        el.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
+        lastHighlightRef.current = el;
+      }
+    }
+    // no match found at any window size — fall back to showing the doc from
+    // the top, no highlight
+  }, [fileType, docxHtml, activeIdx, active?.snippet]);
+
+  // Excel: fetch the raw workbook and parse it client-side (SheetJS) — there's
+  // no server-side HTML conversion for spreadsheets, just /raw bytes.
+  useEffect(() => {
+    if (fileType !== 'excel' || !active?.document_id) return;
+    setWorkbook(null);
+    setExcelError(false);
+    setExcelLoading(true);
+    fetch(`${API_BASE_URL}/files/${active.document_id}/raw`)
+      .then((res) => {
+        if (!res.ok) throw new Error();
+        return res.arrayBuffer();
+      })
+      .then((buf) => setWorkbook(XLSX.read(buf, { type: 'array' })))
+      .catch((err) => {
+        console.error("Failed to load Excel file:", err);
+        setExcelError(true);
+      })
+      .finally(() => setExcelLoading(false));
+  }, [fileType, active?.document_id]);
+
+  // Excel: pick the sheet this citation points at (falls back to the first
+  // sheet if the citation didn't carry one, or named a sheet that's since
+  // been renamed/removed).
+  useEffect(() => {
+    if (fileType !== 'excel' || !workbook) return;
+    const wanted = active?.sheet;
+    const match = wanted && workbook.SheetNames.includes(wanted)
+      ? wanted
+      : workbook.SheetNames[0];
+    setActiveSheet(match);
+  }, [fileType, workbook, activeIdx, active?.sheet]);
+
+  // Trap Ctrl + MouseWheel / trackpad pinch zooms on the pdf/ppt/image canvas
+  // to zoom the document internally and prevent the browser from zooming the
+  // dashboard. Docx/excel scroll/zoom is native browser behavior. Re-runs
+  // whenever the visible fileType changes, since the canvas div (and its ref)
+  // only exists in the DOM for paginated/image citations.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -894,13 +1724,13 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     return () => {
       container.removeEventListener('wheel', handleWheel);
     };
-  }, []);
+  }, [fileType, active?.document_id]);
 
   const handlePageChange = (page) => {
+    // PDF/PPT only — jump by page/slide number and sync activeIdx if cited.
     setCurrentPage(page);
     setScale(1);
-    // If the new page is in our cited pages, update activeIdx in parent
-    const idx = pages.findIndex((p) => p.page === page);
+    const idx = pages.findIndex((p) => p.page === page && p.document_id === active?.document_id);
     if (idx !== -1) {
       onPageChange(idx);
     }
@@ -910,83 +1740,93 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     setScale((prev) => (prev > 1.1 ? 1 : 1.8));
   };
 
-  const imageUrl = active?.document_id
+  const imageUrl = (isPaginated && active?.document_id)
     ? `${API_BASE_URL}/files/${active.document_id}/pages/${currentPage}/image`
-    : null;
+    : (fileType === 'image' && active?.document_id)
+      ? `${API_BASE_URL}/files/${active.document_id}/original`
+      : null;
 
   const maxScore = Math.max(...pages.map((p) => p.score ?? 0), 0.001);
   const multiPage = pages.length > 1;
 
+  const sheetRows = (fileType === 'excel' && workbook && activeSheet)
+    ? XLSX.utils.sheet_to_json(workbook.Sheets[activeSheet], { header: 1, defval: '' })
+    : null;
+
   return (
     <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-300 overflow-hidden ${sidebarOpen
-        ? 'w-[40%] min-w-[40%] max-w-[40%]'
-        : 'w-[50%] min-w-[50%] max-w-[50%]'
+      ? 'w-[40%] min-w-[40%] max-w-[40%]'
+      : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>
-      {/* Header matching user request */}
+      {/* Header */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
         <span className="text-xs font-bold text-gray-200 truncate flex-1" title={active?.filename}>
           {active?.filename}
         </span>
 
-        {/* Navigation */}
-        <div className="flex items-center gap-3 select-none flex-shrink-0">
-          <button
-            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-            disabled={currentPage <= 1}
-            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
-            title="Previous Page"
-          >
-            <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
-          </button>
+        {/* Navigation — pdf/ppt only, they're the only paginated types */}
+        {isPaginated && (
+          <div className="flex items-center gap-3 select-none flex-shrink-0">
+            <button
+              onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+              disabled={currentPage <= 1}
+              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              title="Previous Page"
+            >
+              <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
+            </button>
 
-          <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
-            {currentPage} / {totalPages || '...'}
-          </span>
+            <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
+              {currentPage} / {totalPages || '...'}
+            </span>
 
-          <button
-            onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
-            disabled={currentPage >= (totalPages || 1)}
-            className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
-            title="Next Page"
-          >
-            <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
-          </button>
-        </div>
+            <button
+              onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
+              disabled={currentPage >= (totalPages || 1)}
+              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              title="Next Page"
+            >
+              <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
+            </button>
+          </div>
+        )}
 
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
-          <button
-            onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
-            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
-            title="Zoom Out"
-          >
-            －
-          </button>
+        {/* Zoom Controls — pdf/ppt/image only */}
+        {(isPaginated || fileType === 'image') && (
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
+            <button
+              onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
+              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              title="Zoom Out"
+            >
+              －
+            </button>
 
-          <button
-            onClick={() => setScale(1)}
-            className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
-            title="Reset to 100%"
-          >
-            {Math.round(scale * 100)}%
-          </button>
+            <button
+              onClick={() => setScale(1)}
+              className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
+              title="Reset to 100%"
+            >
+              {Math.round(scale * 100)}%
+            </button>
 
-          <button
-            onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
-            className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
-            title="Zoom In"
-          >
-            ＋
-          </button>
+            <button
+              onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
+              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              title="Zoom In"
+            >
+              ＋
+            </button>
 
-          <button
-            onClick={() => setScale(1)}
-            className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
-            title="Reset Zoom to 100%"
-          >
-            Reset
-          </button>
-        </div>
+            <button
+              onClick={handleToggleZoom}
+              className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
+              title="Reset Zoom to 100%"
+            >
+              Reset
+            </button>
+          </div>
+        )}
 
         {/* Close Button */}
         <button
@@ -998,23 +1838,23 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </button>
       </div>
 
-      {/* Page Badges — cited pages shown below header */}
+      {/* Document/Page Badges — cited pages shown below header */}
       {multiPage && (
-        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5">
+        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
           {pages.map((p, i) => {
             const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
-            const isActive = p.page === currentPage;
+            const isActive = i === activeIdx;
             return (
               <button
                 key={i}
-                onClick={() => handlePageChange(p.page)}
+                onClick={() => handleSelectSource(i)}
                 className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
-                    ? 'bg-blue-600/20 border-blue-500 text-blue-300'
-                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                  ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                   }`}
-                title={`Page ${p.page} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
+                title={`${p.filename} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
-                <span>P.{p.page}</span>
+                <span>{getBadgeLabel(p)}</span>
                 <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
                   <div
                     className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}
@@ -1027,48 +1867,117 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         </div>
       )}
 
-      {/* Page Canvas — overflow:auto creates scrollbars when zoomed in */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto bg-slate-950 p-4"
-      >
-        {imageUrl && (
-          <div
-            style={{
-              /* Scale < 1 → shrink & center via auto margin.
-                 Scale > 1 → grow wider than panel → scrollbars appear. */
-              width: scale <= 1
-                ? `${Math.round(scale * 100)}%`
-                : `${Math.round(scale * 100)}%`,
-              marginLeft: scale <= 1 ? 'auto' : '0',
-              marginRight: scale <= 1 ? 'auto' : '0',
-              transition: 'width 150ms ease-out',
-              position: 'relative',
-            }}
-          >
-            {!imgLoaded && !imgError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
-                <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-                <span>Rendering Page {currentPage}...</span>
-              </div>
-            )}
-            {imgError && (
-              <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
-                <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
-                <span>Page image not available.</span>
-              </div>
-            )}
-            <img
-              src={imageUrl}
-              alt={`Page ${currentPage}`}
-              onLoad={() => setImgLoaded(true)}
-              onError={() => { setImgError(true); setImgLoaded(true); }}
-              className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+      {/* Sheet tabs — excel only */}
+      {fileType === 'excel' && workbook && workbook.SheetNames.length > 1 && (
+        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
+          {workbook.SheetNames.map((name) => (
+            <button
+              key={name}
+              onClick={() => setActiveSheet(name)}
+              className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${activeSheet === name
+                ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                 }`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Content area */}
+      {fileType === 'docx' ? (
+        <div ref={docxContainerRef} className="flex-1 overflow-auto bg-white p-6">
+          {docxLoading && (
+            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+              <span>Loading document...</span>
+            </div>
+          )}
+          {docxError && (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 opacity-40" />
+              <span>Could not load this document.</span>
+            </div>
+          )}
+          {docxHtml && (
+            <div
+              className="docx-content text-slate-900 text-sm leading-relaxed max-w-2xl mx-auto"
+              dangerouslySetInnerHTML={{ __html: docxHtml }}
             />
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      ) : fileType === 'excel' ? (
+        <div className="flex-1 overflow-auto bg-white p-4">
+          {excelLoading && (
+            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+              <span>Loading spreadsheet...</span>
+            </div>
+          )}
+          {excelError && (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 opacity-40" />
+              <span>Could not load this spreadsheet.</span>
+            </div>
+          )}
+          {sheetRows && (
+            <table className="w-full text-xs border-collapse">
+              <tbody>
+                {sheetRows.map((row, r) => (
+                  <tr key={r} className={r === 0 ? 'bg-slate-100 font-semibold' : 'odd:bg-slate-50'}>
+                    {row.map((cell, c) => (
+                      <td key={c} className="border border-slate-200 px-2 py-1 text-slate-800 whitespace-nowrap">
+                        {String(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
+        <div
+          ref={containerRef}
+          className="flex-1 overflow-auto bg-slate-950 p-4"
+        >
+          {imageUrl && (
+            <div
+              style={{
+                /* Scale < 1 → shrink & center via auto margin.
+                   Scale > 1 → grow wider than panel → scrollbars appear. */
+                width: `${Math.round(scale * 100)}%`,
+                marginLeft: scale <= 1 ? 'auto' : '0',
+                marginRight: scale <= 1 ? 'auto' : '0',
+                transition: 'width 150ms ease-out',
+                position: 'relative',
+              }}
+            >
+              {!imgLoaded && !imgError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
+                  <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
+                  <span>{isPaginated ? `Rendering Page ${currentPage}...` : 'Loading image...'}</span>
+                </div>
+              )}
+              {imgError && (
+                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
+                  <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
+                  <span>Page image not available.</span>
+                </div>
+              )}
+              <img
+                src={imageUrl}
+                alt={isPaginated ? `Page ${currentPage}` : active?.filename}
+                onLoad={() => setImgLoaded(true)}
+                onError={() => { setImgError(true); setImgLoaded(true); }}
+                className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+                  }`}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1083,12 +1992,72 @@ const parseSources = (toolCalls) => {
     if (call.name !== 'search_documents' || typeof call.result !== 'string') continue;
     try {
       const parsed = JSON.parse(call.result);
-      if (Array.isArray(parsed.sources)) sources.push(...parsed.sources);
+      if (Array.isArray(parsed.sources)) {
+        const mapped = parsed.sources.map(s => {
+          if (s.page == null && s.slide != null) {
+            return { ...s, page: s.slide };
+          }
+          if (s.page == null && s.sheet != null) {
+            return { ...s, page: s.sheet };
+          }
+          return s;
+        });
+        sources.push(...mapped);
+      }
     } catch {
       // not JSON (e.g. a blocked/error string) — nothing to show
     }
   }
   return sources;
+};
+
+// Best-effort: list_documents' tool result is a JSON string of
+// {count, returned, documents:[{filename, ...}], note?}. Pull out the
+// returned filenames and counts so the UI can render what was actually listed.
+const parseListedDocuments = (toolCalls) => {
+  const documents = [];
+  let note = "";
+  let totalCount = 0;
+  let returnedCount = 0;
+
+  for (const call of toolCalls || []) {
+    if (call.name !== 'list_documents' || typeof call.result !== 'string') continue;
+    try {
+      const parsed = JSON.parse(call.result);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.count === 'number' && Number.isFinite(parsed.count)) {
+          totalCount = Math.max(totalCount, parsed.count);
+        }
+        if (typeof parsed.returned === 'number' && Number.isFinite(parsed.returned)) {
+          returnedCount = Math.max(returnedCount, parsed.returned);
+        }
+        if (Array.isArray(parsed.documents)) {
+          documents.push(...parsed.documents);
+        }
+        if (!note && typeof parsed.note === 'string') {
+          note = parsed.note;
+        }
+      }
+    } catch {
+      // not JSON (e.g. a blocked/error string) - nothing to show
+    }
+  }
+
+  const seen = new Set();
+  const uniqueDocuments = [];
+  for (const doc of documents) {
+    const key = `${doc?.document_id || ""}::${doc?.filename || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueDocuments.push(doc);
+  }
+
+  return {
+    documents: uniqueDocuments,
+    note,
+    totalCount: totalCount || uniqueDocuments.length,
+    returnedCount: returnedCount || uniqueDocuments.length,
+  };
 };
 
 const CustomCodeBlock = ({ language, value }) => {
@@ -1244,14 +2213,18 @@ const CustomCodeBlock = ({ language, value }) => {
 const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls) : [];
+  const listedDocuments = !isUser ? parseListedDocuments(msg.toolCalls) : {
+    documents: [],
+    note: "",
+    totalCount: 0,
+    returnedCount: 0,
+  };
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
 
-  // Page sources for the "View Source Pages" button — filtered + sorted by score
-  const pageSources = sources
-    .filter(s => s.page != null && s.document_id)
-    .filter((s, i, arr) => arr.findIndex(x => x.document_id === s.document_id && x.page === s.page) === i)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  // Sources for the "View Source" button — filtered + sorted by score.
+  // Covers PDF pages, docx (whole doc, snippet-matched), and images (whole file).
+  const pageSources = buildViewableSources(sources);
   const hasPageSources = pageSources.length > 0;
 
   return (
@@ -1265,6 +2238,16 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
           <div className="flex gap-3">
             <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
             <div className="min-w-0 flex-1">
+              {!msg.content && (
+                <div className="flex items-center text-slate-400 text-sm py-1">
+                  <span className="font-medium">
+                    {msg.isIngesting
+                      ? 'Ingesting'
+                      : 'Thinking'}
+                    <span className="animate-dots"></span>
+                  </span>
+                </div>
+              )}
               {msg.content && (
                 <div
                   className={`prose prose-invert prose-sm max-w-none leading-relaxed w-full overflow-x-auto ${msg.isError ? 'text-red-300' : 'text-gray-100'
@@ -1295,81 +2278,117 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
               {/* Tool calls this turn (reads that ran, or a blocked write) */}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {msg.toolCalls.map((call, i) => {
-                    const isSearch = call.name === 'search_documents';
-                    const isList = call.name === 'list_documents';
+                  {(() => {
+                    const grouped = msg.toolCalls.reduce((acc, call) => {
+                      const existing = acc.find(g => g.name === call.name);
+                      if (existing) {
+                        existing.count += 1;
+                        existing.calls.push(call);
+                      } else {
+                        acc.push({ name: call.name, count: 1, calls: [call] });
+                      }
+                      return acc;
+                    }, []);
 
-                    if (isSearch && sources.length > 0) {
+                    return grouped.map((group, i) => {
+                      const isSearch = group.name === 'search_documents';
+                      const isList = group.name === 'list_documents';
+
+                      if (isSearch && sources.length > 0) {
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              setIsSearchExpanded(!isSearchExpanded);
+                              setIsListExpanded(false); // collapse other
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                          >
+                            <WrenchScrewdriverIcon className="h-3 w-3" />
+                            <span className="font-mono">{group.name}</span>
+                            {group.count > 1 && (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {group.count}
+                              </span>
+                            )}
+                            {isSearchExpanded ? (
+                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                            ) : (
+                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                            )}
+                          </button>
+                        );
+                      }
+
+                      if (isList) {
+                        const listCount = listedDocuments.totalCount || listedDocuments.returnedCount || listedDocuments.documents.length;
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              setIsListExpanded(!isListExpanded);
+                              setIsSearchExpanded(false); // collapse other
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                            >
+                            <WrenchScrewdriverIcon className="h-3 w-3" />
+                            <span className="font-mono">{group.name}</span>
+                            {listCount > 0 ? (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {listCount}
+                              </span>
+                            ) : group.count > 1 && (
+                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
+                                {group.count}
+                              </span>
+                            )}
+                            {isListExpanded ? (
+                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
+                            ) : (
+                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                            )}
+                          </button>
+                        );
+                      }
+
                       return (
-                        <button
+                        <span
                           key={i}
-                          onClick={() => {
-                            setIsSearchExpanded(!isSearchExpanded);
-                            setIsListExpanded(false); // collapse other
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                          className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
                         >
-                          <WrenchScrewdriverIcon className="h-3 w-3" />
-                          <span className="font-mono">{call.name}</span>
-                          {isSearchExpanded ? (
-                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                          ) : (
-                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
+                          <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
+                          <span className="font-mono">{group.name}</span>
+                          {group.count > 1 && (
+                            <span className="text-[10px] text-blue-300 bg-blue-500/10 border border-blue-500/10 px-1.5 py-0.5 rounded font-sans font-medium">
+                              x{group.count}
+                            </span>
                           )}
-                        </button>
+                        </span>
                       );
-                    }
-
-                    if (isList) {
-                      return (
-                        <button
-                          key={i}
-                          onClick={() => {
-                            setIsListExpanded(!isListExpanded);
-                            setIsSearchExpanded(false); // collapse other
-                          }}
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
-                        >
-                          <WrenchScrewdriverIcon className="h-3 w-3" />
-                          <span className="font-mono">{call.name}</span>
-                          {isListExpanded ? (
-                            <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                          ) : (
-                            <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
-                          )}
-                        </button>
-                      );
-                    }
-
-                    return (
-                      <span
-                        key={i}
-                        className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
-                      >
-                        <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
-                        <span className="font-mono">{call.name}</span>
-                      </span>
-                    );
-                  })}
+                    });
+                  })()}
                 </div>
               )}
 
               {/* Inline citation list (expanded from list_documents) */}
               {isListExpanded && (
                 <div className="mt-3 space-y-1.5 max-w-md bg-slate-900/40 border border-slate-800 rounded-xl p-3">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Cited Documents</p>
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Listed Documents</p>
                   {(() => {
-                    const uniqueFiles = Array.from(new Set(sources.map(s => s.filename)));
-                    if (uniqueFiles.length === 0) {
-                      return <p className="text-xs text-gray-500 italic p-1">No documents were cited in this search query.</p>;
+                    const docs = listedDocuments.documents || [];
+                    if (docs.length === 0) {
+                      return <p className="text-xs text-gray-500 italic p-1">No documents were returned by list_documents.</p>;
                     }
-                    return uniqueFiles.map((filename, idx) => (
+                    return docs.map((doc, idx) => (
                       <div key={idx} className="flex items-center gap-2.5 text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded px-3 py-2">
                         <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
-                        <span className="font-medium truncate">{filename}</span>
+                        <span className="font-medium truncate">{doc.filename || doc.document_id || 'Untitled document'}</span>
                       </div>
                     ));
                   })()}
+                  {listedDocuments.note && (
+                    <p className="text-[10px] text-gray-500 mt-2">{listedDocuments.note}</p>
+                  )}
                 </div>
               )}
 
@@ -1489,7 +2508,7 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                     className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40 rounded-lg px-3 py-1.5 transition-all font-medium"
                   >
                     <DocumentIcon className="h-3.5 w-3.5" />
-                    View Source {pageSources.length > 1 ? `Pages (${pageSources.length})` : 'Page'}
+                    View Source{pageSources.length > 1 ? `s (${pageSources.length})` : ''}
                   </button>
                 </div>
               )}

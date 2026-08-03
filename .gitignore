@@ -224,6 +224,7 @@ __marimo__/
 
 # Uploaded files (runtime data, not source)
 uploads/
+auto_ingest/
 
 # Local data and sample files
 data/

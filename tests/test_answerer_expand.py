@@ -100,6 +100,43 @@ def test_multiple_thin_chunks_on_same_page_share_one_fetch():
     assert all("full page content" in c["text"] for c in out)
 
 
+
+def test_slide_sheet_expansion():
+    # Test PPT slide thin chunk expansion
+    slide_chunk = {
+        "chunk_id": "c1",
+        "document_id": "doc-1",
+        "text": "slide intro",
+        "token_count": 5,
+        "tags": {},
+        "source_ref": {"slide": 4, "filename": "slides.pptx"},
+    }
+    slide_blocks = [
+        {"block_id": "b1", "type": "text", "text": "slide intro", "source_ref": {"slide": 4}},
+        {"block_id": "b2", "type": "text", "text": "slide detailed content", "source_ref": {"slide": 4}},
+    ]
+    with patch("backend.storage.postgres_store.PostgresStore", return_value=_fake_store(slide_blocks)):
+        out = _expand_thin_chunks([slide_chunk])
+    assert "slide detailed content" in out[0]["text"]
+
+    # Test Excel sheet thin chunk expansion
+    sheet_chunk = {
+        "chunk_id": "c2",
+        "document_id": "doc-1",
+        "text": "sheet intro",
+        "token_count": 5,
+        "tags": {},
+        "source_ref": {"sheet": "Overview", "filename": "data.xlsx"},
+    }
+    sheet_blocks = [
+        {"block_id": "b1", "type": "text", "text": "sheet intro", "source_ref": {"sheet": "Overview"}},
+        {"block_id": "b2", "type": "text", "text": "sheet data values", "source_ref": {"sheet": "Overview"}},
+    ]
+    with patch("backend.storage.postgres_store.PostgresStore", return_value=_fake_store(sheet_blocks)):
+        out = _expand_thin_chunks([sheet_chunk])
+    assert "sheet data values" in out[0]["text"]
+
+
 if __name__ == "__main__":
     test_chunk_without_summary_is_thin()
     test_chunk_with_summary_and_enough_tokens_is_not_thin()
@@ -109,4 +146,5 @@ if __name__ == "__main__":
     test_expansion_failure_leaves_chunk_as_is()
     test_document_id_as_uuid_object_still_expands()
     test_multiple_thin_chunks_on_same_page_share_one_fetch()
+    test_slide_sheet_expansion()
     print("answerer expansion tests passed")

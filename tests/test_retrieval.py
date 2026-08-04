@@ -263,29 +263,6 @@ def test_hyde_top_n_passed_to_vector_store():
     assert kwargs["top_k"] == 2
 
 
-# ── enriched (alias for hybrid_rerank) ───────────────────────────────────────
-
-def test_enriched_behaves_same_as_hybrid_rerank():
-    state_enriched = sample_query_state()
-    state_rerank   = sample_query_state()
-    chunks         = chunk_dicts()
-
-    def run_with_method(state, method):
-        config = make_config(method=method, top_n=3)
-        with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
-             patch("backend.retrieval.retrieval.VectorStore.search", return_value=chunks), \
-             patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=chunks), \
-             patch("backend.retrieval.retrieval.get_reranker") as mock_reranker:
-            mock_embedder.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
-            mock_reranker.return_value.predict.return_value = [0.9, 0.5, 0.3]
-            return RetrievalTool().run(state, config)
-
-    result_enriched = run_with_method(state_enriched, "enriched")
-    result_rerank   = run_with_method(state_rerank,   "hybrid_rerank")
-
-    assert ([c["chunk_id"] for c in result_enriched["retrieved_chunks"]]
-         == [c["chunk_id"] for c in result_rerank  ["retrieved_chunks"]])
-
 
 # ── unknown method ────────────────────────────────────────────────────────────
 

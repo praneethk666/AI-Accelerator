@@ -9,8 +9,8 @@ RetrievalTool — implements the Tool Protocol from backend/core/tool.py.
     WRITES state["retrieved_chunks"] list[Chunk] — flat, deduped, best-first
     ERRORS state["errors"]           list        — append only, never raise
 
-Five methods (config["query"]["retrieval"]["method"]):
-  naive | hybrid | hybrid_rerank | hyde | enriched
+Four methods (config["query"]["retrieval"]["method"]):
+  naive | hybrid | hybrid_rerank | hyde
 """
 from __future__ import annotations
 
@@ -138,12 +138,10 @@ def _retrieve_one(
             chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
         elif method == "hyde":
             chunks = _hyde(query, retrieval_cfg, full_config, filters)
-        elif method == "enriched":
-            chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
         else:
             raise ValueError(
                 f"Unknown method: {method!r}. "
-                "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
+                "Valid: naive | hybrid | hybrid_rerank | hyde"
             )
     except Exception as exc:
         logger.warning(

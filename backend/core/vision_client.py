@@ -46,6 +46,28 @@ def describe_image(image_bytes: bytes, prompt: str, config: dict) -> str:
     from backend.core import pacing
     pacing.pace("vision", float(vcfg.get("min_interval_s", 0) or 0))
 
+    # TOKEN-budget pacing (backend/core/token_pacer.py), alongside the REQUEST-rate
+    # pacing above -- real finding, 3-Aug: gpt-4o-mini figure captioning hit 429
+    # "tokens per min" even with min_interval_s tuned down, because request-interval
+    # pacing has no notion of how big any individual call is. Opt-in via tpm_limit
+    # (0/unset = disabled, matches this call's provider having no known TPM ceiling).
+    from backend.core import token_pacer
+    tpm_limit = int(vcfg.get("tpm_limit", 0) or 0)
+    if tpm_limit:
+        # Prefer a config-supplied flat estimate when set -- real per-call cost is
+        # provider/prompt-specific and was already empirically measured once
+        # (~1200-1300 tokens/call, read straight off real 429 error bodies during a
+        # prior gpt-4o-mini incident) -- that's a better number than reconstructing
+        # it from image bytes/prompt length, which is a rough proxy at best. Falls
+        # back to the rough proxy only if est_tokens_per_call isn't configured.
+        flat_estimate = vcfg.get("est_tokens_per_call")
+        if flat_estimate:
+            est_tokens = int(flat_estimate)
+        else:
+            est_tokens = (max(500, len(image_bytes) // 700) + len(prompt) // 3
+                         + int(vcfg.get("est_response_tokens", 600)))
+        token_pacer.wait_for_tokens(f"vision:{provider}:{model}", est_tokens, tpm_limit)
+
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:

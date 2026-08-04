@@ -262,7 +262,16 @@ def _extract_classification_result(
             reasoning = result.get("reasoning", f"{source_name} classification completed.")
             industry = (result.get("industry") or "").strip().lower()
             evidence = (result.get("industry_evidence") or "").strip()
-            industry = industry if industry in known_industries and industry != "general" else None
+            # Only drop empty/"general" here -- do NOT filter to known_industries.
+            # Real bug found live, 3-Aug (merge): filtering to known_industries here
+            # silently discarded every NOVEL industry proposal (not in the configured
+            # list) before either caller's own verify-then-accept logic ever saw it,
+            # making that logic permanently unreachable. Both callers (vision-path
+            # in categorize(), and _text_llm_classify's caller) need the raw value to
+            # decide themselves whether a novel industry is well-evidenced enough to
+            # accept -- known-industries membership is exactly ONE of the checks they
+            # make, not a pre-filter this shared helper should apply on their behalf.
+            industry = industry if industry and industry != "general" else None
             return doc_type, conf, reasoning, industry, evidence
         except (json.JSONDecodeError, TypeError, ValueError):
             pass  # Fall through to natural language text extraction
@@ -617,6 +626,30 @@ Respond with ONLY the JSON object, no other text, no markdown."""
                             f"Vision claimed industry='{vi}' but evidence '{evidence}' "
                             f"wasn't found in extractable text; discarding (falling through "
                             f"to keyword scan/default)."
+                        )
+                elif vi and vi != "general":
+                    # NOVEL industry — not in our configured taxonomy, so no keyword
+                    # list exists to corroborate it. No shortcut available: require
+                    # BOTH a verified quote from what vision actually saw AND high
+                    # confidence. Accepted, but flagged distinctly in the reasoning so
+                    # a human can decide whether to promote it into the permanent
+                    # config (with its own keyword list) rather than it silently
+                    # becoming a one-off unofficial category.
+                    if (len(verify_text.strip()) >= MIN_VERIFY_TEXT_CHARS
+                            and _evidence_supported(evidence, verify_text)
+                            and conf >= 0.75):
+                        vision_industry = vi
+                        reasoning_parts.append(
+                            f"NEW industry candidate '{vi}' (not in the configured "
+                            f"list) — verified evidence '{evidence}', "
+                            f"confidence={conf:.2f}. Flagged for human review before "
+                            f"promoting to a permanent category."
+                        )
+                    else:
+                        reasoning_parts.append(
+                            f"Vision proposed new industry '{vi}' (not in the "
+                            f"configured list) but evidence/confidence wasn't strong "
+                            f"enough to accept unverified; discarding."
                         )
             except Exception as e:
                 doc_type = "unknown"

@@ -270,4 +270,10 @@ def test_ingest_pdf_end_to_end(tmp_path):
     doc.close()
     cfg = _cfg()
     cfg.setdefault("vision_ocr", {})["mode"] = "off"   # native extraction (no remote VLM in CI)
+    # Force local Docling regardless of the committed default -- this is a hermetic
+    # smoke test and must not depend on a live GPU box being reachable (real
+    # failure mode hit 3-Aug: committed config briefly set mode: remote for a real
+    # ingestion test, and this test started failing on a network timeout whenever
+    # that box was down, unrelated to anything this test is actually checking).
+    cfg.setdefault("extraction", {}).setdefault("docling", {})["mode"] = "local"
     _roundtrip(str(p), cfg)

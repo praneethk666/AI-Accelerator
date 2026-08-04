@@ -31,6 +31,6 @@ embeddings:
   sparse_model: Qdrant/bm25
 query:
   retrieval:
-    method: hybrid_rerank   # naive | hybrid | hybrid_rerank | hyde | enriched
+    method: hybrid_rerank   # naive | hybrid | hybrid_rerank | hyde
     top_n: 20
     rerank_top_k: 5

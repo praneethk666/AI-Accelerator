@@ -142,6 +142,22 @@ vision:
                              # than re-deriving the exact real window mechanics.
                              # Re-verify with a live rerun before raising either value
                              # again; don't just trust the arithmetic.
+  tpm_limit: 200000         # ADDED 3-Aug: real TOKEN-budget pacing (backend/core/
+                             # token_pacer.py), alongside min_interval_s above. That
+                             # mechanism paces REQUEST rate only and still hit 429
+                             # "tokens per min" on a real run even at 1.0s/call --
+                             # this tracks actual token spend in a trailing 60s
+                             # window and paces against the SAME 200K ceiling
+                             # directly, so it degrades gracefully to real image/
+                             # prompt size instead of a fixed interval tuned for one
+                             # empirical case. Belt-and-suspenders with min_interval_s,
+                             # not a replacement for it (RPM and TPM are different
+                             # constraints; a provider can hit either one).
+  est_tokens_per_call: 1300 # empirically measured (this comment block above,
+                             # 27-Jul): real per-call cost read off actual 429
+                             # error bodies during a prior incident on this exact
+                             # model/provider -- more trustworthy than reconstructing
+                             # it from image bytes/prompt length as a rough proxy.
   # Focus instructions, selected by route first, then industry, then "default"
   # (see backend/vision/prompts.py:build_vision_prompt). Add a customer's industry
   # key here to tune captions without code changes.
@@ -259,6 +275,19 @@ extraction:
     figure_union: true        # union Docling + DocLayout-YOLO figures
     page_rescue: true         # per-page VLM rescue for garbled/scanned pages
     max_vlm_pages: 60         # budget cap for VLM page transcriptions per doc
+    # Size-based lazy figure captioning -- ADDED 3-Aug. Real cost driver is FIGURE
+    # COUNT, not page count: plain text/table extraction is ~free regardless of
+    # length (no VLM call), but the 1147-page circuit diagram this was built for
+    # would still eagerly caption every figure at ingest time under the old
+    # all-or-nothing behavior, most of which nobody will ever ask about. Above
+    # defer_figures_above_pages, figures get metadata.caption_deferred=True +
+    # defer_reason="large_document_lazy" PERMANENTLY (unlike the pre-existing
+    # scanned-page defer, this is never auto-resolved during ingestion) -- an
+    # agent captions one on demand via the view_page_image tool only when a real
+    # question actually needs it. eager (default) = unchanged prior behavior,
+    # every figure captioned at ingest time regardless of document size.
+    figure_caption_mode: size_based   # eager | size_based
+    defer_figures_above_pages: 250
     device: auto              # auto | cpu | cuda | mps
     num_threads: 4
     table_engine: local       # vlm (default, hosted) | local (self-hosted engine, picked
@@ -294,7 +323,8 @@ extraction:
     # When mode: remote, ALL table_source / figure detection happens on the server;
     # figure captioning (VLM semantic gate) still runs locally via vision_ocr.
     # Leave mode: local (default) to keep the current behavior unchanged.
-    mode: local               # local | remote (extract_docling checks for the literal
+    mode: remote              # remote for the Toyota manual test (3-Aug), GPU box back up.
+                              # local | remote (extract_docling checks for the literal
                               # string "remote" -- see backend/extraction/docling_remote.py)
     server_url: ${DOCLING_SERVER_URL}  # e.g. http://<gpu-box-ip>:8083 -- real finding:
                               # this project's load_config() only does plain ${VAR}
@@ -303,7 +333,13 @@ extraction:
                               # (the whole ":-default" gets treated as part of the env
                               # var NAME to look up) even when VAR is set correctly.
     server_key: ${DOCLING_API_KEY}
-    timeout_s: 600
+    timeout_s: 3600           # was 600 -- real finding (3-Aug): remote mode is ONE HTTP
+                              # call for the WHOLE document (no server-side streaming/
+                              # checkpointing), and at the measured ~1.2s/page this
+                              # project's own remote Docling server runs at, a 1147-page
+                              # doc (~23min) would already exceed the old 600s default
+                              # and lose the entire call. Bumped as the direct mitigation
+                              # for the Toyota circuit-diagram test specifically.
   # Per pdf-kind extraction policy. text + figures use Docling everywhere (+ the
   # per-page VLM rescue); the tunable knob is TABLES:
   #   auto    -> TableFormer for simple tables; for COMPLEX ones (merged cells or
@@ -445,13 +481,12 @@ query:
       # other provider/model). Reuses the JPEG already rendered at ingestion
       # (document_pages, backend/pipeline/page_images.py) — no extra render
       # cost either way.
-      enabled: false
+      enabled: true   # ON for the Toyota manual test (3-Aug): Q2/Q8/Q9 explicitly expect
+                      # answers grounded in the manual's own images/diagrams.
       top_k: 1        # top-ranked DISTINCT-page PDF citations to attach an image for (1-2 recommended)
 
-  hyde:
-    enabled: false              # generate hypothetical answer before encoding
   retrieval:
-    method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde | enriched
+    method: hybrid_rerank       # naive | hybrid | hybrid_rerank | hyde
     top_n: 20                   # fused chunks returned by plain hybrid
     candidate_k: 80             # wide candidate pool for reranker scoring
     rerank_top_k: 5             # chunks kept after reranking

@@ -469,15 +469,28 @@ NOT a table:
 STEP 4 — SET BBOX
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-All coordinates normalized 0.0–1.0. [x1, y1, x2, y2] = [left, top, right, bottom].
+All coordinates normalized 0.0-1.0. [x1, y1, x2, y2] = [left, top, right, bottom].
 Each bbox must enclose only its own region. Do not bleed into adjacent regions.
 
 FOR TABLES:
   x1 = left border of leftmost column
   x2 = right border of rightmost column
-  y1 = top border of the HEADER ROW  ← never below the header
-  y2 = bottom border of the LAST DATA ROW  ← never above the last row
+  y1 = top border of the HEADER ROW  -- never below the header
+  y2 = bottom border of the LAST DATA ROW  -- never above the last row
   When uncertain: expand slightly rather than crop.
+
+BBOX VALIDITY (mandatory check before output):
+  - x1 MUST be strictly less than x2, and y1 MUST be strictly less than y2.
+  - EVERY coordinate MUST be a plain decimal between 0.0 and 1.0 inclusive. Before
+    writing each bbox, re-read all four numbers and confirm none of them accidentally
+    has an extra leading digit (e.g. "9.992" instead of "0.992") -- a single stray
+    digit is a common slip and produces a coordinate far outside the sheet.
+  - The bbox MUST be wide/tall enough to actually enclose the content you are
+    describing.
+  - Every block on the page MUST have a DIFFERENT bbox from every other block.
+    Never reuse or copy coordinates from one region into another region's block.
+  - If you cannot confidently determine a distinct bbox for a region, output
+    "bbox": null rather than guessing or reusing another region's coordinates.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 5 — WRITE THE "text" FIELD
@@ -576,7 +589,7 @@ JSON array only. No markdown fences. No text outside the array.
     "table_data": null | {"headers": [...], "rows": [[...]]},
     "confidence": 0.0–1.0,
     "metadata": {"zone_type": "...", "label": "..."},
-    ""bbox": [x1, y1, x2, y2]
+    "bbox": [x1, y1, x2, y2]
   }
 ]
 """

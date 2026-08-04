@@ -414,16 +414,14 @@ routes:
     steps:
       - categorize
       - extract
-      - chunk
-      - enrich_chunks
+      - cad_chunk_llm
       - embed
       - index
   circuit_route:
     steps:
       - categorize
       - extract
-      - chunk
-      - enrich_chunks
+      - cad_chunk_llm
       - embed
       - index
   image_route:
@@ -443,6 +441,7 @@ ingestion:
     - extract
     - vision_enrichment
     - chunk
+    - cad_chunk_llm
     - enrich_chunks
     - embed
     - index
@@ -451,6 +450,17 @@ ingestion:
       - text_default
       - diagram_heavy
       - image_route
+    chunk:
+      - text_default
+      - diagram_heavy
+      - image_route
+    enrich_chunks:
+      - text_default
+      - diagram_heavy
+      - image_route
+    cad_chunk_llm:
+      - cad_route
+      - circuit_route
 
 # ── Database & Vector Storage ─────────────────────────────────────────────────
 database:

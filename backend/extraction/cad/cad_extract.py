@@ -39,11 +39,81 @@ from backend.extraction.cad.drawing_prompt import PROMPTS
 logger = logging.getLogger(__name__)
 
 
+_MIN_BBOX_FRACTION = 0.001  # narrower than this (as a fraction of the page) is
+                            # almost certainly corrupted geometry, not a real
+                            # thin region
+_MAX_SLIVER_ASPECT = 40     # combined with the floor above, catches boxes that
+                            # ARE in-range and correctly ordered (x1<x2, y1<y2)
+                            # but have collapsed to a near-zero-width sliver —
+                            # e.g. width 0.00001 against height 0.08. Seen on
+                            # tiled large-format pages, likely an offset/scale
+                            # bug in the per-tile -> full-page bbox mapping in
+                            # large_format.py; this is a defensive filter on
+                            # the symptom, not a fix for that root cause.
+
+
+def _is_degenerate_sliver(x1, y1, x2, y2) -> bool:
+    w, h = x2 - x1, y2 - y1
+    short, long_ = min(w, h), max(w, h)
+    return short < _MIN_BBOX_FRACTION and (long_ / short) > _MAX_SLIVER_ASPECT
+
+
+def _normalize_bbox(bbox, page_width=None, page_height=None) -> list[float] | None:
+    """Validate a bbox and recover it if possible; otherwise drop it (return None)
+    rather than storing unusable geometry.
+
+    The prompt instructs the VLM to emit bboxes normalized 0.0-1.0, but on real
+    pages (especially tiled large-format sheets) it sometimes leaks raw point
+    coordinates instead (e.g. [96.3, 137.2, ...] against a ~600x800pt page).
+    If we know the page's point dimensions we try dividing by them to recover
+    a normalized box; if that still doesn't produce valid [0,1] geometry with
+    x1<x2 and y1<y2, we give up and return None. A missing/None bbox is a
+    normal, handled case downstream (chunking, spatial checks) — a corrupt one
+    is not, so "drop it" is strictly safer than "store it."
+    """
+    if not bbox or len(bbox) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return None
+
+    def _in_unit_range(*vals):
+        return all(0.0 <= v <= 1.0 for v in vals)
+
+    if not _in_unit_range(x1, y1, x2, y2):
+        if page_width and page_height:
+            x1, y1, x2, y2 = x1 / page_width, y1 / page_height, x2 / page_width, y2 / page_height
+            if not _in_unit_range(x1, y1, x2, y2):
+                return None
+        else:
+            return None
+
+    if x1 >= x2 or y1 >= y2:
+        return None
+
+    if _is_degenerate_sliver(x1, y1, x2, y2):
+        return None
+
+    return [round(x1, 6), round(y1, 6), round(x2, 6), round(y2, 6)]
+
+
 def _block(document_id, page, filename, btype, text, table_data=None, bbox=None,
-           confidence=0.8, metadata=None) -> dict:
+           confidence=0.8, metadata=None, page_width=None, page_height=None) -> dict:
     md = {"source": "cad_extract", "pending_vision": False}
     if metadata:
         md.update(metadata)
+
+    clean_bbox = _normalize_bbox(bbox, page_width, page_height)
+    if bbox is not None and clean_bbox is None:
+        # Had a bbox, but it didn't survive validation/recovery — keep the
+        # block (text is still useful) but flag it and cap confidence so
+        # downstream ranking doesn't trust geometry that isn't there.
+        md["bbox_dropped"] = True
+        confidence = min(confidence, 0.5)
+        logger.warning("cad_extract: dropped invalid bbox %r for block on page %s (%s)",
+                       bbox, page, md.get("label", btype))
+
     return {
         "block_id": str(uuid.uuid4()),
         "document_id": document_id,
@@ -51,14 +121,15 @@ def _block(document_id, page, filename, btype, text, table_data=None, bbox=None,
         "text": text,
         "table_data": table_data,
         "source_ref": {"filename": filename, "page": page,
-                       "sheet": None, "slide": None, "bbox": bbox},
+                       "sheet": None, "slide": None, "bbox": clean_bbox},
         "confidence": confidence,
         "language": "en",
         "metadata": md,
     }
 
 
-def _vb_to_block(vb: dict, document_id, page, filename) -> dict | None:
+def _vb_to_block(vb: dict, document_id, page, filename,
+                 page_width=None, page_height=None) -> dict | None:
     if not isinstance(vb, dict):
         return None
     text = (vb.get("text") or "").strip()
@@ -71,10 +142,12 @@ def _vb_to_block(vb: dict, document_id, page, filename) -> dict | None:
         bbox=(vb.get("source_ref") or {}).get("bbox") or vb.get("bbox"),
         confidence=float(vb.get("confidence", 0.7) or 0.7),
         metadata=vb.get("metadata") if isinstance(vb.get("metadata"), dict) else None,
+        page_width=page_width, page_height=page_height,
     )
 
 
-def _region_blocks(raw: str, document_id, page, filename) -> list[dict]:
+def _region_blocks(raw: str, document_id, page, filename,
+                   page_width=None, page_height=None) -> list[dict]:
     """Parse the VLM's region-JSON reply into blocks. Robust to the dense-page failure
     mode where the JSON array is truncated/malformed (hit the token limit): we first try
     a clean parse, then SALVAGE every complete {...} block object individually (so a cut
@@ -89,7 +162,8 @@ def _region_blocks(raw: str, document_id, page, filename) -> list[dict]:
         data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list)
         else None)
     if items:
-        blocks = [b for b in (_vb_to_block(vb, document_id, page, filename) for vb in items) if b]
+        blocks = [b for b in (_vb_to_block(vb, document_id, page, filename,
+                                           page_width, page_height) for vb in items) if b]
 
     if not blocks:
         # Salvage: parse each balanced {...} object (recovers a truncated/partial array).
@@ -98,7 +172,7 @@ def _region_blocks(raw: str, document_id, page, filename) -> list[dict]:
                 vb = _json.loads(obj)
             except Exception:
                 continue
-            b = _vb_to_block(vb, document_id, page, filename)
+            b = _vb_to_block(vb, document_id, page, filename, page_width, page_height)
             if b:
                 blocks.append(b)
 
@@ -180,16 +254,18 @@ class CADExtractionTool:
                                    "remaining pages skipped", cap, pg)
                     break
                 try:
+                    page_w, page_h = page.rect.width, page.rect.height
                     page_class = classify_page(profile_page(page), document_type)
                     if should_tile(page, page_class, run_config):
                         # Oversized sheet: tile so small text/designators stay legible.
                         from backend.extraction.large_format import transcribe_large_page_blocks
                         tile_vbs = transcribe_large_page_blocks(page, run_config, prompt)
-                        page_blocks = [b for b in (_vb_to_block(vb, document_id, pg, filename) for vb in tile_vbs) if b]
+                        page_blocks = [b for b in (_vb_to_block(vb, document_id, pg, filename,
+                                                                page_w, page_h) for vb in tile_vbs) if b]
                     else:
                         # Normal sheet: single-shot region-JSON extraction (precise boxes).
                         raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"), prompt, run_config)
-                        page_blocks = _region_blocks(raw, document_id, pg, filename)
+                        page_blocks = _region_blocks(raw, document_id, pg, filename, page_w, page_h)
                     if page_blocks:
                         vlm_pages += 1
                         blocks.extend(page_blocks)

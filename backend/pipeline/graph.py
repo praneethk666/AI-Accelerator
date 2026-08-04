@@ -76,6 +76,10 @@ def _make_node(tool: Tool, raw_config: dict):
                     result = tool.run(state, raw_config)
                     # Cache blocks immediately if this is an extractor
                     if is_extractor and result and result.get("blocks"):
+                        from backend.categorize.id_graph import tag_blocks_with_ids
+                        tag_blocks_with_ids(result["blocks"])
+                        from backend.categorize.redaction_detect import tag_blocks_with_redaction
+                        tag_blocks_with_redaction(result["blocks"])
                         from backend.storage.postgres_store import PostgresStore
                         pg = PostgresStore()
                         try:

@@ -311,6 +311,29 @@ def test_every_chunk_is_a_valid_chunk_schema():
         Chunk(**c)  # raises TypeError if any key is not a valid Chunk field
 
 
+def test_redacted_table_flag_propagates_from_block_metadata_into_chunk():
+    # real finding, 3-Aug: redaction_detect.py tags block metadata, but nothing
+    # copied that through into the chunk the answerer actually sees -- fixed in
+    # _make_chunk, mirroring how image_path is already selectively pulled through.
+    blocks = [{
+        "type": "table", "text": "| No. | Parts No. |", "document_id": "d1",
+        "table_data": {"headers": ["No."], "rows": [["***"]]},
+        "metadata": {"redacted": True, "redaction_reason": "blanked out in source"},
+    }]
+    chunks = chunk_blocks(blocks)
+    assert len(chunks) == 1
+    assert chunks[0]["redacted"] is True
+    assert chunks[0]["redaction_reason"] == "blanked out in source"
+    Chunk(**chunks[0])  # still a valid Chunk schema
+
+
+def test_non_redacted_block_produces_chunk_without_the_flag():
+    blocks = [{"type": "text", "text": "normal content", "document_id": "d1", "metadata": {}}]
+    chunks = chunk_blocks(blocks)
+    assert "redacted" not in chunks[0] or chunks[0]["redacted"] is False
+    Chunk(**chunks[0])
+
+
 if __name__ == "__main__":
     test_text_splits_by_size_with_overlap()
     test_heading_merges_into_next_text()

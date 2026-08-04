@@ -30,6 +30,7 @@ def build_agent_registry() -> dict[str, AgentTool]:
     from backend.connectors.sql_read import SQLReadTool
     from backend.extraction.excel.excel_tool import ExcelTool
     from backend.pipeline.ingest import IngestDocumentTool
+    from backend.retrieval.find_related_documents import FindRelatedDocumentsTool
     from backend.retrieval.get_page_context import GetPageContextTool
     from backend.retrieval.list_documents import ListDocumentsTool
     from backend.retrieval.search_documents import SearchDocumentsTool
@@ -40,6 +41,7 @@ def build_agent_registry() -> dict[str, AgentTool]:
         SearchDocumentsTool(),
         GetPageContextTool(),
         ViewPageImageTool(),
+        FindRelatedDocumentsTool(),
         ListDocumentsTool(),
         SQLReadTool(),
         RequestClarificationTool(),

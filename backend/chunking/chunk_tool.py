@@ -245,6 +245,12 @@ def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
         chunk["table_data"] = block.get("table_data")
     if block.get("type") == "image_caption":
         chunk["image_path"] = (block.get("metadata") or {}).get("image_path")
+    # Redaction flag (backend/categorize/redaction_detect.py) must survive into the
+    # chunk the answerer actually sees -- it's set on the source block's metadata,
+    # which nothing else here propagates through.
+    if (block.get("metadata") or {}).get("redacted"):
+        chunk["redacted"] = True
+        chunk["redaction_reason"] = block["metadata"].get("redaction_reason")
     return chunk
 
 

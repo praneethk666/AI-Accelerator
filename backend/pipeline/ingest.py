@@ -312,7 +312,32 @@ def ingest_document(
             # status, since that's exactly when the raw record is most useful for
             # debugging. Best-effort: never let this break a successful ingest.
             try:
-                pg.write_blocks(document_id, result.get("blocks") or [])
+                blocks_to_write = result.get("blocks") or []
+                if blocks_to_write:
+                    # Deterministic drawing/CAD-sheet ID tagging (backend/categorize/
+                    # id_graph.py) -- runs once here for EVERY route (text_default,
+                    # cad_route, excel, ...) on the FINAL block list, so it's not tied
+                    # to any one extractor. Tags block metadata in place; best-effort,
+                    # same as the write itself -- never blocks a successful ingest.
+                    from backend.categorize.id_graph import tag_blocks_with_ids
+                    tag_blocks_with_ids(blocks_to_write)
+                    # Redaction/gap detection (backend/categorize/redaction_detect.py)
+                    # -- real finding, 3-Aug: a CAD sheet's own parts table had its
+                    # values blanked out ("***") in the source. Flags it so the
+                    # answerer can say so explicitly instead of hallucinating or
+                    # silently repeating the placeholder back.
+                    from backend.categorize.redaction_detect import tag_blocks_with_redaction
+                    tag_blocks_with_redaction(blocks_to_write)
+                    # Folder-derived machine/doc_category/component tags (backend/
+                    # categorize/folder_router.py) -- the OTHER half of correlation,
+                    # alongside exact-ID matching above. Opt-in only: silently inert
+                    # unless deployment.corpus_root is configured (most deployments
+                    # won't have a folder-structured corpus at all).
+                    corpus_root = (cfg.get("deployment") or {}).get("corpus_root")
+                    if corpus_root:
+                        from backend.categorize.folder_router import tag_blocks_with_folder_info
+                        tag_blocks_with_folder_info(blocks_to_write, file_path, corpus_root)
+                pg.write_blocks(document_id, blocks_to_write)
             except Exception:
                 logger.exception("write_blocks failed for %s", document_id)
             try:

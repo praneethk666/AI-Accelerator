@@ -105,3 +105,5 @@ class Chunk:
     sparse_vector: Optional[dict] = None       # {"indices": [...], "values": [...]} for BM25
     table_data: Optional[dict] = None          # {"headers": [...], "rows": [...]} for table chunks
     image_path: Optional[str] = None           # set for image_caption chunks
+    redacted: bool = False                     # source content is blanked out (e.g. "***")
+    redaction_reason: Optional[str] = None     # human-readable note, set when redacted=True

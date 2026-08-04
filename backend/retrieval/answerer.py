@@ -534,6 +534,14 @@ class AnswererTool:
                 summary = (chunk.get("tags") or {}).get("summary")
                 header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
                 chunk_text = chunk.get("text") or ""
+                if chunk.get("redacted"):
+                    # Real finding, 3-Aug: a CAD sheet's own parts table had its
+                    # values blanked out ("***") in the source file. Told to the
+                    # model explicitly so it says so plainly instead of either
+                    # hallucinating a plausible-looking value or just parroting
+                    # the literal asterisks back with no explanation.
+                    reason = chunk.get("redaction_reason") or "This content is redacted in the source."
+                    chunk_text = f"[REDACTED IN SOURCE: {reason}]\n{chunk_text}"
                 block = f"{header}\n{chunk_text}"
                 
                 block_tokens = len(block) // 4

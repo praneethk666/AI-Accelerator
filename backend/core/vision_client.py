@@ -133,7 +133,16 @@ def _describe_openai(image_bytes: bytes, prompt: str, model: str, config: dict) 
     vcfg = config.get("vision") or config
     api_key = _get_api_key(vcfg, "OPENAI_API_KEY")
 
-    client = OpenAI(api_key=api_key, base_url=vcfg.get("base_url") or None)
+    # Real gap found live (4-Aug): timeout_s has been set in config (e.g.
+    # extraction.cad.vision.timeout_s) in multiple places for a while, but this
+    # client never read it -- a hung provider call fell back to the openai SDK's
+    # own default (600s) instead of the configured value, silently. client-level
+    # max_retries=0 because retrying is already this module's own job (the
+    # attempt loop in describe_image()) -- letting the SDK retry too would mean
+    # retrying twice for one logical attempt.
+    timeout_s = vcfg.get("timeout_s")
+    client = OpenAI(api_key=api_key, base_url=vcfg.get("base_url") or None,
+                    timeout=float(timeout_s) if timeout_s else None, max_retries=0)
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode()
 
     # Passthrough for provider-specific request fields outside the OpenAI schema

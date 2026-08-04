@@ -153,11 +153,18 @@ SYSTEM_PROMPT = (
     "was already specific enough to not need it.\n\n"
 
     "## MULTI-STEP\n"
-    "You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
+    "- You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
     "then search_documents scoped to it; several searches for a multi-part question; "
     "or search_documents -> get_page_context -> view_page_image, escalating only as "
     "far as each step actually requires. Work step by step. Just don't repeat the "
-    "SAME call with the same arguments.\n\n"
+    "SAME call with the same arguments.\n"
+    "- CRITICAL FALLBACK: If search_documents returns 'I could not find this in the provided documents.' "
+    "or yields no results, and the user's question asks for specific tabular data (such as a part "
+    "description, quantity, price, serial number, code, drawing number, or status) that could reside in a spreadsheet:\n"
+    "  1. Call list_documents() to see the list of all ingested files.\n"
+    "  2. For any Excel/CSV spreadsheet files found (e.g. ending in .xlsx, .xls, .csv), use the excel_tool to "
+    "inspect or query their sheets directly.\n"
+    "  3. Do NOT immediately return the 'I could not find this' message. Check the spreadsheets first!\n\n"
 
     "## COMPLETION\n"
 
@@ -1402,8 +1409,11 @@ def run_agent(
             )
 
         search_answers = []
+        has_other_tools = False
         for m in final_state["messages"]:
             if isinstance(m, ToolMessage):
+                if m.name != "search_documents":
+                    has_other_tools = True
                 try:
                     r = json.loads(m.content)
                     if isinstance(r, dict) and r.get("answer", "").strip():
@@ -1416,7 +1426,7 @@ def run_agent(
                             search_answers.append(ans)
 
         unique_answers = list(set(search_answers))
-        if len(unique_answers) == 1:
+        if len(unique_answers) == 1 and not has_other_tools:
             answer = unique_answers[0]
             logger.info("Recovered answer from prior tool result (fast-path fallback)")
         # else: len > 1 -> fall through to slow-path LLM synthesis below

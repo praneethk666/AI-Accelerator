@@ -27,6 +27,7 @@ import {
   WrenchScrewdriverIcon,
   CloudArrowUpIcon,
   CircleStackIcon,
+  Cog6ToothIcon,
   EllipsisVerticalIcon,
   ChevronDownIcon,
   ChevronUpIcon,
@@ -1233,7 +1234,7 @@ const ChatPage = () => {
   };
 
   return (
-    <div className="flex h-screen bg-slate-900 text-gray-100 relative">
+    <div className="flex h-screen pastel-mesh-bg text-[#1d1d1d] relative font-sans">
       <style>{`
         @keyframes slideInSide {
           from {
@@ -1246,156 +1247,156 @@ const ChatPage = () => {
           }
         }
       `}</style>
-      {/* Sidebar */}
+      {/* Slacc Sidebar */}
       <div
-        className={`flex-shrink-0 flex flex-col bg-slate-950/60 border-r border-slate-800 transition-all duration-500 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 overflow-hidden border-r-0'
+        className={`flex-shrink-0 flex flex-col bg-transparent border-r border-[#e6e6e6]/60 backdrop-blur-sm transition-all duration-500 ease-in-out ${sidebarOpen ? 'w-72' : 'w-0 overflow-hidden border-r-0'
           }`}
       >
         {/* Sidebar Header */}
-        <div className="p-3 flex items-center justify-between border-b border-slate-800/60 h-14">
-          <div className="flex items-center gap-2 font-semibold text-white tracking-wide text-sm truncate">
-            <span>AI Accelerator</span>
+        <div className="p-4 flex items-center justify-between h-16 border-b border-[#e6e6e6]/60">
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold tracking-widest text-xs text-[#4a154b] uppercase">AI-ACCELERATOR</span>
           </div>
           <Tooltip content="Close sidebar">
             <button
               onClick={() => setSidebarOpen(false)}
-              className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-850 rounded-lg transition-all"
+              className="p-2 text-[#696969] hover:text-[#4a154b] hover:bg-white/60 rounded-full transition-all"
             >
               <SidebarToggleIcon className="h-4 w-4" />
             </button>
           </Tooltip>
         </div>
 
-        <div className="p-3">
+        <div className="px-3 py-2 flex justify-center">
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-full border border-slate-800 hover:border-slate-700 bg-slate-900/50 hover:bg-slate-800 text-sm font-medium text-gray-200 transition-all shadow-sm"
+            className="btn-primary-pill w-[85%] !py-2 !px-4 !text-xs inline-flex items-center justify-center gap-1.5 shadow-sm"
           >
-            <PlusIcon className="h-4 w-4" />
-            New chat
+            <PlusIcon className="h-3.5 w-3.5" />
+            New Chat
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
-          {sessions.length === 0 && (
-            <p className="text-xs text-gray-600 px-3 py-2">No conversations yet</p>
-          )}
-          {[...sessions]
-            .sort((a, b) => {
-              if (a.pinned && !b.pinned) return -1;
-              if (!a.pinned && b.pinned) return 1;
-              return new Date(b.last_active) - new Date(a.last_active);
-            })
-            .map((s, index) => (
-              <div
-                key={s.session_id}
-                onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
-                className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${s.session_id === sessionId
-                  ? 'bg-slate-800 text-white'
-                  : 'text-gray-400 hover:bg-slate-800/60 hover:text-gray-200'
-                  } ${menuOpen === s.session_id ? 'relative z-50' : ''}`}
-                style={{
-                  animation: 'slideInSide 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards',
-                  animationDelay: `${index * 30}ms`,
-                  opacity: 0,
-                }}
-                title={s.title}
-              >
-                <div className="min-w-0 flex-1">
-                  {renamingId === s.session_id ? (
-                    <input
-                      type="text"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onBlur={() => handleRenameSave(s.session_id)}
-                      onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
-                      className="w-full bg-slate-700 text-white text-sm px-2 py-0.5 rounded border border-blue-500 outline-none"
-                      autoFocus
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <>
-                      <p className="truncate flex items-center gap-1.5">
-                        {s.pinned && <PinIcon className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />}
-                        {s.title}
-                      </p>
-                      <p className="text-[10px] text-gray-600">{relativeTime(s.last_active)}</p>
-                    </>
-                  )}
-                </div>
-                <div className="relative flex-shrink-0" data-menu>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
-                    }}
-                    className="text-slate-500 hover:text-blue-400 hover:bg-slate-700/50 rounded p-0.5 transition-colors"
-                    title="More"
-                  >
-                    <EllipsisVerticalIcon className="h-4 w-4" />
-                  </button>
-                  {menuOpen === s.session_id && (
-                    <div className="absolute right-0 top-6 z-50 w-40 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-sm" data-menu>
-                      <button
-                        onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
-                      >
-                        <PencilIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
-                        Rename
-                      </button>
-                      <button
-                        onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-white text-left group"
-                      >
-                        <PinIcon className="h-4 w-4 text-slate-400 group-hover:text-slate-200" />
-                        {s.pinned ? 'Unpin' : 'Pin'}
-                      </button>
-                      <div className="border-t border-slate-600 my-1" />
-                      <button
-                        onClick={(e) => handleDeleteSession(s.session_id, e)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-slate-700 hover:text-red-300 text-left group"
-                      >
-                        <TrashIcon className="h-4 w-4 text-red-400/80 group-hover:text-red-300" />
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-        </div>
+        {/* History Scroll Container with Top/Bottom Smooth Fade Masks */}
+        <div className="relative flex-1 min-h-0 flex flex-col">
+          {/* Top fade mask */}
+          <div className="absolute top-0 left-0 right-0 h-4 bg-gradient-to-b from-white/30 to-transparent z-10 pointer-events-none" />
 
-        <div className="p-3 border-t border-slate-800">
-          <Link
-            to="/ingest"
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-gray-400 hover:bg-slate-800 hover:text-gray-200 text-sm transition-colors"
-          >
-            <CloudArrowUpIcon className="h-4 w-4" />
-            Ingestion
-          </Link>
+          {/* Scrollable session list */}
+          <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-3 pt-2 pb-24 space-y-1">
+            {sessions.length === 0 && (
+              <p className="text-xs text-[#696969] px-3 py-2 font-medium">No conversations yet</p>
+            )}
+            {[...sessions]
+              .sort((a, b) => {
+                if (a.pinned && !b.pinned) return -1;
+                if (!a.pinned && b.pinned) return 1;
+                return new Date(b.last_active) - new Date(a.last_active);
+              })
+              .map((s, index) => (
+                <div
+                  key={s.session_id}
+                  onClick={() => { setMenuOpen(null); handleSelectSession(s.session_id); }}
+                  className={`group flex items-center justify-between gap-2 px-3.5 py-3 rounded-2xl cursor-pointer text-xs font-bold transition-all ${s.session_id === sessionId
+                    ? 'bg-white/90 text-[#4a154b] border border-[#e6e6e6] shadow-sm backdrop-blur-sm'
+                    : 'text-[#1d1d1d] hover:bg-white/50 hover:text-[#4a154b]'
+                    } ${menuOpen === s.session_id ? 'relative z-50' : ''}`}
+                  style={{
+                    animation: 'slideInSide 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+                    animationDelay: `${index * 30}ms`,
+                    opacity: 0,
+                  }}
+                  title={s.title}
+                >
+                  <div className="min-w-0 flex-1">
+                    {renamingId === s.session_id ? (
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onBlur={() => handleRenameSave(s.session_id)}
+                        onKeyDown={(e) => handleRenameKeyDown(e, s.session_id)}
+                        className="w-full bg-white text-[#1d1d1d] text-xs px-2.5 py-1 rounded-md border border-[#4a154b] outline-none"
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <>
+                        <p className="truncate flex items-center gap-1.5 font-bold">
+                          {s.pinned && <PinIcon className="h-3.5 w-3.5 flex-shrink-0 text-[#4a154b]" />}
+                          {s.title}
+                        </p>
+                        <p className="text-[10px] text-[#696969] mt-0.5">{relativeTime(s.last_active)}</p>
+                      </>
+                    )}
+                  </div>
+                  <div className="relative flex-shrink-0" data-menu>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpen(menuOpen === s.session_id ? null : s.session_id);
+                      }}
+                      className={`rounded p-1 transition-colors ${s.session_id === sessionId ? 'text-[#4a154b] hover:bg-[#4a154b]/10' : 'text-[#696969] hover:text-[#4a154b]'}`}
+                      title="More"
+                    >
+                      <EllipsisVerticalIcon className="h-4 w-4" />
+                    </button>
+                    {menuOpen === s.session_id && (
+                      <div className="absolute right-0 top-7 z-50 w-44 bg-white border border-[#e6e6e6] rounded-2xl shadow-xl py-1.5 text-xs font-bold text-[#1d1d1d]" data-menu>
+                        <button
+                          onClick={(e) => handleRenameStart(s.session_id, s.title, e)}
+                          className="w-full flex items-center gap-2 px-4 py-2 hover:bg-[#f9f0ff] hover:text-[#4a154b] text-left"
+                        >
+                          <PencilIcon className="h-4 w-4 text-[#696969]" />
+                          Rename
+                        </button>
+                        <button
+                          onClick={(e) => handleTogglePin(s.session_id, s.pinned, e)}
+                          className="w-full flex items-center gap-2 px-4 py-2 hover:bg-[#f9f0ff] hover:text-[#4a154b] text-left"
+                        >
+                          <PinIcon className="h-4 w-4 text-[#696969]" />
+                          {s.pinned ? 'Unpin' : 'Pin'}
+                        </button>
+                        <div className="border-t border-[#e6e6e6] my-1" />
+                        <button
+                          onClick={(e) => handleDeleteSession(s.session_id, e)}
+                          className="w-full flex items-center gap-2 px-4 py-2 text-[#cc4117] hover:bg-[#cc4117]/10 text-left"
+                        >
+                          <TrashIcon className="h-4 w-4 text-[#cc4117]" />
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+          </div>
+
+          {/* Bottom fade mask */}
+          <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-white/30 to-transparent z-10 pointer-events-none" />
         </div>
       </div>
 
       {/* Main chat column */}
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {/* Top Header Bar */}
-        <div className="h-14 flex items-center px-4 justify-between bg-slate-900/40 backdrop-blur-sm z-30 flex-shrink-0">
-          <div className="flex items-center gap-3">
+        {/* Top Floating Actions (Absolute Overlay — No layout height gap) */}
+        <div className="absolute top-4 left-6 right-6 flex items-center justify-between z-30 pointer-events-none">
+          <div className="flex items-center gap-3 pointer-events-auto">
             {!sidebarOpen && (
-              <div className="flex items-center gap-0.5 bg-slate-950/80 border border-slate-800/80 rounded-full p-1 shadow-md">
+              <div className="flex items-center gap-1.5 bg-[#f9f0ff] border border-[#e6e6e6] rounded-full px-2.5 py-1 shadow-sm">
                 <Tooltip content="Open sidebar">
                   <button
                     onClick={() => setSidebarOpen(true)}
-                    className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
+                    className="p-1 text-[#4a154b] hover:bg-white rounded-full transition-all"
                   >
                     <SidebarToggleIcon className="h-4 w-4" />
                   </button>
                 </Tooltip>
-                <div className="w-[1px] h-3.5 bg-slate-800 mx-1" />
+                <div className="w-[1px] h-3.5 bg-[#e6e6e6] mx-1" />
                 <Tooltip content="New chat">
                   <button
                     onClick={handleNewChat}
-                    className="p-1.5 text-gray-400 hover:text-white hover:bg-slate-800 rounded-full transition-all"
+                    className="p-1 text-[#4a154b] hover:bg-white rounded-full transition-all"
                   >
                     <NewChatIcon className="h-4 w-4" />
                   </button>
@@ -1403,14 +1404,27 @@ const ChatPage = () => {
               </div>
             )}
             {contextFile && (
-              <span className="text-xs text-gray-500 flex items-center gap-1.5 ml-2">
-                <DocumentIcon className="h-3.5 w-3.5 text-blue-500/85" />
+              <span className="text-xs font-bold text-[#4a154b] bg-[#f9f0ff] px-3 py-1 rounded-full border border-[#e6e6e6] flex items-center gap-1.5 ml-2 shadow-sm">
+                <DocumentIcon className="h-3.5 w-3.5 text-[#4a154b]" />
                 Context: {contextFile.filename}
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-2" />
+          {!pageViewer && (
+            <div className="flex items-center gap-2.5 pointer-events-auto">
+              <Link to="/ingest" className="btn-secondary-pill !py-1.5 !px-4 text-xs shadow-sm">
+                Ingest Docs
+              </Link>
+              <Link
+                to="/settings"
+                title="System Configuration"
+                className="p-2.5 rounded-full bg-[#f9f0ff] hover:bg-[#f3e2ff] border border-[#e6e6e6] text-[#4a154b] transition-all shadow-sm flex items-center justify-center"
+              >
+                <Cog6ToothIcon className="h-5 w-5" />
+              </Link>
+            </div>
+          )}
         </div>
 
         <div
@@ -1418,15 +1432,32 @@ const ChatPage = () => {
           onScroll={checkChatScroll}
           className="flex-1 overflow-y-auto relative"
         >
-          <div className="max-w-3xl mx-auto px-4 py-8">
+          <div className="max-w-4xl mx-auto px-6 py-8">
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-[60vh] text-center">
-                <SparklesIcon className="h-10 w-10 text-slate-600 mb-3" />
-                <p className="text-gray-200 text-xl font-medium">How can I help?</p>
-                <p className="text-gray-500 text-sm mt-2 max-w-sm">
-                  Ask a question about your documents, or attach a file to ingest it — the
-                  agent will ask before it writes anything.
+              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center max-w-2xl mx-auto py-10">
+                {/* Brand Badge */}
+                <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-[#4a154b] text-xs font-extrabold uppercase tracking-wider mb-6 shadow-sm">
+                  <SparklesIcon className="h-4 w-4 text-[#4a154b]" />
+                  AI Accelerator Intelligence
+                </div>
+
+                {/* Hero Title */}
+                <h2 className="text-3xl md:text-5xl font-extrabold text-[#4a154b] display-hero tracking-tight mb-4">
+                  How can I assist your engineering work today?
+                </h2>
+                <p className="text-base text-[#696969] leading-relaxed mb-8 max-w-xl">
+                  Ask questions across technical specifications, CAD drawings, spreadsheets, and PDFs with 90% traceable RAG citations.
                 </p>
+
+                {/* Supported Format Pills */}
+                <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-[#696969]">
+                  <span className="font-bold text-[#4a154b]">Supports:</span>
+                  <span className="bg-white px-3.5 py-1.5 rounded-full border border-[#e6e6e6] shadow-sm font-semibold">📄 PDF</span>
+                  <span className="bg-white px-3.5 py-1.5 rounded-full border border-[#e6e6e6] shadow-sm font-semibold">📊 Excel (.xlsx)</span>
+                  <span className="bg-white px-3.5 py-1.5 rounded-full border border-[#e6e6e6] shadow-sm font-semibold">📐 CAD (.dwg / .dxf)</span>
+                  <span className="bg-white px-3.5 py-1.5 rounded-full border border-[#e6e6e6] shadow-sm font-semibold">📝 Word (.docx)</span>
+                  <span className="bg-white px-3.5 py-1.5 rounded-full border border-[#e6e6e6] shadow-sm font-semibold">🖼️ Images (.png / .jpg)</span>
+                </div>
               </div>
             )}
 
@@ -1441,15 +1472,13 @@ const ChatPage = () => {
             ))}
 
             {messages.length > 0 && messages[messages.length - 1].role === 'user' && (
-              <div className="py-3 flex justify-start animate-fade-in">
+              <div className="py-4 flex justify-start animate-fade-in">
                 <div className="max-w-full w-full">
-                  <div className="flex gap-3">
-                    <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1 animate-pulse" />
+                  <div className="flex gap-3 items-center bg-white border border-[#e6e6e6] rounded-2xl p-4 shadow-sm">
+                    <SparklesIcon className="h-5 w-5 text-[#4a154b] flex-shrink-0 animate-pulse" />
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center text-slate-400 text-sm py-1">
-                        <span className="font-medium flex items-center">
-                          Thinking<span className="animate-dots"></span>
-                        </span>
+                      <div className="flex items-center text-[#4a154b] text-sm font-bold">
+                        <span>Generating Intelligence Response<span className="animate-dots"></span></span>
                       </div>
                     </div>
                   </div>
@@ -1462,45 +1491,45 @@ const ChatPage = () => {
         </div>
 
         {error && (
-          <div className="max-w-3xl mx-auto w-full px-4 flex-shrink-0">
-            <div className="mb-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-start gap-2">
+          <div className="max-w-4xl mx-auto w-full px-6 flex-shrink-0">
+            <div className="mb-3 p-4 bg-[#cc4117]/10 border border-[#cc4117]/30 rounded-2xl text-[#cc4117] text-xs font-bold flex items-start gap-2.5 shadow-sm">
               <ExclamationCircleIcon className="h-4 w-4 flex-shrink-0 mt-0.5" />
               {error}
             </div>
           </div>
         )}
 
-        <div className="border-t border-slate-800 bg-slate-900 p-4 flex-shrink-0">
-          <div className="max-w-3xl mx-auto relative">
-            {showChatScrollDown && (
+        {/* Input Bar — Floating Pill */}
+        <div className="bg-transparent pb-6 px-4 pt-2 flex-shrink-0">
+          <div className="max-w-4xl mx-auto relative">
+            {(showChatScrollDown && !pageViewer) && (
               <button
                 onClick={handleChatScrollToBottom}
-                className="absolute bottom-full mb-3 right-4 p-2.5 rounded-full bg-slate-950 hover:bg-slate-850 text-gray-400 hover:text-white shadow-xl hover:scale-105 active:scale-95 transition-all duration-200 flex items-center justify-center border border-slate-800 z-40"
+                className="absolute bottom-full mb-4 right-4 p-2.5 rounded-full bg-[#4a154b] text-white shadow-xl hover:bg-[#611f69] active:scale-95 transition-all flex items-center justify-center border border-[#592466] z-40"
                 title="Scroll to bottom"
-                style={{ cursor: 'pointer' }}
               >
-                <ChevronDownIcon className="h-5 w-5 stroke-[2.5]" />
+                <ChevronDownIcon className="h-4 w-4 stroke-[2.5]" />
               </button>
             )}
             {attachedFile && (
-              <div className="mb-2 inline-flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-gray-300">
-                <DocumentIcon className="h-3.5 w-3.5 text-blue-400" />
+              <div className="mb-2.5 inline-flex items-center gap-2 bg-[#f9f0ff] border border-[#e6e6e6] rounded-full px-4 py-1.5 text-xs font-bold text-[#4a154b] shadow-sm">
+                <DocumentIcon className="h-4 w-4 text-[#4a154b]" />
                 {attachedFile.filename}
-                <button onClick={() => setAttachedFile(null)} title="Remove attachment">
-                  <XMarkIcon className="h-3.5 w-3.5 text-gray-500 hover:text-gray-300" />
+                <button onClick={() => setAttachedFile(null)} title="Remove attachment" className="ml-1 text-[#696969] hover:text-[#cc4117]">
+                  <XMarkIcon className="h-4 w-4" />
                 </button>
               </div>
             )}
-            <div className="flex items-end gap-1 bg-slate-800 border border-slate-700 rounded-2xl px-2 py-1.5 focus-within:border-blue-500 transition-colors">
+            <div className="flex items-center gap-2 bg-white border-2 border-[#e6e6e6] focus-within:border-[#4a154b] rounded-full px-4 py-2 shadow-lg transition-all">
               <input type="file" ref={fileInputRef} className="hidden" onChange={handleAttach} />
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={attaching || loading}
                 title="Attach a file to ingest"
-                className="p-2 text-gray-400 hover:text-gray-200 disabled:opacity-50 flex-shrink-0"
+                className="p-2 text-[#4a154b] hover:bg-[#f9f0ff] rounded-full disabled:opacity-50 flex-shrink-0 transition-all"
               >
                 {attaching ? (
-                  <ArrowPathIcon className="h-5 w-5 animate-spin" />
+                  <ArrowPathIcon className="h-5 w-5 animate-spin text-[#4a154b]" />
                 ) : (
                   <PaperClipIcon className="h-5 w-5" />
                 )}
@@ -1508,7 +1537,7 @@ const ChatPage = () => {
               <textarea
                 ref={textareaRef}
                 rows={1}
-                className="flex-1 bg-transparent resize-none outline-none text-white placeholder-gray-500 py-2 max-h-40"
+                className="flex-1 bg-transparent resize-none outline-none text-[#0f172a] font-medium text-sm placeholder-[#64748b] py-2 max-h-40"
                 value={input}
                 onChange={handleTextareaChange}
                 onKeyDown={(e) => {
@@ -1517,24 +1546,24 @@ const ChatPage = () => {
                     handleSend();
                   }
                 }}
-                placeholder="Message the agent... (Shift+Enter for new line)"
+                placeholder="Ask AI Accelerator Engine… (Shift+Enter for new line)"
                 disabled={loading}
               />
               {loading ? (
                 <button
                   onClick={handleStop}
                   title="Stop generating"
-                  className="p-2.5 rounded-full flex-shrink-0 transition-colors bg-blue-600 text-white hover:bg-blue-700"
+                  className="btn-primary-pill !p-3"
                 >
-                  <div className="w-3 h-3 bg-white rounded-[2px]" />
+                  <div className="w-3.5 h-3.5 bg-white rounded-sm" />
                 </button>
               ) : (
                 <button
                   onClick={handleSend}
                   disabled={!input.trim() && !attachedFile}
-                  className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${(!input.trim() && !attachedFile)
-                    ? 'bg-slate-700 text-gray-500 cursor-not-allowed'
-                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                  className={`btn-primary-pill !p-3 flex-shrink-0 ${(!input.trim() && !attachedFile)
+                    ? 'opacity-40 cursor-not-allowed'
+                    : ''
                     }`}
                 >
                   <PaperAirplaneIcon className="h-4 w-4" />
@@ -1852,36 +1881,36 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     : null;
 
   return (
-    <div className={`flex-shrink-0 flex flex-col bg-slate-900 border-l border-slate-800 transition-all duration-500 ease-in-out overflow-hidden ${sidebarOpen
+    <div className={`flex-shrink-0 flex flex-col bg-white border-l border-[#e6e6e6] transition-all duration-500 ease-in-out overflow-hidden shadow-2xl ${sidebarOpen
       ? 'w-[40%] min-w-[40%] max-w-[40%]'
       : 'w-[50%] min-w-[50%] max-w-[50%]'
       }`}>
       {/* Header */}
-      <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800/80 bg-slate-950 flex-shrink-0 gap-4">
-        <span className="text-xs font-bold text-gray-200 truncate flex-1" title={active?.filename}>
-          {active?.filename}
+      <div className="h-16 flex items-center justify-between px-5 border-b border-[#e6e6e6] bg-white flex-shrink-0 gap-4">
+        <span className="text-xs font-bold text-[#4a154b] truncate flex-1" title={active?.filename}>
+          📄 {active?.filename}
         </span>
 
-        {/* Navigation — pdf/ppt only, they're the only paginated types */}
+        {/* Navigation — pdf/ppt only */}
         {isPaginated && (
-          <div className="flex items-center gap-3 select-none flex-shrink-0">
+          <div className="flex items-center gap-2 select-none flex-shrink-0">
             <button
               onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
               disabled={currentPage <= 1}
-              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              className="p-1.5 hover:bg-[#f9f0ff] text-[#4a154b] rounded-full disabled:opacity-30 transition-all"
               title="Previous Page"
             >
               <ChevronLeftIcon className="h-4 w-4 stroke-[2.5]" />
             </button>
 
-            <span className="text-xs font-semibold text-gray-200 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded">
+            <span className="text-xs font-bold text-[#4a154b] bg-[#f9f0ff] border border-[#e6e6e6] px-3 py-1 rounded-full">
               {currentPage} / {totalPages || '...'}
             </span>
 
             <button
               onClick={() => handlePageChange(Math.min(totalPages || 1, currentPage + 1))}
               disabled={currentPage >= (totalPages || 1)}
-              className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded disabled:opacity-20 disabled:hover:bg-transparent transition-all animate-fade-in"
+              className="p-1.5 hover:bg-[#f9f0ff] text-[#4a154b] rounded-full disabled:opacity-30 transition-all"
               title="Next Page"
             >
               <ChevronRightIcon className="h-4 w-4 stroke-[2.5]" />
@@ -1889,12 +1918,12 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           </div>
         )}
 
-        {/* Zoom Controls — pdf/ppt/image only */}
+        {/* Zoom Controls */}
         {(isPaginated || fileType === 'image') && (
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded p-0.5 select-none flex-shrink-0">
+          <div className="flex items-center gap-1 bg-[#f9f0ff] border border-[#e6e6e6] rounded-full p-1 select-none flex-shrink-0">
             <button
               onClick={() => setScale((prev) => Math.max(0.4, prev - 0.2))}
-              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              className="px-2 py-0.5 hover:bg-white text-[#4a154b] rounded-full transition-all text-xs font-bold"
               title="Zoom Out"
             >
               －
@@ -1902,7 +1931,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
 
             <button
               onClick={() => setScale(1)}
-              className="text-[9px] text-gray-300 font-mono w-[30px] text-center select-none hover:text-white hover:bg-slate-800 rounded py-0.5 transition-all"
+              className="text-[10px] text-[#4a154b] font-bold w-[32px] text-center select-none hover:bg-white rounded-full py-0.5 transition-all"
               title="Reset to 100%"
             >
               {Math.round(scale * 100)}%
@@ -1910,7 +1939,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
 
             <button
               onClick={() => setScale((prev) => Math.min(3.5, prev + 0.2))}
-              className="px-1.5 py-0.5 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all text-[11px] font-bold"
+              className="px-2 py-0.5 hover:bg-white text-[#4a154b] rounded-full transition-all text-xs font-bold"
               title="Zoom In"
             >
               ＋
@@ -1918,7 +1947,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
 
             <button
               onClick={handleToggleZoom}
-              className="ml-1 text-[9px] font-semibold text-gray-400 hover:text-white bg-slate-800 hover:bg-slate-700 px-1.5 py-0.5 rounded transition-all border border-slate-700"
+              className="ml-1 text-[10px] font-bold text-[#4a154b] bg-white hover:bg-[#4a154b] hover:text-white px-2 py-0.5 rounded-full transition-all border border-[#e6e6e6]"
               title="Reset Zoom to 100%"
             >
               Reset
@@ -1929,16 +1958,16 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="p-1 hover:bg-slate-800 text-gray-400 hover:text-white rounded transition-all flex-shrink-0"
+          className="p-2 hover:bg-[#f9f0ff] text-[#4a154b] rounded-full transition-all flex-shrink-0"
           title="Close viewer"
         >
           <XMarkIcon className="h-4 w-4 stroke-[2.5]" />
         </button>
       </div>
 
-      {/* Document/Page Badges — cited pages shown below header */}
+      {/* Document/Page Badges */}
       {multiPage && (
-        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
+        <div className="px-4 py-2.5 bg-[#f4ede4]/60 border-b border-[#e6e6e6] flex flex-wrap gap-2 select-none">
           {pages.map((p, i) => {
             const confidence = maxScore > 0 ? ((p.score ?? 0) / maxScore) : 0;
             const isActive = i === activeIdx;
@@ -1946,86 +1975,61 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               <button
                 key={i}
                 onClick={() => handleSelectSource(i)}
-                className={`flex flex-col items-center rounded-lg px-2.5 py-1.5 text-[10px] font-semibold transition-all border ${isActive
-                  ? 'bg-blue-600/20 border-blue-500 text-blue-300'
-                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                className={`flex flex-col items-center rounded-full px-3.5 py-1 text-xs font-bold transition-all border ${isActive
+                  ? 'bg-[#4a154b] border-[#4a154b] text-white shadow-sm'
+                  : 'bg-white border-[#e6e6e6] text-[#1d1d1d] hover:bg-[#f9f0ff]'
                   }`}
-                title={`${p.filename} — ${((p.score ?? 0) * 100).toFixed(0)}% match`}
               >
                 <span>{getBadgeLabel(p)}</span>
-                <div className="mt-1 w-8 h-0.5 rounded-full bg-slate-700 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${isActive ? 'bg-blue-400' : 'bg-slate-500'}`}
-                    style={{ width: `${Math.round(confidence * 100)}%` }}
-                  />
-                </div>
               </button>
             );
           })}
         </div>
       )}
 
-      {/* Sheet tabs — excel only */}
-      {fileType === 'excel' && workbook && workbook.SheetNames.length > 1 && (
-        <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex flex-wrap gap-1.5 select-none">
-          {workbook.SheetNames.map((name) => (
-            <button
-              key={name}
-              onClick={() => setActiveSheet(name)}
-              className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all ${activeSheet === name
-                ? 'bg-blue-600/20 border-blue-500 text-blue-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                }`}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Content area */}
+      {/* Viewer Canvas */}
       {fileType === 'docx' ? (
-        <div ref={docxContainerRef} className="flex-1 overflow-auto bg-white p-6">
+        <div ref={docxContainerRef} className="flex-1 overflow-auto bg-[#f4ede4]/40 p-6">
           {docxLoading && (
-            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
-              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-              <span>Loading document...</span>
+            <div className="flex flex-col items-center justify-center text-[#696969] text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-6 w-6 animate-spin text-[#4a154b]" />
+              <span className="font-bold">Converting Word document…</span>
             </div>
           )}
           {docxError && (
-            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
-              <DocumentIcon className="h-8 w-8 opacity-40" />
-              <span>Could not load this document.</span>
+            <div className="flex flex-col items-center justify-center py-24 text-[#696969] text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 text-[#4a154b] opacity-40" />
+              <span>Could not render Word document.</span>
             </div>
           )}
           {docxHtml && (
             <div
-              className="docx-content text-slate-900 text-sm leading-relaxed max-w-2xl mx-auto"
+              className="docx-content bg-white p-8 rounded-2xl border border-[#e6e6e6] text-[#1d1d1d] text-sm leading-relaxed max-w-2xl mx-auto shadow-sm"
               dangerouslySetInnerHTML={{ __html: docxHtml }}
             />
           )}
         </div>
       ) : fileType === 'excel' ? (
-        <div className="flex-1 overflow-auto bg-white p-4">
+        <div className="flex-1 overflow-auto bg-white p-6">
           {excelLoading && (
-            <div className="flex flex-col items-center justify-center text-slate-400 text-xs py-24 gap-2">
-              <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-              <span>Loading spreadsheet...</span>
+            <div className="flex flex-col items-center justify-center text-[#696969] text-xs py-24 gap-2">
+              <ArrowPathIcon className="h-6 w-6 animate-spin text-[#4a154b]" />
+              <span className="font-bold">Parsing spreadsheet…</span>
             </div>
           )}
           {excelError && (
-            <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2">
-              <DocumentIcon className="h-8 w-8 opacity-40" />
-              <span>Could not load this spreadsheet.</span>
+            <div className="flex flex-col items-center justify-center py-24 text-[#696969] text-xs text-center gap-2">
+              <DocumentIcon className="h-8 w-8 text-[#4a154b] opacity-40" />
+              <span>Could not parse this spreadsheet.</span>
             </div>
           )}
           {sheetRows && (
             <table className="w-full text-xs border-collapse">
               <tbody>
                 {sheetRows.map((row, r) => (
-                  <tr key={r} className={r === 0 ? 'bg-slate-100 font-semibold' : 'odd:bg-slate-50'}>
+                  <tr key={r} className={r === 0 ? 'bg-[#f9f0ff] font-bold text-[#4a154b]' : 'odd:bg-[#f4ede4]/30'}>
                     {row.map((cell, c) => (
-                      <td key={c} className="border border-slate-200 px-2 py-1 text-slate-800 whitespace-nowrap">
+                      <td key={c} className="border border-[#e6e6e6] px-3 py-1.5 text-[#1d1d1d] whitespace-nowrap">
                         {String(cell)}
                       </td>
                     ))}
@@ -2038,13 +2042,11 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       ) : (
         <div
           ref={containerRef}
-          className="flex-1 overflow-auto bg-slate-950 p-4"
+          className="flex-1 overflow-auto bg-[#f4ede4]/60 p-6 flex justify-center items-start"
         >
           {imageUrl && (
             <div
               style={{
-                /* Scale < 1 → shrink & center via auto margin.
-                   Scale > 1 → grow wider than panel → scrollbars appear. */
                 width: `${Math.round(scale * 100)}%`,
                 marginLeft: scale <= 1 ? 'auto' : '0',
                 marginRight: scale <= 1 ? 'auto' : '0',
@@ -2053,14 +2055,14 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
               }}
             >
               {!imgLoaded && !imgError && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs py-24 gap-2 bg-slate-900/40 rounded">
-                  <ArrowPathIcon className="h-5 w-5 animate-spin text-blue-500" />
-                  <span>{isPaginated ? `Rendering Page ${currentPage}...` : 'Loading image...'}</span>
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-[#696969] text-xs py-24 gap-2 bg-white/80 rounded-2xl border border-[#e6e6e6]">
+                  <ArrowPathIcon className="h-6 w-6 animate-spin text-[#4a154b]" />
+                  <span className="font-bold">{isPaginated ? `Rendering Page ${currentPage}…` : 'Loading image…'}</span>
                 </div>
               )}
               {imgError && (
-                <div className="flex flex-col items-center justify-center py-24 text-slate-500 text-xs text-center gap-2 bg-slate-900/40 rounded border border-slate-800">
-                  <DocumentIcon className="h-8 w-8 opacity-40 text-slate-600" />
+                <div className="flex flex-col items-center justify-center py-24 text-[#696969] text-xs text-center gap-2 bg-white rounded-2xl border border-[#e6e6e6]">
+                  <DocumentIcon className="h-8 w-8 text-[#4a154b] opacity-40" />
                   <span>Page image not available.</span>
                 </div>
               )}
@@ -2069,7 +2071,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
                 alt={isPaginated ? `Page ${currentPage}` : active?.filename}
                 onLoad={() => setImgLoaded(true)}
                 onError={() => { setImgError(true); setImgLoaded(true); }}
-                className={`w-full rounded bg-white shadow-xl transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
+                className={`w-full rounded-2xl bg-white shadow-lg border border-[#e6e6e6] transition-opacity duration-300 ${imgLoaded && !imgError ? 'opacity-100' : 'opacity-0'
                   }`}
               />
             </div>
@@ -2497,19 +2499,18 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
 
   if (!isUser && msg.type === 'ingest_done') {
     return (
-      <div className="py-3 flex justify-start">
+      <div className="py-2.5 flex justify-start">
         <div className="max-w-full w-full">
           <div className="flex gap-3">
-            <SparklesIcon className="h-5 w-5 text-emerald-400 flex-shrink-0 mt-1" />
+            <SparklesIcon className="h-5 w-5 text-[#007a5a] flex-shrink-0 mt-1" />
             <div className="min-w-0 flex-1">
-              <div className="inline-block bg-emerald-900/30 border border-emerald-700/40 rounded-2xl px-5 py-4 max-w-sm">
+              <div className="inline-block bg-white border border-[#007a5a]/30 rounded-2xl p-4 shadow-sm max-w-md">
                 <div className="flex items-center gap-2 mb-1">
-                  <CheckIcon className="h-4 w-4 text-emerald-400 flex-shrink-0" />
-                  <p className="text-sm font-semibold text-emerald-300">Ingested successfully!</p>
+                  <CheckIcon className="h-4 w-4 text-[#007a5a] stroke-[2.5] flex-shrink-0" />
+                  <p className="text-xs font-extrabold text-[#007a5a]">Ingested successfully!</p>
                 </div>
-                <p className="text-xs text-slate-400 mt-1">
-                  <span className="text-gray-300 font-medium">{msg.filename}</span> is now in the knowledge base.
-                  You can ask questions about it.
+                <p className="text-xs text-[#1d1d1d] mt-1 leading-relaxed">
+                  <span className="font-bold text-[#4a154b]">{msg.filename}</span> is now in the knowledge base. You can ask questions about it.
                 </p>
               </div>
             </div>
@@ -2521,12 +2522,12 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
 
   if (!isUser && msg.type === 'ingest_cancelled') {
     return (
-      <div className="py-3 flex justify-start">
+      <div className="py-2 flex justify-start">
         <div className="max-w-full w-full">
           <div className="flex gap-3">
-            <SparklesIcon className="h-5 w-5 text-slate-500 flex-shrink-0 mt-1" />
+            <SparklesIcon className="h-5 w-5 text-[#696969] flex-shrink-0 mt-1" />
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-slate-500 italic py-1">Ingestion cancelled.</p>
+              <p className="text-xs text-[#696969] italic py-1 font-medium">Ingestion cancelled.</p>
             </div>
           </div>
         </div>
@@ -2536,14 +2537,17 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
 
   if (!isUser && msg.type === 'ingest_error') {
     return (
-      <div className="py-3 flex justify-start">
+      <div className="py-2.5 flex justify-start">
         <div className="max-w-full w-full">
           <div className="flex gap-3">
-            <SparklesIcon className="h-5 w-5 text-red-400 flex-shrink-0 mt-1" />
+            <SparklesIcon className="h-5 w-5 text-[#cc4117] flex-shrink-0 mt-1" />
             <div className="min-w-0 flex-1">
-              <div className="inline-block bg-red-900/20 border border-red-700/30 rounded-2xl px-5 py-4 max-w-sm">
-                <p className="text-sm font-semibold text-red-300">Ingestion failed</p>
-                <p className="text-xs text-slate-400 mt-1">{msg.errorMsg || 'Something went wrong. Please try again.'}</p>
+              <div className="inline-block bg-white border border-[#cc4117]/30 rounded-2xl p-4 shadow-sm max-w-md">
+                <div className="flex items-center gap-2 mb-1">
+                  <ExclamationCircleIcon className="h-4 w-4 text-[#cc4117] stroke-[2.5] flex-shrink-0" />
+                  <p className="text-xs font-extrabold text-[#cc4117]">Ingestion failed</p>
+                </div>
+                <p className="text-xs text-[#1d1d1d] mt-1 leading-relaxed">{msg.errorMsg || 'Something went wrong. Please try again.'}</p>
               </div>
             </div>
           </div>
@@ -2554,290 +2558,274 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
   // ── End direct-ingestion cards ───────────────────────────────────────────
 
   return (
-    <div className={`py-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={isUser ? 'max-w-lg' : 'max-w-full w-full'}>
+    <div className={`py-2.5 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={isUser ? 'max-w-xl' : 'max-w-full w-full'}>
         {isUser ? (
-          <div className="bg-slate-800 rounded-2xl px-4 py-2.5 text-gray-100 whitespace-pre-wrap">
+          <div className="bg-[#4a154b] text-white rounded-2xl px-4 py-2.5 shadow-sm font-medium text-xs md:text-sm leading-relaxed whitespace-pre-wrap">
             {msg.content}
           </div>
         ) : (
-          <div className="flex gap-3">
-            <SparklesIcon className="h-5 w-5 text-blue-400 flex-shrink-0 mt-1" />
-            <div className="min-w-0 flex-1">
-              {!msg.content && (
-                <div className="flex items-center text-slate-400 text-sm py-1">
-                  <span className="font-medium">
-                    {msg.isIngesting
-                      ? 'Ingesting'
-                      : 'Thinking'}
-                    <span className="animate-dots"></span>
-                  </span>
-                </div>
-              )}
-              {msg.content && (
-                <div
-                  className={`prose prose-invert prose-sm max-w-none leading-relaxed w-full overflow-x-auto ${msg.isError ? 'text-red-300' : 'text-gray-100'
-                    }`}
-                >
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeRaw]}
-                    components={{
-                      code({ node, inline, className, children, ...props }) {
-                        const match = /language-(\w+)/.exec(className || '');
-                        const language = match ? match[1] : 'text';
-                        return !inline ? (
-                          <CustomCodeBlock language={language} value={String(children).replace(/\n$/, '')} />
-                        ) : (
-                          <code className={className} {...props}>
-                            {children}
-                          </code>
-                        );
-                      }
-                    }}
+          <div className="bg-white border border-[#e6e6e6] rounded-2xl p-4 md:p-5 shadow-sm text-[#1d1d1d]">
+            <div className="flex gap-3">
+              <SparklesIcon className="h-5 w-5 text-[#4a154b] flex-shrink-0 mt-1" />
+              <div className="min-w-0 flex-1">
+                {!msg.content && (
+                  <div className="flex items-center text-[#4a154b] text-sm py-1 font-bold">
+                    <span>
+                      {msg.isIngesting
+                        ? 'Ingesting Document'
+                        : 'Thinking'}
+                      <span className="animate-dots"></span>
+                    </span>
+                  </div>
+                )}
+                {msg.content && (
+                  <div
+                    className={`prose prose-sm max-w-none leading-relaxed w-full overflow-x-auto text-[#1d1d1d] ${msg.isError ? 'text-[#cc4117]' : ''
+                      }`}
                   >
-                    {renderMathInMarkdown(msg.content)}
-                  </ReactMarkdown>
-                </div>
-              )}
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeRaw]}
+                      components={{
+                        code({ node, inline, className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const language = match ? match[1] : 'text';
+                          return !inline ? (
+                            <CustomCodeBlock language={language} value={String(children).replace(/\n$/, '')} />
+                          ) : (
+                            <code className="bg-[#f9f0ff] text-[#4a154b] px-1.5 py-0.5 rounded text-xs font-mono border border-[#e6e6e6]" {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                        a({ node, children, ...props }) {
+                          return (
+                            <a className="text-[#1264a3] hover:text-[#3860be] font-semibold underline" {...props}>
+                              {children}
+                            </a>
+                          );
+                        }
+                      }}
+                    >
+                      {renderMathInMarkdown(msg.content)}
+                    </ReactMarkdown>
+                  </div>
+                )}
 
-              {/* Tool calls this turn (reads that ran, or a blocked write) */}
-              {msg.toolCalls && msg.toolCalls.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(() => {
-                    const grouped = msg.toolCalls.reduce((acc, call) => {
-                      const existing = acc.find(g => g.name === call.name);
-                      if (existing) {
-                        existing.count += 1;
-                        existing.calls.push(call);
-                      } else {
-                        acc.push({ name: call.name, count: 1, calls: [call] });
-                      }
-                      return acc;
-                    }, []);
+                {/* Tool calls this turn */}
+                {msg.toolCalls && msg.toolCalls.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(() => {
+                      const grouped = msg.toolCalls.reduce((acc, call) => {
+                        const existing = acc.find(g => g.name === call.name);
+                        if (existing) {
+                          existing.count += 1;
+                          existing.calls.push(call);
+                        } else {
+                          acc.push({ name: call.name, count: 1, calls: [call] });
+                        }
+                        return acc;
+                      }, []);
 
-                    return grouped.map((group, i) => {
-                      const isSearch = group.name === 'search_documents';
-                      const isList = group.name === 'list_documents';
+                      return grouped.map((group, i) => {
+                        const isSearch = group.name === 'search_documents';
+                        const isList = group.name === 'list_documents';
 
-                      if (isSearch && sources.length > 0) {
+                        if (isSearch && sources.length > 0) {
+                          return (
+                            <button
+                              key={i}
+                              onClick={() => {
+                                setIsSearchExpanded(!isSearchExpanded);
+                                setIsListExpanded(false);
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs text-[#4a154b] bg-[#f9f0ff] border border-[#e6e6e6] rounded-full px-3 py-1 hover:bg-[#4a154b] hover:text-white transition-all cursor-pointer font-bold shadow-sm"
+                            >
+                              <WrenchScrewdriverIcon className="h-3.5 w-3.5" />
+                              <span className="font-mono">{group.name}</span>
+                              {group.count > 1 && (
+                                <span className="ml-1 text-[10px] bg-[#4a154b]/20 px-1.5 py-0.5 rounded-full font-sans font-bold">
+                                  {group.count}
+                                </span>
+                              )}
+                              {isSearchExpanded ? (
+                                <ChevronUpIcon className="h-3.5 w-3.5" />
+                              ) : (
+                                <ChevronDownIcon className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          );
+                        }
+
+                        if (isList) {
+                          const listCount = listedDocuments.totalCount || listedDocuments.returnedCount || listedDocuments.documents.length;
+                          return (
+                            <button
+                              key={i}
+                              onClick={() => {
+                                setIsListExpanded(!isListExpanded);
+                                setIsSearchExpanded(false);
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs text-[#4a154b] bg-[#f9f0ff] border border-[#e6e6e6] rounded-full px-3 py-1 hover:bg-[#4a154b] hover:text-white transition-all cursor-pointer font-bold shadow-sm"
+                            >
+                              <WrenchScrewdriverIcon className="h-3.5 w-3.5" />
+                              <span className="font-mono">{group.name}</span>
+                              {listCount > 0 && (
+                                <span className="ml-1 text-[10px] bg-[#4a154b]/20 px-1.5 py-0.5 rounded-full font-sans font-bold">
+                                  {listCount}
+                                </span>
+                              )}
+                              {isListExpanded ? (
+                                <ChevronUpIcon className="h-3.5 w-3.5" />
+                              ) : (
+                                <ChevronDownIcon className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          );
+                        }
+
                         return (
-                          <button
+                          <span
                             key={i}
-                            onClick={() => {
-                              setIsSearchExpanded(!isSearchExpanded);
-                              setIsListExpanded(false); // collapse other
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
+                            className="inline-flex items-center gap-1.5 text-xs text-[#696969] bg-[#f9f0ff]/50 border border-[#e6e6e6] rounded-full px-3 py-1 select-none font-medium"
                           >
-                            <WrenchScrewdriverIcon className="h-3 w-3" />
+                            <WrenchScrewdriverIcon className="h-3 w-3 text-[#4a154b]" />
                             <span className="font-mono">{group.name}</span>
                             {group.count > 1 && (
-                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
-                                {group.count}
+                              <span className="text-[10px] text-[#4a154b] bg-[#f9f0ff] border border-[#e6e6e6] px-1.5 py-0.5 rounded-full font-sans font-bold">
+                                x{group.count}
                               </span>
                             )}
-                            {isSearchExpanded ? (
-                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                            ) : (
-                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
-                            )}
-                          </button>
+                          </span>
                         );
-                      }
+                      });
+                    })()}
+                  </div>
+                )}
 
-                      if (isList) {
-                        const listCount = listedDocuments.totalCount || listedDocuments.returnedCount || listedDocuments.documents.length;
-                        return (
+                {/* Inline citation list */}
+                {isListExpanded && (
+                  <div className="mt-3 space-y-1.5 max-w-md bg-[#f9f0ff]/40 border border-[#e6e6e6] rounded-2xl p-4">
+                    <p className="text-[10px] font-bold text-[#4a154b] uppercase tracking-wider mb-2">Listed Documents</p>
+                    {(() => {
+                      const docs = listedDocuments.documents || [];
+                      if (docs.length === 0) {
+                        return <p className="text-xs text-[#696969] italic p-1">No documents were returned by list_documents.</p>;
+                      }
+                      return docs.map((doc, idx) => (
+                        <div key={idx} className="flex items-center gap-2.5 text-xs text-[#1d1d1d] bg-white border border-[#e6e6e6] rounded-xl px-3.5 py-2 font-medium shadow-sm">
+                          <DocumentIcon className="h-4 w-4 text-[#4a154b] flex-shrink-0" />
+                          <span className="font-bold truncate">{doc.filename || doc.document_id || 'Untitled document'}</span>
+                        </div>
+                      ));
+                    })()}
+                    {listedDocuments.note && (
+                      <p className="text-[10px] text-[#696969] mt-2">{listedDocuments.note}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Inline chunks listing */}
+                {isSearchExpanded && sources.length > 0 && (
+                  <div className="mt-3 space-y-2.5 max-w-2xl bg-[#f9f0ff]/40 border border-[#e6e6e6] rounded-2xl p-4 animate-fade-in">
+                    <p className="text-[10px] font-bold text-[#4a154b] uppercase tracking-wider mb-2">Search Sources</p>
+                    {sources.map((s, i) => (
+                      <div key={i} className="text-xs text-[#1d1d1d] bg-white border border-[#e6e6e6] rounded-xl p-4 space-y-2 shadow-sm">
+                        <div className="flex items-center justify-between border-b border-[#e6e6e6] pb-2">
+                          <span className="font-bold text-[#4a154b]">{s.filename}</span>
+                          {s.page && <span className="text-[#696969] text-[10px] font-bold bg-[#f9f0ff] px-2 py-0.5 rounded-full border border-[#e6e6e6]">Page {s.page}</span>}
+                        </div>
+                        {s.snippet && (
+                          <p className="italic text-[#1d1d1d] leading-relaxed whitespace-pre-wrap font-mono text-[11px] bg-[#f4ede4]/40 p-3 rounded-xl border border-[#e6e6e6]">
+                            "{s.snippet}"
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Token usage */}
+                {msg.tokenUsage && (
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[#696969] border-t border-[#e6e6e6] pt-2.5">
+                    <span className="inline-flex items-center gap-1 text-[#4a154b] font-bold">
+                      <CircleStackIcon className="h-3.5 w-3.5" />
+                      Tokens: {msg.tokenUsage.total_tokens}
+                    </span>
+                    <span>Input: {msg.tokenUsage.input_tokens}</span>
+                    <span>Output: {msg.tokenUsage.output_tokens}</span>
+                    {msg.tokenUsage.reasoning_tokens > 0 && (
+                      <span>Thinking: {msg.tokenUsage.reasoning_tokens}</span>
+                    )}
+                    <span>Context: {msg.tokenUsage.context_tokens}</span>
+                  </div>
+                )}
+
+                {/* Write awaiting approval */}
+                {msg.status === 'needs_approval' && (
+                  <div className="mt-4 pt-3 border-t border-[#e6e6e6] space-y-3">
+                    {msg.pending.map((p, i) => (
+                      <p key={i} className="text-sm font-bold text-[#4a154b]">
+                        Wants to execute tool: <span className="font-mono bg-[#f9f0ff] px-2 py-0.5 rounded border border-[#e6e6e6]">{p.name}</span>
+                      </p>
+                    ))}
+                    <div className="flex gap-3">
+                      <button
+                        onClick={onApprove}
+                        disabled={loading}
+                        className="btn-primary-pill text-xs !px-5 !py-2"
+                      >
+                        <CheckIcon className="h-4 w-4" /> Approve Execution
+                      </button>
+                      <button
+                        onClick={onDecline}
+                        disabled={loading}
+                        className="btn-secondary-pill text-xs !px-5 !py-2 !text-[#cc4117]"
+                      >
+                        <XMarkIcon className="h-4 w-4" /> Decline
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {/* Agent asked the user to choose (needs_clarification) */}
+                {msg.status === 'needs_clarification' && (
+                  <div className="mt-4 pt-3 border-t border-[#e6e6e6] space-y-3">
+                    {msg.options && msg.options.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {msg.options.map((opt, i) => (
                           <button
                             key={i}
-                            onClick={() => {
-                              setIsListExpanded(!isListExpanded);
-                              setIsSearchExpanded(false); // collapse other
-                            }}
-                            className="inline-flex items-center gap-1.5 text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-2.5 py-1.5 hover:bg-blue-500/20 transition-all cursor-pointer font-medium"
-                            >
-                            <WrenchScrewdriverIcon className="h-3 w-3" />
-                            <span className="font-mono">{group.name}</span>
-                            {listCount > 0 ? (
-                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
-                                {listCount}
-                              </span>
-                            ) : group.count > 1 && (
-                              <span className="ml-1 text-[10px] bg-blue-500/25 px-1.5 py-0.5 rounded-full font-sans font-medium">
-                                {group.count}
-                              </span>
-                            )}
-                            {isListExpanded ? (
-                              <ChevronUpIcon className="h-3.5 w-3.5 text-blue-400" />
-                            ) : (
-                              <ChevronDownIcon className="h-3.5 w-3.5 text-blue-400" />
-                            )}
+                            onClick={() => onClarify(opt)}
+                            disabled={loading || msg.clarifyAnswered}
+                            className="btn-secondary-pill text-xs !px-4 !py-2 hover:bg-[#4a154b] hover:text-white"
+                          >
+                            {opt}
                           </button>
-                        );
-                      }
-
-                      return (
-                        <span
-                          key={i}
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-300/60 bg-blue-500/5 border border-blue-500/10 rounded px-2 py-1 select-none"
-                        >
-                          <WrenchScrewdriverIcon className="h-3 w-3 opacity-60" />
-                          <span className="font-mono">{group.name}</span>
-                          {group.count > 1 && (
-                            <span className="text-[10px] text-blue-300 bg-blue-500/10 border border-blue-500/10 px-1.5 py-0.5 rounded font-sans font-medium">
-                              x{group.count}
-                            </span>
-                          )}
-                        </span>
-                      );
-                    });
-                  })()}
-                </div>
-              )}
-
-              {/* Inline citation list (expanded from list_documents) */}
-              {isListExpanded && (
-                <div className="mt-3 space-y-1.5 max-w-md bg-slate-900/40 border border-slate-800 rounded-xl p-3">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Listed Documents</p>
-                  {(() => {
-                    const docs = listedDocuments.documents || [];
-                    if (docs.length === 0) {
-                      return <p className="text-xs text-gray-500 italic p-1">No documents were returned by list_documents.</p>;
-                    }
-                    return docs.map((doc, idx) => (
-                      <div key={idx} className="flex items-center gap-2.5 text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded px-3 py-2">
-                        <DocumentIcon className="h-4 w-4 text-blue-400 flex-shrink-0" />
-                        <span className="font-medium truncate">{doc.filename || doc.document_id || 'Untitled document'}</span>
+                        ))}
                       </div>
-                    ));
-                  })()}
-                  {listedDocuments.note && (
-                    <p className="text-[10px] text-gray-500 mt-2">{listedDocuments.note}</p>
-                  )}
-                </div>
-              )}
+                    ) : (
+                      <p className="text-xs text-[#696969] italic">Type your choice in the message bar.</p>
+                    )}
+                  </div>
+                )}
+                {msg.status === 'declined' && (
+                  <p className="mt-2 text-xs text-[#696969] italic">Action declined.</p>
+                )}
 
-              {/* Inline chunks listing (expanded from search_documents) */}
-              {isSearchExpanded && sources.length > 0 && (
-                <div className="mt-3 space-y-2 max-w-2xl bg-slate-900/40 border border-slate-800 rounded-xl p-3 animate-fade-in">
-                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Search Sources</p>
-                  {sources.map((s, i) => (
-                    <div key={i} className="text-xs text-gray-300 bg-slate-800/40 border border-slate-700/60 rounded-xl p-3.5 space-y-2">
-                      <div className="flex items-center justify-between border-b border-slate-850 pb-1.5">
-                        <span className="font-semibold text-blue-400">{s.filename}</span>
-                        {s.page && <span className="text-gray-500 text-[10px]">Page {s.page}</span>}
-                      </div>
-                      {s.snippet && (
-                        <p className="italic text-gray-300 leading-relaxed whitespace-pre-wrap font-mono text-[11px] bg-slate-950/30 p-2.5 rounded border border-slate-800/50">
-                          "{s.snippet}"
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Token usage for this turn.
-                  "Context" = the largest single LLM call's input size this turn —
-                  i.e. how much conversation/tool-result context was actually sent
-                  to the model at its fullest point. Providers don't return a
-                  model's max context window per-call, so this isn't a fraction of
-                  one — it's the real number of tokens that went in. */}
-              {msg.tokenUsage && (
-                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
-                  {msg.tokenUsage && (
-                    <>
-                      <span className="inline-flex items-center gap-1 text-gray-300" title="Input + output tokens across every model call this turn">
-                        <CircleStackIcon className="h-3.5 w-3.5" />
-                        Tokens used: {msg.tokenUsage.total_tokens}
-                      </span>
-                      <span title="Tokens sent to the model (prompt, history, tool results)">
-                        Input: {msg.tokenUsage.input_tokens}
-                      </span>
-                      <span title="Tokens the model generated">
-                        Output: {msg.tokenUsage.output_tokens}
-                      </span>
-                      {msg.tokenUsage.reasoning_tokens > 0 && (
-                        <span title="Reasoning/thinking tokens (subset of output tokens)">
-                          Thinking: {msg.tokenUsage.reasoning_tokens}
-                        </span>
-                      )}
-                      <span title="Largest single call's input size this turn — how much context (history + tool results) was actually sent to the model">
-                        Context: {msg.tokenUsage.context_tokens}
-                      </span>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* Write awaiting approval */}
-              {msg.status === 'needs_approval' && (
-                <div className="mt-3 pt-3 border-t border-slate-700 space-y-2">
-                  {msg.pending.map((p, i) => (
-                    <p key={i} className="text-sm text-amber-300">
-                      Wants to run <span className="font-mono">{p.name}</span>(
-                      <span className="font-mono text-amber-200">
-                        {Object.entries(p.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}
-                      </span>
-                      )
-                    </p>
-                  ))}
-                  <div className="flex gap-2">
+                {/* View Source Pages button */}
+                {hasPageSources && (
+                  <div className="mt-4 pt-3 border-t border-[#e6e6e6]">
                     <button
-                      onClick={onApprove}
-                      disabled={loading}
-                      className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                      onClick={() => onViewPages(pageSources)}
+                      className="btn-secondary-pill text-xs inline-flex items-center gap-2 !py-2"
                     >
-                      <CheckIcon className="h-3.5 w-3.5" /> Approve
-                    </button>
-                    <button
-                      onClick={onDecline}
-                      disabled={loading}
-                      className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-700 hover:bg-slate-600 text-gray-200 disabled:opacity-50"
-                    >
-                      <XMarkIcon className="h-3.5 w-3.5" /> Decline
+                      <DocumentIcon className="h-4 w-4 text-[#4a154b]" />
+                      View Source Documents ({pageSources.length})
                     </button>
                   </div>
-                </div>
-              )}
-              {/* Agent asked the user to choose (needs_clarification) */}
-              {msg.status === 'needs_clarification' && (
-                <div className="mt-3 pt-3 border-t border-slate-700 space-y-2">
-                  {msg.options && msg.options.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {msg.options.map((opt, i) => (
-                        <button
-                          key={i}
-                          onClick={() => onClarify(opt)}
-                          disabled={loading || msg.clarifyAnswered}
-                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-gray-500 italic">Type your answer below.</p>
-                  )}
-                </div>
-              )}
-              {msg.status === 'declined' && (
-                <p className="mt-2 text-xs text-gray-500 italic">Declined — not run.</p>
-              )}
-
-              {/* View Source Pages button — always visible when page sources exist */}
-              {hasPageSources && (
-                <div className="mt-3 pt-2.5 border-t border-slate-800/60">
-                  <button
-                    onClick={() => onViewPages(pageSources)}
-                    className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 hover:border-blue-500/40 rounded-lg px-3 py-1.5 transition-all font-medium"
-                  >
-                    <DocumentIcon className="h-3.5 w-3.5" />
-                    View Source{pageSources.length > 1 ? `s (${pageSources.length})` : ''}
-                  </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         )}

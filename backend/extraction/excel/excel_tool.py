@@ -118,6 +118,17 @@ def _execute_in_worker(code: str, dataframes: dict) -> dict:
     except Exception as e:
         exc_type = type(e)
         err_msg = f"{exc_type.__name__}: {e}"
+        if isinstance(e, KeyError) or "Column not found" in str(e):
+            col_info = []
+            for k, df in dataframes.items():
+                if isinstance(df, pd.DataFrame):
+                    col_info.append(f"columns in df: {list(df.columns)}")
+                elif isinstance(df, dict):
+                    for sheet_k, sheet_df in df.items():
+                        if isinstance(sheet_df, pd.DataFrame):
+                            col_info.append(f"columns in dfs['{sheet_k}']: {list(sheet_df.columns)}")
+            if col_info:
+                err_msg += f". Available columns: {', '.join(col_info)}"
         return {
             "success": False,
             "error": err_msg,
@@ -159,6 +170,100 @@ _MAX_CACHED_DOCS = 20
 _df_cache: OrderedDict[str, dict] = OrderedDict()
 
 
+def get_column_variations(name: str) -> list[str]:
+    """Generate case, space, underscore, and stem variations for an English column name."""
+    variations = [name]
+    
+    # Stem before parentheses/brackets
+    if "(" in name:
+        stem = name.split("(")[0].strip()
+        if stem:
+            variations.append(stem)
+    if "[" in name:
+        stem = name.split("[")[0].strip()
+        if stem:
+            variations.append(stem)
+            
+    expanded = []
+    for var in variations:
+        expanded.append(var)
+        var_lower = var.lower()
+        expanded.append(var_lower)
+        
+        var_nospace = var.replace(" ", "")
+        expanded.append(var_nospace)
+        expanded.append(var_nospace.lower())
+        
+        var_under = var.replace(" ", "_")
+        expanded.append(var_under)
+        expanded.append(var_under.lower())
+        
+        # 'set up' -> 'setup' variations
+        if "set up" in var_lower:
+            setup_name = var.replace("set up", "setup").replace("Set up", "Setup").replace("SET UP", "SETUP")
+            expanded.append(setup_name)
+            expanded.append(setup_name.lower())
+            expanded.append(setup_name.replace(" ", "_"))
+            expanded.append(setup_name.replace(" ", "_").lower())
+            expanded.append(setup_name.replace(" ", ""))
+            expanded.append(setup_name.replace(" ", "").lower())
+            
+    return list(set(expanded))
+
+
+def post_process_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Helper to detect English translation header in row 0, clean the dataframe,
+    coerce numeric types, and map columns so both Japanese and English headers work.
+    """
+    if df.empty or len(df) < 1:
+        return df
+
+    # 1. Detect if row 0 contains English translation labels.
+    first_row = df.iloc[0].astype(str).tolist()
+    english_keywords = {
+        "description", "specification", "modify", "drawing", "qty",
+        "measure", "material", "machine", "price", "local", "reference"
+    }
+    
+    has_english_translation = False
+    for val in first_row:
+        val_lower = str(val).lower()
+        if any(kw in val_lower for kw in english_keywords):
+            has_english_translation = True
+            break
+            
+    if has_english_translation:
+        # Drop the first row (translation labels) and copy
+        df_clean = df.iloc[1:].copy()
+        df_clean.reset_index(drop=True, inplace=True)
+        
+        # Try to parse numeric types now that text labels are removed
+        for col in df_clean.columns:
+            try:
+                df_clean[col] = pd.to_numeric(df_clean[col])
+            except (ValueError, TypeError):
+                if df_clean[col].dtype == object:
+                    df_clean[col] = df_clean[col].apply(lambda x: str(x).strip() if pd.notna(x) else x)
+        
+        # Duplicate columns under English labels and variations
+        for ja_col, en_col in zip(list(df.columns), first_row):
+            if pd.notna(ja_col) and pd.notna(en_col):
+                ja_str = str(ja_col).strip()
+                en_str = str(en_col).strip()
+                if ja_str and en_str and ja_str != en_str:
+                    df_clean[en_str] = df_clean[ja_str]
+                    
+                    # Generate and duplicate variations
+                    variations = get_column_variations(en_str)
+                    for var_name in variations:
+                        if var_name not in df_clean.columns:
+                            df_clean[var_name] = df_clean[ja_str]
+                            
+        return df_clean
+        
+    return df
+
+
 def get_sheets(
     resolved_path: str, sheet_name: Optional[str] = None
 ) -> dict[str, pd.DataFrame]:
@@ -192,13 +297,15 @@ def get_sheets(
     if sheet_name and sheet_name != "all":
         # Lazy: load only the requested sheet if not already cached
         if sheet_name not in sheets:
-            sheets[sheet_name] = pd.read_excel(resolved_path, sheet_name=sheet_name)
+            df = pd.read_excel(resolved_path, sheet_name=sheet_name)
+            sheets[sheet_name] = post_process_dataframe(df)
         result = {sheet_name: sheets[sheet_name]}
     else:
         # Load all sheets if not already done
         if "__all_loaded__" not in sheets:
             all_sheets = pd.read_excel(resolved_path, sheet_name=None)
-            sheets.update(all_sheets)
+            for k, df in all_sheets.items():
+                sheets[k] = post_process_dataframe(df)
             sheets["__all_loaded__"] = True
         result = {k: v for k, v in sheets.items() if k != "__all_loaded__"}
 
@@ -227,7 +334,7 @@ def resolve_document_path(filename_or_id: str) -> str:
         try:
             row = store.conn.execute(
                 """
-                SELECT file_path FROM documents
+                SELECT file_path, document_id FROM documents
                 WHERE document_id::text = %s
                    OR filename = %s
                    OR LOWER(filename) = LOWER(%s)
@@ -246,6 +353,17 @@ def resolve_document_path(filename_or_id: str) -> str:
             ).fetchone()
             if row and row[0]:
                 resolved = row[0]
+                doc_id = str(row[1]) if row[1] else "temp"
+                if resolved.startswith("supabase://"):
+                    parts = resolved[11:].split("/", 1)
+                    bucket = parts[0]
+                    key = parts[1]
+                    local_path = os.path.join("uploads", f"temp_{doc_id}_{os.path.basename(key)}")
+                    if not os.path.exists(local_path):
+                        os.makedirs("uploads", exist_ok=True)
+                        from backend.storage.supabase_store import download_from_supabase
+                        download_from_supabase(bucket, key, local_path)
+                    return os.path.abspath(local_path)
                 if os.path.exists(resolved):
                     return os.path.abspath(resolved)
                 # Try finding under typical paths relative to workspace root

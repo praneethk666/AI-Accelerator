@@ -372,6 +372,14 @@ extraction:
     max_tiles: 24
   cad:
     max_pages: 0              # cap VLM pages per CAD/circuit doc (0 = unlimited)
+    vision:
+      provider: google
+      model: gemini-3.5-flash
+      api_key: ${GOOGLE_API_KEY}
+      min_interval_s: 4.0      # Pacing to stay within AI Studio free-tier RPM limits
+      max_retries: 3
+      timeout_s: 150
+      dpi: 200
 
 # ── Embeddings & Reranker ─────────────────────────────────────────────────────
 # Provider can be "openai", "local" (SentenceTransformers), or "jina" (cloud API).

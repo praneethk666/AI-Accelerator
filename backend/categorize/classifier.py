@@ -235,6 +235,68 @@ def _path_hint(file_path: str) -> str:
     return f"filename: {fn}" + (f"\nparent folder: {folder}" if folder else "")
 
 
+def _extract_classification_result(
+    response_text: str,
+    supported_types: list[str],
+    known_industries: list[str],
+    source_name: str = "Vision",
+) -> Tuple[str, float, str, Optional[str], str]:
+    """Extract document_type, confidence, reasoning, industry, industry_evidence
+    from an LLM or VLM response, using robust JSON extraction first and natural
+    language fallback parsing second.
+    """
+    raw_text = (response_text or "").strip()
+
+    # 1. Clean markdown code fences if present (```json ... ``` or ``` ...)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    # 2. Try JSON match and parse
+    json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if json_match:
+        try:
+            result = json.loads(json_match.group())
+            doc_type = result.get("document_type", "unknown")
+            doc_type = _coerce_doctype(doc_type, supported_types)
+            conf = float(result.get("confidence", 0.0) or 0.0)
+            reasoning = result.get("reasoning", f"{source_name} classification completed.")
+            industry = (result.get("industry") or "").strip().lower()
+            evidence = (result.get("industry_evidence") or "").strip()
+            industry = industry if industry in known_industries and industry != "general" else None
+            return doc_type, conf, reasoning, industry, evidence
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass  # Fall through to natural language text extraction
+
+    # 3. Natural language fallback if JSON regex or json.loads failed
+    coerced = _coerce_doctype(raw_text, supported_types)
+    if coerced and coerced not in ("report", "unknown"):
+        # Try extracting explicit confidence if present (e.g. "confidence: 0.9" or "confidence = 0.85")
+        conf = 0.85
+        conf_match = re.search(r"confidence[^\d]*([0-9\.]+)", raw_text, re.IGNORECASE)
+        if conf_match:
+            try:
+                c_val = float(conf_match.group(1))
+                conf = c_val / 100.0 if c_val > 1.0 else c_val
+            except ValueError:
+                pass
+
+        # Try extracting industry if mentioned
+        industry = None
+        for ind in known_industries:
+            if ind != "general" and re.search(rf"\b{re.escape(ind)}\b", raw_text, re.IGNORECASE):
+                industry = ind
+                break
+
+        reasoning = f"{source_name} natural language response parsed as '{coerced}': {raw_text[:120]}"
+        return coerced, conf, reasoning, industry, ""
+
+    # 4. If coercion returned "report" or "unknown" and JSON failed, default to fallback
+    default_type = "report" if source_name == "Text-LLM" else "unknown"
+    fallback_conf = 0.3
+    reasoning = f"{source_name} response parsing failed: {raw_text[:100]}"
+    return default_type, fallback_conf, reasoning, None, ""
+
+
 def _text_llm_classify(
     text: str, known_industries: list[str], config: Dict[str, Any], file_path: str = ""
 ) -> Tuple[str, float, str, Optional[str], str]:
@@ -290,18 +352,10 @@ Respond with ONLY the JSON object, no other text, no markdown."""
     except Exception:
         pass
 
-    json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-    if not json_match:
-        return "report", 0.3, f"Text-LLM response parsing failed: {response_text[:100]}", None, ""
-
-    result = json.loads(json_match.group())
-    doc_type = result.get("document_type", "unknown")
-    conf = float(result.get("confidence", 0.0) or 0.0)
-    reasoning = result.get("reasoning", "Text-LLM classification completed.")
-    industry = (result.get("industry") or "").strip().lower()
-    evidence = (result.get("industry_evidence") or "").strip()
-    industry = industry if industry in known_industries and industry != "general" else None
-    return doc_type, conf, reasoning, industry, evidence
+    supported_types = config.get("document_types") or list(_DOCTYPE_HINTS)
+    return _extract_classification_result(
+        response_text, supported_types, known_industries, source_name="Text-LLM"
+    )
 
 
 def _render_pdf_pages_to_stitched_image_bytes(file_path: str, pages: list[int], zoom: float = 2.0) -> bytes:
@@ -532,89 +586,38 @@ Respond with ONLY the JSON object, no other text, no markdown."""
             # Call vision_client.describe_image() and parse the response
             try:
                 response_text = describe_image(stitched_bytes, prompt, config).strip()
+                doc_type, conf, reasoning, vi, evidence = _extract_classification_result(
+                    response_text, supported_types, known_industries, source_name="Vision"
+                )
 
-                # Try to extract JSON from response
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                if json_match:
-                    result = json.loads(json_match.group())
-                    doc_type = result.get("document_type", "unknown")
-                    # Defensive: a degraded model can echo a compound label
-                    # ("invoice / financial_statement / ...") instead of one token.
-                    # Collapse to the first KNOWN type it mentions, else 'report'.
-                    doc_type = _coerce_doctype(doc_type, supported_types)
-                    conf = float(result.get("confidence", 0.0) or 0.0)
-                    reasoning = result.get("reasoning", "Vision classification completed.")
-                    MIN_VERIFY_TEXT_CHARS = 40  # if less than this, we can't verify the model's claimed evidence
-                    if not ask_industry:
-                        pass  # already resolved from the keyword scan before this call
+                MIN_VERIFY_TEXT_CHARS = 40  # if less than this, we can't verify the model's claimed evidence
+                if vi in known_industries and vi != "general":
+                    # Branches are MUTUALLY EXCLUSIVE: either we can't verify (short
+                    # text -> confidence-only, higher bar) OR we require the evidence
+                    # phrase to appear.
+                    if len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
+                        # Nothing to verify against (pure-visual content, e.g. CAD/vector
+                        # drawings) — trust the model's own confidence, with a HIGHER bar.
+                        if conf >= 0.75:
+                            vision_industry = vi
+                            reasoning_parts.append(
+                                f"No extractable text to verify industry evidence "
+                                f"(len={len(verify_text.strip())}); accepted '{vi}' on "
+                                f"confidence={conf:.2f} alone."
+                            )
+                        else:
+                            reasoning_parts.append(
+                                f"No extractable text to verify industry evidence and "
+                                f"confidence={conf:.2f} too low to accept '{vi}' unverified."
+                            )
+                    elif _evidence_supported(evidence, verify_text):
+                        vision_industry = vi
                     else:
-                        # Keep only a recognized/proposed industry; ignore "general" so the
-                        # downstream cascade can still try filename/text before defaulting.
-                        vi = (result.get("industry") or "").strip().lower()
-                        evidence = (result.get("industry_evidence") or "").strip()
-                        if vi and vi in known_industries and vi != "general":
-                            # NOTE: no keyword-corroboration branch here — if the keyword
-                            # scan's TOP score had cleared _MIN_INDUSTRY_SCORE, pre-resolution
-                            # above would have already fired and we'd never reach this code
-                            # (ask_industry would be False). So by construction, every
-                            # industry's keyword score is BELOW threshold whenever we get
-                            # here — verification must come from what vision actually saw.
-                            if len(verify_text.strip()) < MIN_VERIFY_TEXT_CHARS:
-                                # Nothing to verify against (pure-visual content, e.g. CAD/vector
-                                # drawings) — trust the model's own confidence, with a HIGHER bar.
-                                if conf >= 0.75:
-                                    vision_industry = vi
-                                    reasoning_parts.append(
-                                        f"No extractable text to verify industry evidence "
-                                        f"(len={len(verify_text.strip())}); accepted '{vi}' on "
-                                        f"confidence={conf:.2f} alone."
-                                    )
-                                else:
-                                    reasoning_parts.append(
-                                        f"No extractable text to verify industry evidence and "
-                                        f"confidence={conf:.2f} too low to accept '{vi}' unverified."
-                                    )
-                            elif _evidence_supported(evidence, verify_text):
-                                vision_industry = vi
-                            else:
-                                reasoning_parts.append(
-                                    f"Vision claimed industry='{vi}' but evidence '{evidence}' "
-                                    f"wasn't found in extractable text; discarding (falling through "
-                                    f"to keyword scan/default)."
-                                )
-                        elif vi and vi != "general":
-                            # NOVEL industry — not in our configured taxonomy, so no keyword
-                            # list exists to corroborate it. No shortcut available: require
-                            # BOTH a verified quote from what vision actually saw AND high
-                            # confidence. Accepted, but flagged distinctly in the reasoning so
-                            # a human can decide whether to promote it into the permanent
-                            # config (with its own keyword list) rather than it silently
-                            # becoming a one-off unofficial category.
-                            if (len(verify_text.strip()) >= MIN_VERIFY_TEXT_CHARS
-                                    and _evidence_supported(evidence, verify_text)
-                                    and conf >= 0.75):
-                                vision_industry = vi
-                                reasoning_parts.append(
-                                    f"NEW industry candidate '{vi}' (not in the configured "
-                                    f"list) — verified evidence '{evidence}', "
-                                    f"confidence={conf:.2f}. Flagged for human review before "
-                                    f"promoting to a permanent category."
-                                )
-                            else:
-                                reasoning_parts.append(
-                                    f"Vision proposed new industry '{vi}' (not in the "
-                                    f"configured list) but evidence/confidence wasn't strong "
-                                    f"enough to accept unverified; discarding."
-                                )
-                else:
-                    # Fallback if JSON extraction fails
-                    doc_type = "unknown"
-                    conf = 0.3
-                    reasoning = f"Vision response parsing failed: {response_text[:100]}"
-            except json.JSONDecodeError as e:
-                doc_type = "unknown"
-                conf = 0.0
-                reasoning = f"Vision JSON parse error: {e}"
+                        reasoning_parts.append(
+                            f"Vision claimed industry='{vi}' but evidence '{evidence}' "
+                            f"wasn't found in extractable text; discarding (falling through "
+                            f"to keyword scan/default)."
+                        )
             except Exception as e:
                 doc_type = "unknown"
                 conf = 0.0

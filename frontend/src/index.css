@@ -2,46 +2,208 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #1e1e2e;
-  color: #e5e7eb;
+:root {
+  --color-primary: #4a154b;
+  --color-primary-press: #611f69;
+  --color-canvas-cream: #f4ede4;
+  --color-canvas-lavender: #f9f0ff;
+  --color-link-blue: #1264a3;
+  --color-link-hover: #3860be;
+  --color-ink: #1d1d1d;
+  --color-ink-mute: #696969;
+  --color-hairline: #e6e6e6;
 }
 
-/* Custom modern scrollbar styles */
+body {
+  background-color: var(--color-canvas-cream);
+  color: var(--color-ink);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Atmospheric Pastel-Mesh Gradient backdrop */
+.pastel-mesh-bg {
+  background: 
+    radial-gradient(circle at 15% 20%, rgba(255, 240, 230, 0.9) 0%, transparent 45%),
+    radial-gradient(circle at 85% 15%, rgba(233, 216, 255, 0.85) 0%, transparent 50%),
+    radial-gradient(circle at 50% 80%, rgba(216, 243, 220, 0.75) 0%, transparent 60%),
+    radial-gradient(circle at 90% 85%, rgba(249, 240, 255, 0.9) 0%, transparent 40%),
+    #f4ede4;
+}
+
+/* High-Density Compact Data Typography */
+.prose {
+  font-size: 0.8125rem !important; /* 13px for high data density */
+  line-height: 1.5 !important;
+}
+
+.prose p {
+  margin-top: 0.35em !important;
+  margin-bottom: 0.35em !important;
+}
+
+.prose ul, .prose ol {
+  margin-top: 0.35em !important;
+  margin-bottom: 0.35em !important;
+  padding-left: 1.25em !important;
+}
+
+.prose li {
+  margin-top: 0.15em !important;
+  margin-bottom: 0.15em !important;
+}
+
+.pastel-mesh-card {
+  background: 
+    radial-gradient(circle at 10% 10%, rgba(249, 240, 255, 0.6) 0%, transparent 40%),
+    radial-gradient(circle at 90% 90%, rgba(255, 240, 230, 0.5) 0%, transparent 50%),
+    #ffffff;
+}
+
+.aubergine-mesh-card {
+  background: 
+    radial-gradient(circle at 80% 20%, rgba(97, 31, 105, 0.6) 0%, transparent 50%),
+    radial-gradient(circle at 20% 80%, rgba(72, 26, 84, 0.8) 0%, transparent 50%),
+    #4a154b;
+}
+
+/* Polished Slacc Dark Mode Accents */
+html.dark {
+  color-scheme: dark;
+}
+
+/* Custom Slacc pill buttons */
+.btn-primary-pill {
+  background-color: #4a154b;
+  color: #ffffff;
+  border-radius: 90px;
+  padding: 12px 28px;
+  font-weight: 700;
+  font-size: 15px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 14px rgba(74, 21, 75, 0.2);
+}
+
+.btn-primary-pill:hover {
+  background-color: #611f69;
+  box-shadow: 0 6px 20px rgba(74, 21, 75, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-primary-pill:active {
+  transform: translateY(0);
+  scale: 0.98;
+}
+
+.btn-secondary-pill {
+  background-color: #f9f0ff;
+  color: #1d1d1d;
+  border-radius: 90px;
+  padding: 10px 28px;
+  font-weight: 700;
+  font-size: 15px;
+  border: 1px solid rgba(230, 230, 230, 0.8);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-secondary-pill:hover {
+  background-color: #f3e2ff;
+  border-color: rgba(74, 21, 75, 0.2);
+  color: #4a154b;
+  transform: translateY(-1px);
+}
+
+.btn-outline-aubergine {
+  background-color: #ffffff;
+  color: #4a154b;
+  border: 2px solid #4a154b;
+  border-radius: 90px;
+  padding: 10px 28px;
+  font-weight: 700;
+  font-size: 15px;
+  transition: all 0.2s ease;
+}
+
+.btn-outline-aubergine:hover {
+  background-color: #f9f0ff;
+}
+
+/* Slacc Cards */
+.card-slacc {
+  background-color: #ffffff;
+  border-radius: 1rem;
+  border: 1px solid #e6e6e6;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+}
+
+.card-slacc-featured {
+  background-color: #4a154b;
+  color: #ffffff;
+  border-radius: 1rem;
+  border: 1px solid #592466;
+  box-shadow: 0 10px 30px rgba(74, 21, 75, 0.25);
+}
+
+.card-slacc-cream {
+  background-color: #f4ede4;
+  color: #1d1d1d;
+  border-radius: 1rem;
+  border: 1px solid #e6e6e6;
+}
+
+/* Display headlines tracking */
+.display-hero {
+  letter-spacing: -0.768px;
+}
+
+.display-title {
+  letter-spacing: -0.464px;
+}
+
+.display-stat {
+  letter-spacing: -0.6px;
+}
+
+/* Custom scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(244, 237, 228, 0.5);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #d9bdde;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #4a154b;
 }
 
 /* Firefox support */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-color: #d9bdde transparent;
 }
 
-/* ── KaTeX math rendering ───────────────────────────────────────────────────
-   katex.renderToString() (displayMode:true) generates a .katex-display span.
-   Tailwind Preflight globally resets border-width to 0, breaking .frac-line.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* Hide scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── KaTeX math rendering ─────────────────────────────────────────────────── */
 .katex .frac-line {
   border-bottom-style: solid !important;
   border-bottom-width: 0.04em !important;
 }
 
-/* Display math: full-width centered block with breathing room */
 .katex-display {
   display: block !important;
   text-align: center;

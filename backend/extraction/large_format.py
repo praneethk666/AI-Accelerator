@@ -131,3 +131,76 @@ def transcribe_large_page(page, config: dict, prompt: str | None = None) -> str:
         if txt:
             parts.append(txt)
     return _merge(parts, config)
+
+def _remap_bbox(bbox, crop_box, img_size):
+    """Convert a bbox normalized to a tile crop into full-page normalized coords."""
+    if not bbox or len(bbox) != 4:
+        return bbox
+    l, t, rgt, bot = crop_box
+    W, H = img_size
+    tw, th = (rgt - l), (bot - t)
+    x1, y1, x2, y2 = bbox
+    return [
+        (l + x1 * tw) / W,
+        (t + y1 * th) / H,
+        (l + x2 * tw) / W,
+        (t + y2 * th) / H,
+    ]
+
+
+def transcribe_large_page_blocks(page, config: dict, prompt: str) -> list[dict]:
+    """Tile a large-format page, transcribe each tile as JSON region blocks (per
+    `prompt`'s schema), remap bboxes to full-page coordinates, and return the combined
+    block list — no text/Markdown merge, so table_data survives intact."""
+    c = _cfg(config)
+    dpi = int(c.get("dpi", 200))
+    vlm_max_px = int(c.get("vlm_max_px", 2600))
+    overlap = float(c.get("overlap", 0.12))
+    max_tiles = int(c.get("max_tiles", 24))
+    vcfg = {"vision": config.get("vision_ocr") or {}}
+
+    tx, ty = tile_grid(page.rect.width, page.rect.height, dpi, vlm_max_px)
+    img = _render(page, dpi)
+    W, H = img.size
+
+    if tx * ty <= 1:
+        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"), prompt, vcfg).strip()
+        return [{"_raw": raw, "_crop": (0, 0, W, H), "_img_size": (W, H)}]
+
+    if tx * ty > max_tiles:
+        scale = math.sqrt(max_tiles / (tx * ty))
+        tx, ty = max(1, int(tx * scale)), max(1, int(ty * scale))
+    logger.info("large_format: tiling page into %dx%d at %ddpi (structured)", tx, ty, dpi)
+
+    all_blocks: list[dict] = []
+    for r, c_, tile in _tiles(img, tx, ty, overlap):
+        # recompute this tile's crop box in full-image pixel coords (same math as _tiles)
+        w_step, h_step = W / tx, H / ty
+        ox, oy = w_step * overlap, h_step * overlap
+        l = max(0, int(c_ * w_step - ox))
+        t = max(0, int(r * h_step - oy))
+        rgt = min(W, int((c_ + 1) * w_step + ox))
+        bot = min(H, int((r + 1) * h_step + oy))
+
+        buf = io.BytesIO()
+        tile.save(buf, format="PNG")
+        try:
+            raw = describe_image(buf.getvalue(), prompt, vcfg).strip()
+        except Exception as e:
+            logger.warning("large_format: tile (%d,%d) failed (%s)", r, c_, e)
+            continue
+
+        from backend.vision.block_builder import _extract_json
+        data = _extract_json(raw)
+        items = data if isinstance(data, list) else (
+            data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list)
+            else None)
+        if not items:
+            continue
+        for vb in items:
+            if not isinstance(vb, dict):
+                continue
+            vb["bbox"] = _remap_bbox(vb.get("bbox"), (l, t, rgt, bot), (W, H))
+            all_blocks.append(vb)
+
+    return all_blocks

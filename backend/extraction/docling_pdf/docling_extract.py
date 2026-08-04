@@ -152,6 +152,23 @@ def _update_page_progress(document_id: str, tool_name: str, current_page: int, t
             pass
 
 
+def _checkpoint_page_blocks(document_id: str, page_no: int, page_blocks: list[dict]) -> None:
+    """Persist one page's worth of TEXT/TABLE blocks immediately (see call site for why).
+    Best-effort: a checkpoint failure must never abort real extraction progress, so
+    every error is swallowed here exactly like _update_page_progress above."""
+    if not page_blocks:
+        return
+    try:
+        from backend.storage.postgres_store import PostgresStore
+        pg = PostgresStore()
+        try:
+            pg.write_page_blocks(document_id, page_no, page_blocks)
+        finally:
+            pg.close()
+    except Exception as e:
+        logger.debug("docling: checkpoint failed (page %s): %s", page_no, e)
+
+
 def _pp(report: dict | None, page) -> dict | None:
     """Get/create the per-page action record in the report (None if no report or page).
     Records what we did to each page so the decision trail is queryable per page."""
@@ -641,6 +658,44 @@ def _bbox_topleft_pts(bbox, page_height):
     return [min(l, r), min(t, b), max(l, r), max(t, b)]
 
 
+def _picture_caption_info(item, doc, page_no) -> dict | None:
+    """Resolve a Docling PictureItem's LINKED caption (item.captions -> TextItem refs)
+    to its exact text + bbox. Docling already parses "Figure 12: ..." as its own text
+    item and links it to the picture -- reading that beats guessing crop padding and
+    re-deriving the caption from pixels. Returns None if the picture has no caption
+    link (common for YOLO-only figures and most scanned pages, which have no text
+    layer to link from)."""
+    try:
+        refs = list(getattr(item, "captions", None) or [])
+        if not refs:
+            return None
+        text = (item.caption_text(doc) or "").strip()
+        if not text:
+            return None
+        bboxes = []
+        for ref in refs:
+            try:
+                cap_item = ref.resolve(doc)
+            except Exception:
+                continue
+            cpage, cbbox = _prov(cap_item)
+            if cpage != page_no:
+                continue
+            cbb = _bbox_topleft_pts(cbbox, _page_height(doc, page_no))
+            if cbb:
+                bboxes.append(cbb)
+        if not bboxes:
+            return {"text": text, "bbox": None}
+        return {
+            "text": text,
+            "bbox": [min(b[0] for b in bboxes), min(b[1] for b in bboxes),
+                     max(b[2] for b in bboxes), max(b[3] for b in bboxes)],
+        }
+    except Exception as e:
+        logger.debug("docling: caption-link resolve failed (page %s): %s", page_no, e)
+        return None
+
+
 def _page_height(doc, page_no):
     try:
         if page_no in doc.pages:
@@ -883,7 +938,9 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     if bbox:
                         idx = len(blocks)
                         blocks.append(None)
-                        pic_jobs.append((idx, page_no, bbox))
+                        # Remote server only returns rendered blocks, not a DoclingDocument
+                        # object -- no item.captions link available client-side here.
+                        pic_jobs.append((idx, page_no, bbox, None))
                         dfigs[int(page_no)].append(bbox)
                 elif btype == "table":
                     if report is not None:
@@ -939,6 +996,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 from backend.core.tool import check_cancelled
                 check_cancelled(document_id)
                 _update_page_progress(document_id, "docling_pdf", pg_num, total_pages)
+                _page_start_idx = len(blocks)   # checkpoint boundary -- see end of loop body
                 try:
                     res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
                     doc = res.document
@@ -1049,8 +1107,22 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
                             idx = len(blocks)
                             blocks.append(None)
-                            pic_jobs.append((idx, page_no, bb))
+                            cap_info = _picture_caption_info(item, doc, page_no)
+                            pic_jobs.append((idx, page_no, bb, cap_info))
                             dfigs[int(page_no)].append(bb)
+
+                # Checkpoint this page's TEXT/TABLE blocks NOW, not at the end of the whole
+                # document. Real gap found 3-Aug: extract_docling had ZERO persistence of
+                # its own (only a status-string progress label) -- everything lived in an
+                # in-memory list until write_blocks() ran once after the ENTIRE step
+                # finished, so a crash/kill at page 900 of 1147 lost all 900 pages, not
+                # just the tail. Figure blocks are still None placeholders here (captioned
+                # in a separate batched pass below) so they're excluded -- this is a safety
+                # net against total loss, not a full per-page resume/skip (that would also
+                # need to reconcile pic_jobs on restart, a bigger change deferred for now).
+                _checkpoint_page_blocks(
+                    document_id, pg_num,
+                    [b for b in blocks[_page_start_idx:] if b is not None])
         else:
             # Fallback to full conversion if page count could not be retrieved
             res = conv.convert(pdf_path)
@@ -1155,7 +1227,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
                         idx = len(blocks)
                         blocks.append(None)
-                        pic_jobs.append((idx, page_no, bb))
+                        cap_info = _picture_caption_info(item, doc, page_no)
+                        pic_jobs.append((idx, page_no, bb, cap_info))
                         dfigs[int(page_no)].append(bb)
 
         if fdoc is not None:
@@ -1170,7 +1243,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for pg, yb in _yolo_extra_boxes(pdf_path, dfigs, dtables, min_pic, min_area_frac):
             idx = len(blocks)
             blocks.append(None)
-            pic_jobs.append((idx, pg, yb))
+            # YOLO-only detections have no Docling item to link a caption from.
+            pic_jobs.append((idx, pg, yb, None))
     # Drop nested/duplicate figure crops (collage composite + its sub-photos). Dropped
     # jobs leave a None placeholder in `blocks` that the final filter removes.
     pic_jobs = _dedup_pic_jobs(pic_jobs)
@@ -1180,34 +1254,70 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         report["figures"]["yolo_added"] += len(pic_jobs) - d
         report["figures"]["proposed"] = report["figures"].get("proposed", 0) + len(pic_jobs)
 
+    # Every kept figure box on the SAME page, keyed by its own job idx so a figure
+    # never excludes itself -- fed into _figure_block as exclusion zones so one
+    # figure's padding can't bleed into a neighboring figure a few points away
+    # (real bug on a scanned doc with no text layer at all: the collision guard
+    # below has nothing else to check against there, so this matters most on scans,
+    # but it's a strict improvement on digital pages too).
+    page_to_boxes: dict = defaultdict(list)
+    for j_idx, pg, bb, _ci in pic_jobs:
+        page_to_boxes[pg].append((j_idx, bb))
+
+    # Pages where Docling extracted NO text at all (do_ocr:false + no text layer --
+    # i.e. scanned, as far as Docling itself can tell) get their figure captioning
+    # DEFERRED to caption_deferred_figures(), called after route_and_rescue() has
+    # produced the page's real OCR/VLM text -- otherwise the semantic gate runs
+    # totally blind (no page context) on exactly the pages that need it most. Only
+    # safe to defer if a later rescue pass will actually run to resolve it.
+    defer_ok = bool(dcfg.get("page_rescue", True))
+
+    # Size-based lazy figure captioning: real cost driver is FIGURE COUNT, not page
+    # count (plain text/table extraction is ~free regardless of length -- validated
+    # live, 3-Aug: a 1147-page text-only circuit diagram is cheap; a 50-page
+    # CAD-drawing-heavy manual can cost more). Above defer_figures_above_pages,
+    # figures on pages that DO have text also get deferred -- but PERMANENTLY (no
+    # route_and_rescue pass will ever resolve these; they stay deferred until an
+    # agent looks at that specific page on demand via view_page_image), unlike the
+    # scanned-page case above which auto-resolves once real OCR text exists.
+    figure_mode = dcfg.get("figure_caption_mode", "eager")
+    lazy_threshold = int(dcfg.get("defer_figures_above_pages", 250) or 250)
+    size_lazy = figure_mode == "size_based" and total_pages > lazy_threshold
+
     # Caption figures now that page text is complete. Run CONCURRENTLY (the slow part is
     # the VLM call latency): vision.max_concurrency workers, each paced by describe_image's
     # rate limiter so we overlap latency without bursting past the provider RPM. Context is
     # copied into each worker so the per-run token-usage sink still records off-thread.
     workers = max(1, int((config.get("vision") or {}).get("max_concurrency", 1) or 1))
 
-    def _cap(idx, page_no, bb):
+    def _cap(idx, page_no, bb, cap_info):
         from backend.core.tool import check_cancelled
         check_cancelled(document_id)
+        others = [b for j_idx, b in page_to_boxes.get(page_no, []) if j_idx != idx]
+        no_text = not page_text.get(page_no)
+        defer_reason = "scanned_no_text" if no_text else ("large_document_lazy" if size_lazy else None)
+        defer = defer_ok and defer_reason is not None
         return idx, _figure_block(pdf_path, document_id, page_no, filename, bb,
-                                  page_text.get(page_no, []), config)
+                                  page_text.get(page_no, []), config, cap_info=cap_info,
+                                  other_figure_bboxes=others, defer=defer,
+                                  defer_reason=defer_reason)
 
     if workers > 1 and len(pic_jobs) > 1:
         from concurrent.futures import ThreadPoolExecutor
         from backend.core import usage as _usage
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_usage.copy_ctx().run, _cap, idx, pg, bb)
-                    for idx, pg, bb in pic_jobs]
+            futs = [ex.submit(_usage.copy_ctx().run, _cap, idx, pg, bb, cap_info)
+                    for idx, pg, bb, cap_info in pic_jobs]
             for f in futs:
                 from backend.core.tool import check_cancelled
                 check_cancelled(document_id)
                 idx, blk = f.result()
                 blocks[idx] = blk
     else:
-        for idx, page_no, bb in pic_jobs:
+        for idx, page_no, bb, cap_info in pic_jobs:
             from backend.core.tool import check_cancelled
             check_cancelled(document_id)
-            blocks[idx] = _cap(idx, page_no, bb)[1]
+            blocks[idx] = _cap(idx, page_no, bb, cap_info)[1]
     blocks = [b for b in blocks if b is not None]
     blocks = _merge_small_repeated_icons(blocks)
 
@@ -1217,7 +1327,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         report["figures"]["total"] = kept
         report["figures"]["dropped_by_gate"] = report["figures"].get("proposed", 0) - kept
         # Per-page figure ledger: proposed (pre-gate) vs kept, with the kept kinds.
-        for _idx, pg, _bb in pic_jobs:
+        for _idx, pg, _bb, _cap_info in pic_jobs:
             rec = _pp(report, pg)
             if rec:
                 rec["figures"]["proposed"] += 1
@@ -1283,49 +1393,96 @@ def _merge_small_repeated_icons(blocks: list[dict], icon_pt: float = 40.0, min_g
     return [b for i, b in enumerate(blocks) if i not in drop]
 
 
-def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config):
+def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config,
+                  cap_info: dict | None = None, other_figure_bboxes: list | None = None,
+                  defer: bool = False, defer_reason: str | None = None):
     """Crop a Docling-located figure, run the SEMANTIC GATE (classify + caption), and
     return the image_caption block — or None if the gate says it's page furniture
     (logo/banner/header/text/blank), so we never crop+index a non-figure. Keeps any
-    real content incl. wide schematics/CAD that geometry filters would have dropped."""
+    real content incl. wide schematics/CAD that geometry filters would have dropped.
+
+    cap_info (optional): {"text": ..., "bbox": [l,t,r,b] | None} from
+    _picture_caption_info() -- Docling's OWN linked caption for this figure, when it
+    has one. When present we union its bbox into the crop region (so the real caption
+    is guaranteed inside the image instead of relying on guessed padding) and pass its
+    exact text to the VLM gate as ground truth, then hard-append it to whatever caption
+    the model returns so the real wording (part numbers, figure number) is never lost
+    even if the model paraphrases or ignores it.
+
+    other_figure_bboxes (optional): every OTHER kept figure's bbox on this same page --
+    treated as collision zones (same as nearby text) so padding never grows into a
+    neighboring figure. Matters most on scanned pages, which have no PDF text layer at
+    all, so the text-collision check below has nothing else to guard against there.
+
+    defer: True skips the VLM gate entirely -- crops and saves the image, marks the
+    block metadata.caption_deferred=True, and returns a placeholder. Used for pages
+    Docling extracted NO text from (do_ocr:false + no text layer = scanned), so the
+    gate isn't run blind; caption_deferred_figures() resolves it later once
+    route_and_rescue() has produced the page's real OCR/VLM text."""
     from backend.vision.pdf_cropper import PDFCropper
     import fitz
-    
+
+    # 0. Fold the linked caption's own bbox into the crop region FIRST so the real
+    # caption text is guaranteed to be physically inside the crop -- padding below is
+    # then just breathing room, not the only thing standing between us and a cut caption.
+    crop_bbox = list(bbox)
+    if cap_info and cap_info.get("bbox"):
+        cb = cap_info["bbox"]
+        crop_bbox = [min(crop_bbox[0], cb[0]), min(crop_bbox[1], cb[1]),
+                     max(crop_bbox[2], cb[2]), max(crop_bbox[3], cb[3])]
+
     # 1. Compute collision-aware padded bounding box
-    padded_bbox = list(bbox)
+    padded_bbox = list(crop_bbox)
+    # PDFCropper.crop_region() ALSO adds its own (larger) unconditional padding on
+    # top of padded_bbox (side_frac/top_frac/bottom_frac/caption_pad_pts, ~52pt on
+    # the bottom by default) -- collision detection below is pointless unless THAT
+    # padding is suppressed too on any edge where a collision was found, so this
+    # gets filled in per-edge and passed through to the crop_region() call.
+    crop_kwargs: dict = {}
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_no - 1]
         page_rect = page.rect
-        
-        # Get all text block rects on the page
+
+        # Get all text block rects on the page, PLUS every other kept figure on this
+        # page -- a scanned page has zero text rects (no text layer), so without the
+        # figure boxes here padding has nothing at all to guard against and can bleed
+        # straight into a neighboring figure a few points away.
         rects = []
         for block in page.get_text("blocks"):
             if block[6] == 0:  # Text block type
                 rects.append(fitz.Rect(block[0], block[1], block[2], block[3]))
-                
-        x0, y0, x1, y1 = bbox
+        for ob in (other_figure_bboxes or []):
+            rects.append(fitz.Rect(ob[0], ob[1], ob[2], ob[3]))
+
+        # Collision = the overlap covers >10% of whichever of the two rects is
+        # SMALLER (pad strip vs the other rect). Using only the OTHER rect's area
+        # (as this used to) works for small text words but is far too weak against
+        # a full-size neighboring FIGURE: a thin 10pt pad strip fully swallowed by a
+        # large figure can still be under 10% of that figure's total area, so a real
+        # collision would go undetected. min() catches both cases.
+        def _collides(pad_rect) -> bool:
+            return any((pad_rect & r).get_area() > 0.1 * min(r.get_area(), pad_rect.get_area())
+                       for r in rects)
+
+        x0, y0, x1, y1 = crop_bbox
         pad = 10.0
-        
+
         # Left edge check
         px0 = max(page_rect.x0, x0 - pad)
-        left_pad_rect = fitz.Rect(px0, y0, x0, y1)
-        left_collision = any((left_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        left_collision = _collides(fitz.Rect(px0, y0, x0, y1))
+
         # Right edge check
         px1 = min(page_rect.x1, x1 + pad)
-        right_pad_rect = fitz.Rect(x1, y0, px1, y1)
-        right_collision = any((right_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        right_collision = _collides(fitz.Rect(x1, y0, px1, y1))
+
         # Top edge check
         py0 = max(page_rect.y0, y0 - pad)
-        top_pad_rect = fitz.Rect(x0, py0, x1, y0)
-        top_collision = any((top_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        top_collision = _collides(fitz.Rect(x0, py0, x1, y0))
+
         # Bottom edge check
-        py1 = min(page_rect.x1, y1 + pad)
-        bottom_pad_rect = fitz.Rect(x0, y1, x1, py1)
-        bottom_collision = any((bottom_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        py1 = min(page_rect.y1, y1 + pad)  # was page_rect.x1 (width, not height) -- fixed
+        bottom_collision = _collides(fitz.Rect(x0, y1, x1, py1))
         
         final_pad_left = 0.0 if left_collision else pad
         final_pad_right = 0.0 if right_collision else pad
@@ -1337,7 +1494,18 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
                 "Page %s figure bbox collision detected. Capped padding (Left: %s, Right: %s, Top: %s, Bottom: %s)",
                 page_no, final_pad_left, final_pad_right, final_pad_top, final_pad_bottom
             )
-            
+            # crop_region()'s side padding is one symmetric value (no separate
+            # left/right knob) -- a collision on EITHER side suppresses both,
+            # trading a little missed side-callout margin for guaranteed no bleed.
+            if left_collision or right_collision:
+                crop_kwargs["side_frac"] = 0.0
+                crop_kwargs["side_pad_pts"] = 0.0
+            if top_collision:
+                crop_kwargs["top_frac"] = 0.0
+            if bottom_collision:
+                crop_kwargs["bottom_frac"] = 0.0
+                crop_kwargs["caption_pad_pts"] = 0.0
+
         padded_bbox = [
             max(page_rect.x0, x0 - final_pad_left),
             max(page_rect.y0, y0 - final_pad_top),
@@ -1347,22 +1515,49 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
         doc.close()
     except Exception as e:
         logger.warning("docling: pad calculation failed (page %s): %s", page_no, e)
-        padded_bbox = list(bbox)
+        padded_bbox = list(crop_bbox)
 
     b = _block(document_id, page_no, filename, "image_caption", "[figure]", bbox=bbox)
     try:
-        png = PDFCropper().crop_region(pdf_path, page_no, padded_bbox)
+        png = PDFCropper().crop_region(pdf_path, page_no, padded_bbox, **crop_kwargs)
     except Exception as e:
         logger.warning("docling: crop failed (page %s): %s", page_no, e)
         b["metadata"]["pending_vision"] = True
         return b
+
+    if defer:
+        # No gate decision yet -- can't drop furniture we haven't classified, so save
+        # the crop unconditionally (caption_deferred_figures cleans up any that turn
+        # out to be furniture once it finally runs the gate with real page context).
+        img_dir = os.path.join("uploads", "images", document_id)
+        os.makedirs(img_dir, exist_ok=True)
+        fname = f"{b['block_id']}.png"
+        with open(os.path.join(img_dir, fname), "wb") as f:
+            f.write(png)
+        b["metadata"]["image_path"] = f"/images/{document_id}/{fname}"
+        b["metadata"]["pending_vision"] = True
+        b["metadata"]["caption_deferred"] = True
+        b["metadata"]["defer_reason"] = defer_reason
+        # "large_document_lazy" figures are NEVER auto-resolved during ingestion
+        # (see caption_deferred_figures()) -- give them real, useful text now so
+        # they're still findable via normal search instead of sitting as a bare
+        # "[figure]" forever. view_page_image is how an agent actually looks at
+        # one on demand.
+        if defer_reason == "large_document_lazy":
+            b["text"] = ("[Figure present on this page -- not yet captioned "
+                         "(large document, captions load on demand). Use "
+                         "view_page_image on this page to see it.]")
+        return b
+
+    known_caption = (cap_info or {}).get("text") or ""
     # Gate FIRST (before writing the crop to disk) so dropped furniture leaves no file.
     try:
         from backend.extraction.vision_ocr import classify_caption_crop
-        res = classify_caption_crop(png, " ".join(page_lines)[:1000], config)
+        res = classify_caption_crop(png, " ".join(page_lines)[:1000], config,
+                                    known_caption=known_caption)
     except Exception as e:
         logger.warning("docling: caption failed (page %s): %s", page_no, e)
-        res = {"keep": True, "kind": "unknown", "caption": "[figure]"}
+        res = {"keep": True, "kind": "unknown", "caption": known_caption or "[figure]"}
         b["metadata"]["pending_vision"] = True
     if not res.get("keep"):
         return None  # logo/banner/text/decoration/blank — not a real figure
@@ -1374,5 +1569,85 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
     b["metadata"]["image_path"] = f"/images/{document_id}/{fname}"
     b["metadata"]["pending_vision"] = b["metadata"].get("pending_vision", False)
     b["metadata"]["figure_kind"] = res.get("kind")
-    b["text"] = res.get("caption") or "[figure]"
+    caption = res.get("caption") or "[figure]"
+    # Hard-guarantee the real caption text (exact figure number, part numbers) is in the
+    # searchable text even if the model paraphrased or dropped it -- this is the one piece
+    # we KNOW is correct (Docling's text layer), not a VLM guess.
+    if known_caption:
+        b["metadata"]["docling_caption"] = known_caption
+        if known_caption.lower() not in caption.lower():
+            caption = f"{known_caption} — {caption}"
+    b["text"] = caption
     return b
+
+
+def caption_deferred_figures(blocks: list[dict], config: dict) -> list[dict]:
+    """Resolve figures _figure_block() deferred (metadata.caption_deferred=True --
+    Docling saw no text on that page at crop-time, so the gate would've run blind).
+    Call this AFTER route_and_rescue() has produced the page's real OCR/VLM text, so
+    the semantic gate finally gets real context instead of guessing from pixels alone.
+    No-op (returns blocks unchanged) if nothing was deferred. Runs concurrently with
+    the same worker budget as the original captioning pass; a per-figure failure
+    leaves it pending (self-healing on a future re-run) rather than failing the batch.
+
+    Deliberately SKIPS defer_reason="large_document_lazy" figures -- those were
+    deferred as a permanent cost-control policy (size-based lazy captioning, see
+    extract_docling), not because they're waiting on OCR text that's now available.
+    They stay deferred until an agent looks at that page on demand (view_page_image)."""
+    pending = [b for b in blocks if b and b.get("type") == "image_caption"
+               and (b.get("metadata") or {}).get("caption_deferred")
+               and (b.get("metadata") or {}).get("defer_reason") != "large_document_lazy"]
+    if not pending:
+        return blocks
+
+    page_text: dict = defaultdict(list)
+    for b in blocks:
+        if b and b.get("type") in ("text", "heading"):
+            t = (b.get("text") or "").strip()
+            if t:
+                page_text[_block_page(b)].append(t)
+
+    def _resolve(b: dict) -> None:
+        page_no = _block_page(b)
+        img_path = (b.get("metadata") or {}).get("image_path") or ""
+        parts = img_path.split("/")
+        if len(parts) < 4:   # expects "/images/<document_id>/<fname>.png"
+            return
+        fs_path = os.path.join("uploads", "images", *parts[2:])
+        try:
+            with open(fs_path, "rb") as f:
+                png = f.read()
+        except Exception as e:
+            logger.warning("docling: deferred-caption image read failed (%s): %s", fs_path, e)
+            return
+        try:
+            from backend.extraction.vision_ocr import classify_caption_crop
+            res = classify_caption_crop(png, " ".join(page_text.get(page_no, []))[:1000], config)
+        except Exception as e:
+            logger.warning("docling: deferred caption failed (page %s): %s", page_no, e)
+            return
+        if not res.get("keep"):
+            b["_drop"] = True
+            try:
+                os.remove(fs_path)
+            except Exception:
+                pass
+            return
+        b["metadata"]["figure_kind"] = res.get("kind")
+        b["metadata"]["pending_vision"] = False
+        b["metadata"]["caption_deferred"] = False
+        b["text"] = res.get("caption") or "[figure]"
+
+    workers = max(1, int((config.get("vision") or {}).get("max_concurrency", 1) or 1))
+    if workers > 1 and len(pending) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        from backend.core import usage as _usage
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_usage.copy_ctx().run, _resolve, b) for b in pending]
+            for f in futs:
+                f.result()
+    else:
+        for b in pending:
+            _resolve(b)
+
+    return [b for b in blocks if not b.get("_drop")]

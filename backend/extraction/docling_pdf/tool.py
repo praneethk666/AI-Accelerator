@@ -13,7 +13,7 @@ state["page_profiles"] = [] to keep vision_enrichment from captioning them again
 import logging
 
 from backend.core.tool import Tool, PipelineState
-from backend.extraction.docling_pdf.docling_extract import extract_docling
+from backend.extraction.docling_pdf.docling_extract import extract_docling, caption_deferred_figures
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _new_report() -> dict:
     return {
         "pages": {"total": 0, "digital_kept": 0, "vlm_rescued": 0,
                   "paddle_fallback": 0, "rescued": []},
-        "tables": {"total": 0, "tableformer": 0, "pymupdf": 0, "vlm": 0},
+        "tables": {"total": 0, "tableformer": 0, "pymupdf": 0, "vlm": 0, "vlm_escalated": 0},
         "figures": {"total": 0, "proposed": 0, "docling": 0, "yolo_added": 0,
                     "dropped_by_gate": 0},
         "stitch": {"merged": 0, "arbitrations": 0},
@@ -68,6 +68,12 @@ class DoclingPDFTool(Tool):
             from backend.extraction.vision_ocr import route_and_rescue
             blocks = route_and_rescue(blocks, pdf_path, doc_id, config, report=report,
                                       document_type=state.get("document_type") or "")
+
+        # Resolve any figures extract_docling() deferred captioning for (scanned pages
+        # it had zero text for at crop-time) -- now that route_and_rescue has produced
+        # the real OCR/VLM text for those pages, the gate runs with real context instead
+        # of blind. No-op if nothing was deferred.
+        blocks = caption_deferred_figures(blocks, config)
 
         # Document-level reconciliation: stitch tables that span pages (the
         # continuation page's header isn't repeated), inheriting the lead header.

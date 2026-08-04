@@ -79,8 +79,15 @@ FIGURE_CLASSIFY_CAPTION = (
 )
 
 # Page context is appended to the caption call so the model can identify ambiguous crops.
-def figure_prompt(page_context: str = "") -> str:
+def figure_prompt(page_context: str = "", known_caption: str = "") -> str:
     p = FIGURE_CLASSIFY_CAPTION
+    if known_caption:
+        # This is the document's OWN caption text for THIS figure (Docling linked it via
+        # its text layer, not a guess) -- authoritative, unlike page_context below.
+        p += ("\n\nKNOWN CAPTION FOR THIS EXACT FIGURE (from the document's text layer, "
+              "verbatim, authoritative — start your caption with this text unless it "
+              "obviously describes something else, then extend it with what you see):\n"
+              + known_caption[:500])
     if page_context:
         p += "\n\nPAGE CONTEXT (for identification only):\n" + page_context[:1000]
     return p

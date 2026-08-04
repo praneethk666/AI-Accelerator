@@ -367,18 +367,24 @@ _DROP_KINDS = {"logo", "banner", "header_footer", "decoration", "rule_line",
                "text", "blank"}
 
 
-def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict) -> dict:
+def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict,
+                          known_caption: str = "") -> dict:
     """SEMANTIC FIGURE GATE: one VLM call both classifies a crop (photo / diagram /
     schematic / circuit / cad_drawing / chart / … vs logo / banner / text / blank) and
     captions it. Returns {keep, kind, caption}. This replaces geometry thresholds for
     deciding what's a real figure — the model can tell a logo from a wide schematic, so
     we no longer wrongly drop large-format diagrams or wrongly keep logos/banners.
 
+    known_caption (optional): the document's OWN caption text for this exact figure,
+    when Docling linked one -- passed as ground truth so the model doesn't have to
+    re-read it off the pixels (see _figure_block/_picture_caption_info).
+
     Robust to parse failures: if the model doesn't return clean JSON, we keep the crop
     and use the raw reply as the caption (never silently lose content)."""
     from backend.vision.block_builder import _extract_json
     cfg = config.get("vision_ocr") or {}
-    raw = describe_image(png_bytes, prompts.figure_prompt(page_context), {"vision": cfg})
+    raw = describe_image(png_bytes, prompts.figure_prompt(page_context, known_caption),
+                         {"vision": cfg})
     data = _extract_json(raw)
     if not isinstance(data, dict):
         # Couldn't parse structure — don't lose the figure; keep with the raw caption.

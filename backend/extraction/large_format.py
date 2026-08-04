@@ -5,20 +5,53 @@ Problem: a VLM downsamples a whole large sheet to ~1.5-2k px, so tiny reference
 designators (R12, C4, U3), net labels and title-block text turn to mush. Sending the
 page whole therefore loses exactly the detail these documents are about.
 
-Fix: render the page at high DPI and split it into OVERLAPPING tiles small enough to
-stay legible, transcribe each tile at full detail, then merge + deduplicate. The tile
-COUNT falls out of the actual page size vs the VLM's legible resolution — so a normal
-A4 is 1 tile (no change) and an E-size sheet becomes e.g. a 2x3 grid automatically.
-No per-document constants, no "CAD = aspect > X" hardcoding.
+Two strategies (extraction.large_format.strategy):
+
+  grid (transcribe_large_page / transcribe_large_page_blocks) — render the page at
+    high DPI and split it into OVERLAPPING tiles small enough to stay legible,
+    transcribe each tile at full detail, then merge + deduplicate. Tile COUNT falls
+    out of the actual page size vs the VLM's legible resolution — a normal A4 is 1
+    tile, an E-size sheet becomes e.g. a 2x3 grid automatically. Simple and robust,
+    but sends every tile through the VLM regardless of content density, and a tile
+    boundary can cut a component/table in half.
+
+  agentic (transcribe_large_page_regions), DEFAULT — locate distinct regions first
+    (one cheap coarse-resolution call: locate_regions), then zoom into just each
+    real region with a targeted high-res crop (transcribe_regions_blocks), instead
+    of mechanically slicing the whole sheet into a fixed grid. "Coarse-to-fine" /
+    "localized zoom", the real 2025-2026 pattern (Zoom-Refine, ZoomEye). Falls back
+    to grid tiling if the locate pass finds nothing (never worse than before).
+    Live-tested finding (4-Aug): bbox GROUNDING reliability varies a lot by model —
+    a free-tier vision model can identify regions well but return bboxes that mix
+    normalized and raw-pixel values in the same array; see locate_vision below.
 
 Config (extraction.large_format):
-  enabled    : master switch (default True)
-  dpi        : render DPI for tiling (default 200)
-  vlm_max_px : target max tile edge in px the VLM reads cleanly (default 2600 — keeps
-               A4/Letter at 1 tile, tiles only genuinely oversized sheets A3/D/E)
-  overlap    : fractional tile overlap so components on a seam aren't cut (default 0.12)
-  merge      : "llm" (dedup-merge via the text LLM) or "concat" (default "llm")
-  max_tiles  : safety cap on tiles per page (default 24)
+  enabled       : master switch (default True)
+  strategy      : "agentic" (default) or "grid"
+  locate_dpi    : coarse locate-pass render DPI, agentic only (default 100)
+  locate_max_px : cap so even a huge sheet fits the locate call in ONE image,
+                  agentic only (default 2000)
+  locate_vision : optional vision config dict used ONLY for the one coarse locate
+                  call per oversized page (agentic only) — falls back to the
+                  general vision_ocr config if unset. Split out because this is a
+                  bbox-GROUNDING task, and empirically not every vision model that
+                  transcribes content well also grounds boxes reliably; this lets
+                  a customer point the (cheap, rare) locate call at a stronger
+                  model while the many per-region zoom/detail calls keep using
+                  whatever provider is otherwise configured.
+  dpi           : render DPI for the zoom-pass crops (agentic) / tiling (grid)
+                  (default 200)
+  vlm_max_px    : grid only — target max tile edge in px the VLM reads cleanly
+                  (default 2600 — keeps A4/Letter at 1 tile, tiles only genuinely
+                  oversized sheets A3/D/E)
+  overlap       : grid only — fractional tile overlap so components on a seam
+                  aren't cut (default 0.12)
+  merge         : grid only — "llm" (dedup-merge via the text LLM) or "concat"
+                  (default "llm")
+  max_tiles     : grid only — safety cap on tiles per page (default 24)
+
+No per-document constants, no "CAD = aspect > X" hardcoding — every threshold here
+is a config value so behavior is tunable per customer/document type, not baked in.
 """
 from __future__ import annotations
 
@@ -133,13 +166,28 @@ def transcribe_large_page(page, config: dict, prompt: str | None = None) -> str:
     return _merge(parts, config)
 
 def _remap_bbox(bbox, crop_box, img_size):
-    """Convert a bbox normalized to a tile crop into full-page normalized coords."""
+    """Convert a bbox normalized to a tile/region crop into full-page normalized
+    coords. Returns None (never a garbage value) if `bbox` isn't a clean 0.0-1.0
+    normalized box to begin with.
+
+    Real bug found live, 3-Aug: the model is asked for 0.0-1.0 normalized
+    coordinates but doesn't always comply -- it sometimes returns raw PIXEL
+    coordinates for a tile instead. Un-validated, those get remapped as if they
+    WERE normalized (multiplied by the tile's width/height fraction and divided
+    by the full page size), producing nonsense values like 279.12 or 373.30
+    instead of a 0-1 fraction -- silently corrupting every downstream consumer of
+    that bbox (citations, a future zoom-into-region tool, anything spatial)."""
     if not bbox or len(bbox) != 4:
-        return bbox
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return None
+    if not all(0.0 <= v <= 1.0 for v in (x1, y1, x2, y2)) or x1 >= x2 or y1 >= y2:
+        return None
     l, t, rgt, bot = crop_box
     W, H = img_size
     tw, th = (rgt - l), (bot - t)
-    x1, y1, x2, y2 = bbox
     return [
         (l + x1 * tw) / W,
         (t + y1 * th) / H,
@@ -204,3 +252,172 @@ def transcribe_large_page_blocks(page, config: dict, prompt: str) -> list[dict]:
             all_blocks.append(vb)
 
     return all_blocks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENTIC alternative to blind grid tiling above: locate distinct regions first
+# (one cheap coarse-resolution call), then zoom into each with a targeted
+# high-res crop -- instead of mechanically slicing the whole sheet into a fixed
+# grid regardless of content density. Real 2025-2026 research pattern
+# ("coarse-to-fine" / "localized zoom": Zoom-Refine, ZoomEye) applied here after
+# a live test found the blind-tiling path both slow (~7min on one real E-size
+# sheet) AND producing corrupted bboxes on a meaningful fraction of tiles.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _region_crop_box(bbox_norm: list[float], img_size: tuple[int, int],
+                     pad_frac: float = 0.03) -> tuple[int, int, int, int]:
+    """A located region's normalized bbox -> a pixel crop box in the full-res
+    render, with a small margin so content right at the located edge isn't clipped."""
+    W, H = img_size
+    x1, y1, x2, y2 = bbox_norm
+    bw, bh = (x2 - x1) * W, (y2 - y1) * H
+    padx, pady = bw * pad_frac, bh * pad_frac
+    l = max(0, int(x1 * W - padx))
+    t = max(0, int(y1 * H - pady))
+    rgt = min(W, int(x2 * W + padx))
+    bot = min(H, int(y2 * H + pady))
+    return l, t, rgt, bot
+
+
+def locate_regions(page, config: dict) -> list[dict]:
+    """Coarse pass: locate distinct regions on a large-format sheet (bbox + type +
+    label + one-line description) WITHOUT transcribing their contents in detail --
+    one call, at a resolution low enough that even a huge sheet fits in one image,
+    since layout doesn't need fine-print legibility. Returns [] on any failure
+    (call error, unparseable reply, or a genuinely region-less sheet) -- the
+    caller falls back to blind tiling in that case, never worse than before."""
+    c = _cfg(config)
+    locate_dpi = int(c.get("locate_dpi", 100))
+    locate_max_px = int(c.get("locate_max_px", 2000))
+    # Live-tested 4-Aug on a real E-size sheet: the CAD-shadowed free-tier vision
+    # model (NVIDIA nemotron-nano-12b-v2-vl) returned bbox arrays that MIX
+    # normalized (0.72) and raw-pixel (992, 215) values in the SAME array for this
+    # coarse locate task -- every region got correctly rejected by the bbox
+    # validation below, so locate_regions() always came back empty and every
+    # oversized page silently fell back to blind tiling (no worse than before, but
+    # none of the agentic benefit). gpt-4o-mini, tested on the identical image, got
+    # 11/11 valid normalized boxes. `locate_vision` lets this ONE coarse call per
+    # oversized page use a more reliable model while the many per-region zoom/detail
+    # calls (transcribe_regions_blocks) stay on the cheaper/free CAD vision config --
+    # falls back to the general vision_ocr config if not set, so this is opt-in.
+    locate_vision = c.get("locate_vision")
+    vcfg = {"vision": locate_vision or config.get("vision_ocr") or {}}
+
+    w_px = page.rect.width * locate_dpi / 72.0
+    h_px = page.rect.height * locate_dpi / 72.0
+    scale = min(1.0, locate_max_px / max(w_px, h_px, 1.0))
+    dpi = max(36, int(locate_dpi * scale))
+
+    try:
+        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"),
+                             prompts.LOCATE_REGIONS, vcfg).strip()
+    except Exception as e:
+        logger.warning("large_format: region locate call failed (%s)", e)
+        return []
+
+    from backend.vision.block_builder import _extract_json
+    data = _extract_json(raw)
+    items = data if isinstance(data, list) else (
+        data.get("regions") if isinstance(data, dict) and isinstance(data.get("regions"), list)
+        else None)
+    if not items:
+        return []
+
+    regions: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        bbox = it.get("bbox")
+        if not bbox or len(bbox) != 4:
+            continue
+        try:
+            x1, y1, x2, y2 = (float(v) for v in bbox)
+        except (TypeError, ValueError):
+            continue
+        if not all(0.0 <= v <= 1.0 for v in (x1, y1, x2, y2)) or x1 >= x2 or y1 >= y2:
+            continue
+        regions.append({
+            "type": it.get("type") or "view",
+            "label": it.get("label") or f"region_{len(regions) + 1}",
+            "description": (it.get("description") or "").strip(),
+            "bbox": [x1, y1, x2, y2],
+        })
+    return regions
+
+
+def transcribe_regions_blocks(page, config: dict, regions: list[dict],
+                              detail_prompt: str) -> list[dict]:
+    """Zoom pass: for each located region, crop it from a FULL-resolution render
+    and run the detailed extraction prompt on just that crop. Returns the same raw
+    vb-dict shape transcribe_large_page_blocks does (bbox already remapped to
+    full-page normalized coords) -- a drop-in alternative at the call site. Each
+    block's metadata also gets region_label/region_description so a block can
+    always be traced back to which located region produced it."""
+    c = _cfg(config)
+    dpi = int(c.get("dpi", 200))
+    vcfg = {"vision": config.get("vision_ocr") or {}}
+
+    img = _render(page, dpi)
+    W, H = img.size
+
+    all_blocks: list[dict] = []
+    for region in regions:
+        l, t, rgt, bot = _region_crop_box(region["bbox"], (W, H))
+        if rgt <= l or bot <= t:
+            continue
+        buf = io.BytesIO()
+        img.crop((l, t, rgt, bot)).save(buf, format="PNG")
+        try:
+            raw = describe_image(buf.getvalue(), detail_prompt, vcfg).strip()
+        except Exception as e:
+            logger.warning("large_format: region '%s' failed (%s)", region.get("label"), e)
+            continue
+
+        from backend.vision.block_builder import _extract_json
+        data = _extract_json(raw)
+        items = data if isinstance(data, list) else (
+            data.get("blocks") if isinstance(data, dict) and isinstance(data.get("blocks"), list)
+            else None)
+        if not items:
+            continue
+        for vb in items:
+            if not isinstance(vb, dict):
+                continue
+            vb["bbox"] = _remap_bbox(vb.get("bbox"), (l, t, rgt, bot), (W, H))
+            md = vb.get("metadata") if isinstance(vb.get("metadata"), dict) else {}
+            md["region_label"] = region.get("label")
+            md["region_description"] = region.get("description")
+            vb["metadata"] = md
+            all_blocks.append(vb)
+
+    return all_blocks
+
+
+def transcribe_large_page_regions(page, config: dict, detail_prompt: str) -> list[dict]:
+    """Agentic alternative to transcribe_large_page_blocks (blind grid tiling):
+    locate distinct regions first (locate_regions), then zoom into each with the
+    detailed extraction prompt (transcribe_regions_blocks) -- instead of
+    mechanically slicing the whole sheet into a fixed grid regardless of content
+    density. Falls back to blind tiling if the locate pass finds nothing."""
+    regions = locate_regions(page, config)
+    if not regions:
+        logger.info("large_format: region locate found nothing on this page, "
+                    "falling back to blind tiling")
+        return transcribe_large_page_blocks(page, config, detail_prompt)
+
+    logger.info("large_format: located %d region(s), zooming into each", len(regions))
+    blocks = transcribe_regions_blocks(page, config, regions, detail_prompt)
+
+    # Region index: one searchable block summarizing EVERY located region with its
+    # own bbox + description, stored alongside the zoomed-in content blocks -- so a
+    # later query (or a future "zoom into region X" agent tool) can look up what's
+    # on this page and where, without re-running the locate pass.
+    index_lines = [f"- [{r['label']}] ({r['type']}) {r['description']}" for r in regions]
+    blocks.append({
+        "type": "text",
+        "text": "Regions on this sheet:\n" + "\n".join(index_lines),
+        "bbox": [0.0, 0.0, 1.0, 1.0],
+        "confidence": 0.9,
+        "metadata": {"kind": "region_index", "regions": regions},
+    })
+    return blocks

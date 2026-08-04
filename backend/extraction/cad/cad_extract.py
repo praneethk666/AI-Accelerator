@@ -11,9 +11,10 @@ ANSI-D sheets, 1000+ page schematic sets):
 
   1. LARGE-FORMAT TILING. An A2/A3/E-size sheet sent whole is downsampled until the tiny
      dimensions, part numbers and reference designators are illegible. For oversized
-     pages we render high-DPI and TILE (backend.extraction.large_format), transcribe
-     each tile, and merge — so detail survives. Normal-size pages use the single-shot
-     region-JSON prompt (precise per-region boxes + table_data).
+     pages we render high-DPI and either locate real regions then zoom into each
+     (agentic, default) or blind-grid-tile (backend.extraction.large_format;
+     extraction.large_format.strategy) — so detail survives. Normal-size pages use the
+     single-shot region-JSON prompt (precise per-region boxes + table_data).
 
   2. FAULT TOLERANCE + COST CAP. One unreadable/garbled page must NOT kill a 1000-page
      document, so every page is wrapped: on any failure we log and skip (or fall back to
@@ -182,9 +183,18 @@ class CADExtractionTool:
                 try:
                     page_class = classify_page(profile_page(page), document_type)
                     if should_tile(page, page_class, run_config):
-                        # Oversized sheet: tile so small text/designators stay legible.
-                        from backend.extraction.large_format import transcribe_large_page_blocks
-                        tile_vbs = transcribe_large_page_blocks(page, run_config, prompt)
+                        # Oversized sheet: locate real regions first, then zoom into
+                        # each (agentic) -- or blind grid tiling if configured back to
+                        # it. Live-tested 3-Aug: blind tiling took ~7min on one real
+                        # E-size sheet and produced corrupted bboxes on a meaningful
+                        # fraction of tiles (see large_format.py::_remap_bbox).
+                        strategy = ((run_config.get("extraction") or {}).get("large_format") or {}).get("strategy", "agentic")
+                        if strategy == "agentic":
+                            from backend.extraction.large_format import transcribe_large_page_regions
+                            tile_vbs = transcribe_large_page_regions(page, run_config, prompt)
+                        else:
+                            from backend.extraction.large_format import transcribe_large_page_blocks
+                            tile_vbs = transcribe_large_page_blocks(page, run_config, prompt)
                         page_blocks = [b for b in (_vb_to_block(vb, document_id, pg, filename) for vb in tile_vbs) if b]
                     else:
                         # Normal sheet: single-shot region-JSON extraction (precise boxes).

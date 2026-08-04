@@ -362,21 +362,64 @@ extraction:
     default:
       table_source: auto
   # Large-format / diagram pages (CAD, circuit schematics, oversized engineering sheets).
-  # Tiles high-DPI renders to preserve legible component designators.
   large_format:
     enabled: true
-    dpi: 200
-    vlm_max_px: 2600
-    overlap: 0.12
-    merge: llm                # llm = dedup-merge tiles via LLM; concat = join
-    max_tiles: 24
+    # ADDED 3-Aug: real live test found blind grid tiling slow (~7min on one real
+    # E-size sheet, ~18 tiles all sent through the VLM regardless of content) AND
+    # producing corrupted bboxes on a meaningful fraction of tiles (model sometimes
+    # returns pixel coords instead of 0-1 normalized, silently multiplied into
+    # nonsense by _remap_bbox -- now validated/rejected there, but the underlying
+    # blind-tiling waste remains). agentic = locate real regions first (one cheap
+    # coarse-resolution call), then zoom into each with a targeted high-res crop --
+    # real 2025-2026 "coarse-to-fine"/"localized zoom" pattern (Zoom-Refine, ZoomEye)
+    # applied here instead of mechanically slicing the whole sheet into a fixed grid.
+    # grid = the original blind-tiling behavior, kept as a fallback.
+    strategy: agentic         # agentic | grid
+    locate_dpi: 100           # coarse locate-pass render DPI (fine print doesn't
+                              # need to be legible for this step, just layout)
+    locate_max_px: 2000       # cap so even a huge sheet fits the locate call in ONE image
+    # ADDED 4-Aug, live-tested: the CAD-shadowed free-tier vision model (NVIDIA
+    # nemotron-nano-12b-v2-vl, see extraction.cad.vision below) returned bbox
+    # arrays mixing normalized (0.72) and raw-pixel (992, 215) values in the SAME
+    # array for this coarse locate task on a real E-size sheet -- every region got
+    # correctly rejected by validation, so locate always came back empty and every
+    # oversized page silently fell back to blind tiling (safe, but zero agentic
+    # benefit). gpt-4o-mini, tested on the IDENTICAL render, got 11/11 valid
+    # normalized boxes. This is ONE call per oversized page (not per-region), and
+    # gpt-4o-mini is already the paid default `vision:` model used everywhere else
+    # in this pipeline outside the CAD override -- negligible added cost for a
+    # locate step that actually works. The many per-region zoom/detail calls
+    # (transcribe_regions_blocks) stay on the free NVIDIA tier, already validated
+    # to transcribe real content well.
+    locate_vision:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+      timeout_s: 60
+      dpi: 200
+    dpi: 200                  # high-res render DPI for both the zoom-pass crops (agentic)
+                              # and the tile crops (grid)
+    vlm_max_px: 2600          # grid strategy only: max tile edge in px
+    overlap: 0.12             # grid strategy only: fractional tile overlap
+    merge: llm                # grid strategy only: llm = dedup-merge tiles; concat = join
+    max_tiles: 24             # grid strategy only: safety cap on tiles per page
   cad:
     max_pages: 0              # cap VLM pages per CAD/circuit doc (0 = unlimited)
     vision:
-      provider: google
-      model: gemini-3.5-flash
-      api_key: ${GOOGLE_API_KEY}
-      min_interval_s: 4.0      # Pacing to stay within AI Studio free-tier RPM limits
+      # SWITCHED to NVIDIA NIM (3-Aug): Gemini 3.5 Flash's free tier is only 20
+      # requests/DAY (checked live) -- not viable for CAD volume, where a single
+      # oversized sheet alone can need up to max_tiles=24 calls. NVIDIA's free
+      # tier (email signup only, no card, ~40 req/min, confirmed live) handled
+      # the real redacted spindle-assembly parts table correctly in ~3s. Not yet
+      # re-verified on the SPECIFIC figure-vs-furniture classify gate task this
+      # project once found nemotron-nano-12b-v2-vl weak on (a different task
+      # than table transcription) -- re-check that specifically before fully
+      # trusting kind/keep decisions from this model.
+      provider: openai
+      model: nvidia/nemotron-nano-12b-v2-vl
+      base_url: https://integrate.api.nvidia.com/v1
+      api_key: ${NVIDIA_API_KEY}
+      min_interval_s: 1.6       # ~40 req/min free-tier ceiling -> 60/40=1.5s, +margin
       max_retries: 3
       timeout_s: 150
       dpi: 200
@@ -385,16 +428,24 @@ extraction:
 # Provider can be "openai", "local" (SentenceTransformers), or "jina" (cloud API).
 # Dense dimension, models, and rerankers swap automatically via Settings UI.
 embeddings:
-  dense_provider: openai                # openai | local | jina
-  dense_model: text-embedding-3-small   # OpenAI text-embedding-3-small, BAAI/bge-m3, or jina-embeddings-v3
+  # SWITCHED to local/free (3-Aug): user doesn't want to burn paid OpenAI/Jina
+  # credits. Live-tested both before switching -- BAAI/bge-m3's native dim is
+  # 1024, exactly matching the dense_dim below (no Qdrant schema change needed,
+  # and the DB was empty at switch time so nothing needed re-embedding anyway).
+  # bge-reranker-v2-m3 gave the SAME relative ranking as paid Jina did minutes
+  # earlier on the real "LUB PUMP UNIT" query. Real tradeoff: ~1-3s/call on CPU
+  # (no GPU here) vs the hosted APIs' latency -- adds up across a big document's
+  # chunk count, worth watching on the 1147-page-scale documents.
+  dense_provider: local                 # openai | local | jina
+  dense_model: BAAI/bge-m3              # OpenAI text-embedding-3-small, BAAI/bge-m3, or jina-embeddings-v3
   dense_api_key: ${OPENAI_API_KEY}
-  dense_dim: 1024                       # Matryoshka output dimension for text-embedding-3-small
+  dense_dim: 1024                       # bge-m3's native dim -- matches, no schema change
   dense_document_prefix: ''             # prefix required for some models (e.g. nomic)
   dense_query_prefix: ''
   dense_batch_size: 16
   sparse_model: Qdrant/bm25             # keyword matching for hybrid search
-  reranker_provider: jina               # jina | local
-  reranker_model: jina-reranker-v2-base-multilingual # jina-reranker-v2-base-multilingual or BAAI/bge-reranker-v2-m3
+  reranker_provider: local              # jina | local
+  reranker_model: BAAI/bge-reranker-v2-m3 # jina-reranker-v2-base-multilingual or BAAI/bge-reranker-v2-m3
   reranker_api_key: ${JINA_API_KEY}
   chunking_model: minishlab/potion-base-32M # SemanticChunker split bounds model
 

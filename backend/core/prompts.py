@@ -113,6 +113,42 @@ SCHEMATIC_TILE = (
     "tile is empty drawing space, return an empty response."
 )
 
+# --- COARSE region locator for large-format sheets (agentic zoom, not blind tiling) ---
+# The alternative to exhaustive grid tiling (SCHEMATIC_TILE above): one cheap call on a
+# low-res render to find WHERE the real content is, then a targeted high-res crop per
+# region (see backend/extraction/large_format.py::transcribe_large_page_regions). Real
+# 2025-2026 research pattern -- "coarse-to-fine" / "localized zoom" (Zoom-Refine,
+# ZoomEye) -- locate first, zoom only where it matters, instead of mechanically slicing
+# the whole sheet into a fixed grid regardless of content density.
+LOCATE_REGIONS = (
+    "You are looking at a technical engineering drawing sheet (CAD assembly, circuit "
+    "diagram, or similar large-format print). Identify the DISTINCT REGIONS on this "
+    "sheet — do NOT transcribe their contents in detail yet, just locate and briefly "
+    "describe each one. This is a coarse pass; fine print does not need to be legible "
+    "to you right now.\n\n"
+    "For each region:\n"
+    '- "type": one of "table" (title block, parts list, revision table, connector '
+    'pinout, etc.) or "view" (a drawing/section/detail view, schematic diagram) or '
+    '"text" (notes/annotations block).\n'
+    '- "label": a short slug identifying it, e.g. "title_block", "parts_list_main", '
+    '"view_A-A", "notes". If a sheet has two separate tables with the same kind of '
+    'content, give them DISTINCT labels (e.g. "parts_list_main", "parts_list_sub") — '
+    "never merge two physically separate regions into one entry.\n"
+    '- "description": ONE short sentence describing what this region visually '
+    'contains (e.g. "Parts table with item numbers and part numbers, ~15 rows" or '
+    '"Section view A-A showing the spindle bore and bearing seats").\n'
+    '- "bbox": [x1, y1, x2, y2] normalized 0.0-1.0, tightly enclosing JUST this '
+    "region — err toward slightly wider rather than clipping content.\n\n"
+    "Identify EVERY distinct region on the sheet, even small ones (a small parts "
+    "table or a single detail view still counts). A region must be visually "
+    "separable — its own border/grid, or a clearly distinct area of the sheet — "
+    "don't split one continuous view into multiple regions, and don't invent a "
+    "region that isn't really there.\n\n"
+    "Return a JSON array only. No markdown fences. No text outside the array.\n"
+    '[{"type": "table", "label": "title_block", "description": "...", '
+    '"bbox": [0.7, 0.0, 1.0, 0.15]}, ...]'
+)
+
 # Merge the per-tile transcriptions of one drawing into a single deduplicated summary.
 SCHEMATIC_MERGE = (
     "Below are transcriptions of overlapping TILES of ONE engineering drawing, in "

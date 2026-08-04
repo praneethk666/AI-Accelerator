@@ -4,9 +4,19 @@ Runs LLM-generated Python/Pandas code against real Excel DataFrames in a
 sandboxed subprocess with timeout protection.
 
 Known limits:
-- Timeout orphans worker processes; they are reaped by the OS. Acceptable for v1.
-- Fixed limits: 5s timeout, 20 rows, 4000 chars - not exposed to the agent.
-- Builtin whitelist is defense-in-depth, not a hard sandbox.
+- Fixed limits: 15s timeout, 20 rows, 4000 chars - not exposed to the agent.
+- Two layers of sandboxing: a __builtins__ whitelist (blocks calling banned
+  names like import/eval/exec/open) PLUS a static AST check that rejects any
+  dunder attribute/name access (blocks the classic __class__.__bases__[0]
+  .__subclasses__() escape, which reaches dangerous classes like
+  subprocess.Popen without calling a single blocked builtin -- confirmed live,
+  4-Aug, executing successfully before the AST check existed). Together these
+  close every escape found so far, but this is still defense-in-depth, not a
+  proven-complete sandbox against all possible CPython escapes.
+- On timeout the worker OS process is terminated (escalating to kill() if
+  needed) -- fixed 4-Aug after live-confirming the previous ProcessPoolExecutor
+  version's "reaped by the OS" claim was false: a `while True: pass` worker
+  kept running at ~100% CPU for 6+ minutes after its reported timeout.
 - No in-worker memory cap; OOM kills the worker and returns a generic error.
 - Cold start ~200-500ms per call (process spawn + module imports). By design.
 """
@@ -25,8 +35,8 @@ from dotenv import load_dotenv
 
 # Load environment variables (.env) for DB connection string
 load_dotenv()
+import multiprocessing as mp
 from typing import Any, Optional
-from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from contextlib import redirect_stdout, redirect_stderr
 
 import pandas as pd
@@ -67,12 +77,47 @@ def build_namespace(dataframes: dict) -> dict:
     return ns
 
 
+def _find_dunder_access(code: str) -> str | None:
+    """Static AST check: reject any code referencing a dunder name/attribute
+    (__class__, __bases__, __subclasses__, __globals__, __import__, etc).
+
+    REAL, EXPLOITABLE vulnerability found live (4-Aug): the __builtins__
+    whitelist below blocks calling banned functions (import, eval, exec, open,
+    getattr, __import__ as a NAME) -- but attribute access is not gated by
+    __builtins__ at all, so
+        ().__class__.__bases__[0].__subclasses__()
+    walks the live class hierarchy and finds subprocess.Popen (confirmed: this
+    exact payload executed successfully and returned "Popen" before this check
+    existed) -- one step from arbitrary shell command execution AS THE BACKEND
+    PROCESS, with zero blocked builtins involved. This is the well-known,
+    textbook reason "restrict __builtins__" is not a real Python sandbox on its
+    own; blocking the dunder-attribute vector is the standard mitigation.
+    Legitimate pandas/numpy data-analysis code never needs to reference a
+    dunder, so this has no real false-positive cost."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None  # let compile() raise the real, informative syntax error
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
+            return f"blocked: dunder attribute access '.{node.attr}' is not allowed"
+        if isinstance(node, ast.Name) and node.id.startswith("__") and node.id.endswith("__"):
+            return f"blocked: dunder name '{node.id}' is not allowed"
+    return None
+
+
 def _execute_in_worker(code: str, dataframes: dict) -> dict:
     """Core executor running inside a separate process worker.
 
     DataFrames are unpickled automatically by the multiprocessing engine.
     """
     import ast
+
+    dunder_err = _find_dunder_access(code)
+    if dunder_err:
+        return {"success": False, "error": dunder_err, "stdout": "", "stderr": ""}
+
     ns = build_namespace(dataframes)
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
@@ -139,29 +184,81 @@ def _execute_in_worker(code: str, dataframes: dict) -> dict:
 
 # ── CODE EXECUTION WITH TIMEOUT ──────────────────────────────────────────────
 
-def run_code(code: str, dataframes: dict, timeout_sec: int = _TIMEOUT_SEC) -> dict:
-    """Run code in a separate worker process with a hard timeout.
-
-    Uses explicit executor lifecycle instead of a `with` block because
-    ProcessPoolExecutor.__exit__ calls shutdown(wait=True), which blocks
-    forever if the worker is stuck in an infinite loop.
-    """
-    executor = ProcessPoolExecutor(max_workers=1)
+def _worker_entry(conn, code: str, dataframes: dict) -> None:
+    """Process entry point (must be module-level to be picklable under the
+    'spawn' start method). Runs the code and sends the result back over conn."""
     try:
-        future = executor.submit(_execute_in_worker, code, dataframes)
-        try:
-            return future.result(timeout=timeout_sec)
-        except TimeoutError:
-            return {
-                "success": False,
-                "error": f"TimeoutError: Execution timed out after {timeout_sec} seconds.",
-                "stdout": "",
-                "stderr": "",
-            }
+        result = _execute_in_worker(code, dataframes)
+        conn.send(result)
+    except Exception:
+        pass  # parent times this out / treats a silent worker as a crash
     finally:
-        # wait=False returns immediately; orphaned worker is left to the OS.
-        # cancel_futures=True prevents queued (but not running) tasks from starting.
-        executor.shutdown(wait=False, cancel_futures=True)
+        conn.close()
+
+
+_TIMED_OUT = object()  # sentinel, distinguishes "no result yet" from a real None result
+
+
+def run_code(code: str, dataframes: dict, timeout_sec: int = _TIMEOUT_SEC) -> dict:
+    """Run code in a dedicated worker process with a hard timeout that actually
+    KILLS the OS process on timeout.
+
+    REAL, LIVE-CONFIRMED BUG (4-Aug) in the previous ProcessPoolExecutor-based
+    version: its own docstring claimed a timed-out worker is "reaped by the
+    OS" -- false. A `while True: pass` worker was directly observed still
+    running at ~100% CPU for 6+ minutes after its 2-second timeout had already
+    been reported to the caller as a clean TimeoutError, with no automatic
+    cleanup; it only stopped when manually killed. Every timeout on this path
+    permanently leaked a CPU-spinning process, and code that runs arbitrary
+    LLM-generated content WILL trigger timeouts sometimes -- a real, easily
+    triggered resource-exhaustion risk, not a corner case.
+
+    Switched from ProcessPoolExecutor (which offered no clean way to reach the
+    real OS process behind a timed-out Future) to a raw multiprocessing.Process
+    -- this call site never benefited from pooling anyway (one process per
+    call, pool shut down immediately after), so this is strictly simpler too.
+    On timeout: terminate(), then escalate to kill() if it's still alive after
+    a grace period.
+    """
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_worker_entry, args=(child_conn, code, dataframes), daemon=True)
+    proc.start()
+    child_conn.close()  # parent only reads
+
+    try:
+        if parent_conn.poll(timeout_sec):
+            try:
+                result = parent_conn.recv()
+            except (EOFError, OSError):
+                result = None  # worker crashed/was killed mid-send
+        else:
+            result = _TIMED_OUT
+    finally:
+        proc.join(timeout=1)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=2)
+        parent_conn.close()
+
+    if result is _TIMED_OUT:
+        return {
+            "success": False,
+            "error": f"TimeoutError: Execution timed out after {timeout_sec} seconds.",
+            "stdout": "",
+            "stderr": "",
+        }
+    if result is None:
+        return {
+            "success": False,
+            "error": "Worker process ended without a result (crashed).",
+            "stdout": "",
+            "stderr": "",
+        }
+    return result
 
 
 # ── LRU CACHE (keyed by resolved file path) ──────────────────────────────────

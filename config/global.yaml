@@ -423,6 +423,25 @@ extraction:
       max_retries: 3
       timeout_s: 150
       dpi: 200
+    # ADDED 4-Aug, live-tested: on a real dense E-size sheet, the free vision
+    # model above produced specific, PLAUSIBLE-LOOKING but FABRICATED title-block
+    # values (invented names like "M.Takeshita") sitting right next to genuinely
+    # correct part numbers on the same crop -- confident hallucination, not just
+    # missing data. Tested candidates: gpt-4o (paid, flagship) outright REFUSED
+    # one of the two test crops; meta/llama-3.2-90b-vision-instruct (NVIDIA,
+    # free) also refused it. gpt-4o-mini didn't refuse and didn't hallucinate,
+    # just extracted less. No single model tested is both complete AND reliable
+    # -- so instead of picking one to trust blindly, verify_vision runs a SECOND,
+    # independent model over the same crop and any table cell it doesn't
+    # corroborate gets flagged "[unverified: ...]" rather than presented as fact
+    # (see large_format.py::_cross_check_table_cells). One extra paid call per
+    # region/page that actually has a table -- unset this key to disable.
+    verify_vision:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+      timeout_s: 60
+      dpi: 200
 
 # ── Embeddings & Reranker ─────────────────────────────────────────────────────
 # Provider can be "openai", "local" (SentenceTransformers), or "jina" (cloud API).

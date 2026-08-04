@@ -11,6 +11,10 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from backend.extraction.large_format import (
+    _cross_check_table_cells,
+    _dedup_blocks,
+    _dedup_table_rows,
+    _is_checkable_value,
     _region_crop_box,
     _remap_bbox,
     locate_regions,
@@ -247,6 +251,165 @@ def test_transcribe_large_page_regions_falls_back_to_blind_tiling_when_no_region
         blocks = transcribe_large_page_regions(page, {}, "detail prompt")
     mock_fallback.assert_called_once()
     assert blocks == [{"text": "fallback block"}]
+
+
+# --- _dedup_blocks ---------------------------------------------------------------
+# Real live finding (4-Aug): a single VLM reply for one region repeated the same
+# block twice (identical text/table_data/bbox) -- exact-duplicate removal only,
+# never touches distinct content.
+
+def test_dedup_blocks_drops_exact_duplicates():
+    blocks = [
+        {"type": "table", "text": "Metadata fields for the drawing.", "table_data": {"rows": [["a"]]}},
+        {"type": "table", "text": "Metadata fields for the drawing.", "table_data": {"rows": [["a"]]}},
+        {"type": "text", "text": "distinct content"},
+    ]
+    out = _dedup_blocks(blocks)
+    assert len(out) == 2
+    assert out[0]["text"] == "Metadata fields for the drawing."
+    assert out[1]["text"] == "distinct content"
+
+
+def test_dedup_blocks_keeps_similar_but_distinct_blocks():
+    blocks = [
+        {"type": "table", "text": "Parts table", "table_data": {"rows": [["002", "KB-AE000213-A"]]}},
+        {"type": "table", "text": "Parts table", "table_data": {"rows": [["005", "KL-BC001J25-A"]]}},
+    ]
+    out = _dedup_blocks(blocks)
+    assert len(out) == 2
+
+
+# --- _dedup_table_rows -------------------------------------------------------------
+# Real live finding (4-Aug): one table came back with the same 5-value row
+# repeated 4 times WITHIN one block's table_data -- distinct from _dedup_blocks
+# (whole repeated blocks), since here the block itself is unique.
+
+def test_dedup_table_rows_drops_exact_duplicate_rows():
+    blocks = [{"type": "table", "text": "t", "table_data": {
+        "headers": ["A", "B"],
+        "rows": [["x", "1"], ["x", "1"], ["x", "1"], ["y", "2"]],
+    }}]
+    out = _dedup_table_rows(blocks)
+    assert out[0]["table_data"]["rows"] == [["x", "1"], ["y", "2"]]
+
+
+def test_dedup_table_rows_keeps_similar_but_distinct_rows():
+    blocks = [{"type": "table", "text": "t", "table_data": {
+        "headers": ["No", "Part No"],
+        "rows": [["002", "KB-AE000213-A"], ["005", "KL-BC001J25-A"]],
+    }}]
+    out = _dedup_table_rows(blocks)
+    assert len(out[0]["table_data"]["rows"]) == 2
+
+
+def test_dedup_table_rows_ignores_blocks_without_table_data():
+    blocks = [{"type": "text", "text": "no table here"}]
+    out = _dedup_table_rows(blocks)
+    assert out == blocks
+
+
+def test_dedup_blocks_also_dedupes_rows_within_each_block():
+    blocks = [{"type": "table", "text": "t", "table_data": {
+        "headers": ["A"], "rows": [["dup"], ["dup"], ["unique"]],
+    }}]
+    out = _dedup_blocks(blocks)
+    assert out[0]["table_data"]["rows"] == [["dup"], ["unique"]]
+
+
+# --- _is_checkable_value -----------------------------------------------------------
+
+def test_is_checkable_value_rejects_trivial_values():
+    assert _is_checkable_value("") is False
+    assert _is_checkable_value("1") is False
+    assert _is_checkable_value("42") is False
+    assert _is_checkable_value("1.5") is False
+    assert _is_checkable_value("-3") is False
+    assert _is_checkable_value("ab") is False
+
+
+def test_is_checkable_value_accepts_real_values():
+    assert _is_checkable_value("M.Takeshita") is True
+    assert _is_checkable_value("KB-AE000213-A") is True
+    assert _is_checkable_value("DRWG403936A") is True
+
+
+# --- _cross_check_table_cells -------------------------------------------------------
+# Real live finding (4-Aug): the primary CAD vision model produced specific,
+# plausible-looking FABRICATED title-block values (e.g. invented names) sitting
+# right alongside genuinely correct part numbers on the same crop -- this cross-
+# check asks an independent model a TARGETED confirm/deny question per cell,
+# without ever silently dropping or overwriting a value. (An earlier version
+# tried a loose "re-transcribe independently, substring-match the free text"
+# approach -- live-tested 4-Aug and found to flag almost everything, since the
+# verify model rarely attempts full independent table transcription on its own.)
+
+def test_cross_check_flags_uncorroborated_cell():
+    blocks = [{
+        "type": "table", "text": "Parts table",
+        "table_data": {"headers": ["No", "Name", "Part No"],
+                       "rows": [["002", "M.Takeshita", "KB-AE000213-A"]]},
+    }]
+    config = {"extraction": {"cad": {"verify_vision": {"provider": "openai", "model": "verifier"}}}}
+    # "002" is skipped (plain number) -- targets are 1=Name, 2=Part No; verifier
+    # confirms the part number but not the name.
+    verify_reply = '[{"n": 1, "confirmed": false}, {"n": 2, "confirmed": true}]'
+    with patch("backend.extraction.large_format.describe_image", return_value=verify_reply):
+        out = _cross_check_table_cells(blocks, b"fake-png", "prompt", config)
+    row = out[0]["table_data"]["rows"][0]
+    assert row[1] == "[unverified: M.Takeshita]"
+    assert row[2] == "KB-AE000213-A"  # corroborated -- untouched
+
+
+def test_cross_check_prompt_lists_each_target_by_number():
+    blocks = [{"type": "table", "text": "t",
+               "table_data": {"headers": ["No", "Name", "Part No"],
+                              "rows": [["002", "M.Takeshita", "KB-AE000213-A"]]}}]
+    config = {"extraction": {"cad": {"verify_vision": {"provider": "openai", "model": "verifier"}}}}
+    with patch("backend.extraction.large_format.describe_image", return_value="[]") as m:
+        _cross_check_table_cells(blocks, b"fake-png", "prompt", config)
+    verify_prompt = m.call_args[0][1]
+    assert '1. field "Name" = "M.Takeshita"' in verify_prompt
+    assert '2. field "Part No" = "KB-AE000213-A"' in verify_prompt
+
+
+def test_cross_check_unconfirmed_reply_flags_all_targets():
+    # empty/unparseable verify reply -> confirmed_ns stays empty -> everything flagged,
+    # never silently trusted
+    blocks = [{"type": "table", "text": "t",
+               "table_data": {"headers": ["A"], "rows": [["M.Takeshita"]]}}]
+    config = {"extraction": {"cad": {"verify_vision": {"provider": "openai", "model": "verifier"}}}}
+    with patch("backend.extraction.large_format.describe_image", return_value="not valid json"):
+        out = _cross_check_table_cells(blocks, b"fake-png", "prompt", config)
+    assert out[0]["table_data"]["rows"][0][0] == "[unverified: M.Takeshita]"
+
+
+def test_cross_check_noop_when_verify_vision_not_configured():
+    blocks = [{"type": "table", "text": "t",
+               "table_data": {"headers": ["A"], "rows": [["M.Takeshita"]]}}]
+    with patch("backend.extraction.large_format.describe_image") as mock_describe:
+        out = _cross_check_table_cells(blocks, b"fake-png", "prompt", {})
+    mock_describe.assert_not_called()
+    assert out[0]["table_data"]["rows"][0][0] == "M.Takeshita"
+
+
+def test_cross_check_noop_when_no_table_data_present():
+    blocks = [{"type": "text", "text": "no table here"}]
+    config = {"extraction": {"cad": {"verify_vision": {"provider": "openai", "model": "verifier"}}}}
+    with patch("backend.extraction.large_format.describe_image") as mock_describe:
+        out = _cross_check_table_cells(blocks, b"fake-png", "prompt", config)
+    mock_describe.assert_not_called()
+    assert out == blocks
+
+
+def test_cross_check_fails_open_on_verify_call_error():
+    blocks = [{"type": "table", "text": "t",
+               "table_data": {"headers": ["A"], "rows": [["M.Takeshita"]]}}]
+    config = {"extraction": {"cad": {"verify_vision": {"provider": "openai", "model": "verifier"}}}}
+    with patch("backend.extraction.large_format.describe_image",
+               side_effect=RuntimeError("provider down")):
+        out = _cross_check_table_cells(blocks, b"fake-png", "prompt", config)
+    # unchanged, not flagged -- a verify-call failure must never corrupt real data
+    assert out[0]["table_data"]["rows"][0][0] == "M.Takeshita"
 
 
 if __name__ == "__main__":

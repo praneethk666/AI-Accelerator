@@ -251,7 +251,7 @@ def transcribe_large_page_blocks(page, config: dict, prompt: str) -> list[dict]:
             vb["bbox"] = _remap_bbox(vb.get("bbox"), (l, t, rgt, bot), (W, H))
             all_blocks.append(vb)
 
-    return all_blocks
+    return _dedup_blocks(all_blocks)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -380,6 +380,7 @@ def transcribe_regions_blocks(page, config: dict, regions: list[dict],
             else None)
         if not items:
             continue
+        region_blocks: list[dict] = []
         for vb in items:
             if not isinstance(vb, dict):
                 continue
@@ -388,9 +389,156 @@ def transcribe_regions_blocks(page, config: dict, regions: list[dict],
             md["region_label"] = region.get("label")
             md["region_description"] = region.get("description")
             vb["metadata"] = md
-            all_blocks.append(vb)
+            region_blocks.append(vb)
+        region_blocks = _cross_check_table_cells(region_blocks, buf.getvalue(), detail_prompt, config)
+        all_blocks.extend(region_blocks)
 
-    return all_blocks
+    return _dedup_blocks(all_blocks)
+
+
+def _is_checkable_value(val: str) -> bool:
+    """Skip trivial values where a substring match against independent free-text
+    output would be meaningless noise rather than real corroboration -- very
+    short strings and plain numbers/dimensions match too easily by chance."""
+    v = val.strip()
+    if len(v) < 3:
+        return False
+    if v.replace(".", "").replace(",", "").replace("-", "").isdigit():
+        return False
+    return True
+
+
+def _build_verify_prompt(targets: list[tuple]) -> str:
+    lines = [f'{i + 1}. field "{header}" = "{val}"' for i, (_, _, header, val) in enumerate(targets)]
+    return (
+        "Look CAREFULLY at this image. Below is a numbered list of specific values "
+        "another reading claims appear in this image. For EACH numbered item, check "
+        "whether the image actually, clearly shows that exact value.\n\n"
+        + "\n".join(lines) +
+        '\n\nReturn ONLY a JSON array, one object per numbered item, in order: '
+        '{"n": <item number>, "confirmed": <true|false>}. confirmed=true ONLY if '
+        "you can clearly see that exact value at that field in the image; otherwise "
+        "confirmed=false (including if the field is illegible, absent, cropped out, "
+        "or shows something different). No other text."
+    )
+
+
+def _cross_check_table_cells(blocks: list[dict], crop_bytes: bytes, prompt: str,
+                             config: dict) -> list[dict]:
+    """For each table_data cell, ask an INDEPENDENT vision model a TARGETED
+    confirm/deny question against the SAME crop; a cell it can't confirm gets
+    flagged rather than presented as confident fact. Real live finding (4-Aug):
+    the primary CAD vision model produced specific, plausible-looking but
+    FABRICATED title-block values (invented names like "M.Takeshita") sitting
+    right alongside genuinely correct part numbers on the same crop -- this
+    isn't a missing-data problem (the sparse-column cross-check in
+    docling_extract.py fills gaps), it's a confident-wrong-data problem.
+
+    Deliberately NOT a loose "re-transcribe independently, substring-match the
+    free text" check (tried first, live-tested 4-Aug): the verify model is
+    naturally conservative and often doesn't attempt full table transcription
+    on its own, so almost everything failed to match even probably-correct
+    values -- a near-useless signal. Asking it to confirm/deny SPECIFIC values
+    one at a time is a much narrower, answerable question and was validated to
+    give a real, usable signal instead. This only ADDS an "[unverified: ...]"
+    marker, never silently drops or overwrites a value -- same consensus
+    principle either way (correct reads converge, errors diverge -- arxiv
+    2504.11101).
+
+    Opt-in via extraction.cad.verify_vision (a full vision config dict, same
+    shape as extraction.cad.vision) -- unset means this never fires, so a
+    customer who hasn't configured it pays zero extra cost/latency."""
+    verify_cfg = (config.get("extraction") or {}).get("cad", {}).get("verify_vision")
+    if not verify_cfg:
+        return blocks
+
+    targets: list[tuple] = []  # (row, col, header, value)
+    for b in blocks:
+        td = b.get("table_data")
+        if not isinstance(td, dict) or not td.get("rows"):
+            continue
+        headers = td.get("headers") or []
+        for row in td["rows"]:
+            for i, cell in enumerate(row):
+                val = str(cell).strip()
+                if not _is_checkable_value(val) or val.startswith("[unverified:"):
+                    continue
+                header = headers[i] if i < len(headers) else f"column {i}"
+                targets.append((row, i, header, val))
+    if not targets:
+        return blocks
+
+    try:
+        raw = describe_image(crop_bytes, _build_verify_prompt(targets), {"vision": verify_cfg})
+    except Exception as e:
+        logger.warning("large_format: verify cross-check call failed (%s)", e)
+        return blocks
+
+    from backend.vision.block_builder import _extract_json
+    data = _extract_json(raw)
+    results = data if isinstance(data, list) else []
+    confirmed_ns: set[int] = set()
+    for r in results:
+        if isinstance(r, dict) and r.get("confirmed") is True:
+            try:
+                confirmed_ns.add(int(r["n"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    flagged = 0
+    for i, (row, col, _header, val) in enumerate(targets):
+        if (i + 1) not in confirmed_ns:
+            row[col] = f"[unverified: {val}]"
+            flagged += 1
+    if flagged:
+        logger.info("large_format: cross-check flagged %d/%d unverified table cell(s)",
+                    flagged, len(targets))
+    return blocks
+
+
+def _dedup_table_rows(blocks: list[dict]) -> list[dict]:
+    """Drop exact-duplicate ROWS within a single block's table_data. Distinct
+    from _dedup_blocks below (which only catches whole repeated blocks): real
+    live finding (4-Aug), one table came back with the same 5-value row
+    repeated 4 times WITHIN one block's table_data -- the block itself wasn't a
+    duplicate of another block, so block-level dedup alone missed it."""
+    for b in blocks:
+        td = b.get("table_data")
+        if not isinstance(td, dict) or not td.get("rows"):
+            continue
+        seen: set[tuple] = set()
+        deduped = []
+        for row in td["rows"]:
+            key = tuple(str(c) for c in row) if isinstance(row, list) else (str(row),)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        td["rows"] = deduped
+    return blocks
+
+
+def _dedup_blocks(blocks: list[dict]) -> list[dict]:
+    """Drop exact-duplicate rows within each table (see _dedup_table_rows) and
+    exact-duplicate blocks. Real live finding (4-Aug): a single VLM reply for
+    ONE region sometimes repeats the same block twice (e.g. describing a
+    title-block metadata table under two different framings) -- this only ever
+    removes byte-identical (type, text, table_data) repeats, never distinct
+    content, so it can't lose real data."""
+    blocks = _dedup_table_rows(blocks)
+    import json as _json
+    seen: set[str] = set()
+    out: list[dict] = []
+    for b in blocks:
+        key = _json.dumps(
+            [b.get("type"), b.get("text"), b.get("table_data")],
+            sort_keys=True, default=str,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(b)
+    return out
 
 
 def transcribe_large_page_regions(page, config: dict, detail_prompt: str) -> list[dict]:

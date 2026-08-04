@@ -198,8 +198,12 @@ class CADExtractionTool:
                         page_blocks = [b for b in (_vb_to_block(vb, document_id, pg, filename) for vb in tile_vbs) if b]
                     else:
                         # Normal sheet: single-shot region-JSON extraction (precise boxes).
-                        raw = describe_image(page.get_pixmap(dpi=dpi).tobytes("png"), prompt, run_config)
+                        png_bytes = page.get_pixmap(dpi=dpi).tobytes("png")
+                        raw = describe_image(png_bytes, prompt, run_config)
                         page_blocks = _region_blocks(raw, document_id, pg, filename)
+                        from backend.extraction.large_format import _cross_check_table_cells, _dedup_blocks
+                        page_blocks = _dedup_blocks(page_blocks)
+                        page_blocks = _cross_check_table_cells(page_blocks, png_bytes, prompt, run_config)
                     if page_blocks:
                         vlm_pages += 1
                         blocks.extend(page_blocks)

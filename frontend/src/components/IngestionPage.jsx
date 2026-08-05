@@ -14,6 +14,7 @@ import {
   Cog6ToothIcon,
   ChevronDownIcon,
   ClockIcon,
+  CurrencyDollarIcon,
 } from '@heroicons/react/24/outline';
 
 // The real ingestion steps (match tool `name`s in the metrics the API returns).
@@ -69,11 +70,14 @@ const fmtLlmCallsSub = (tu) => {
   return `${total} LLM calls`;
 };
 
+const USD_TO_INR = 83.50;
+
 const IngestionPage = () => {
   const navigate = useNavigate();
   const [files, setFiles] = useState([]);
-  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [currency, setCurrency] = useState('USD');
   const [error, setError] = useState(null);
   const [serverConnected, setServerConnected] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
@@ -613,15 +617,30 @@ const IngestionPage = () => {
             <h2 className="text-2xl font-bold text-[#4a154b] display-title">
               Processed Document Library {files.length > 0 && `(${files.length})`}
             </h2>
-            {files.length > 0 && (
-              <button
-                onClick={loadFiles}
-                className="btn-secondary-pill flex items-center gap-2"
-              >
-                <ArrowPathIcon className="h-4 w-4" />
-                Refresh List
-              </button>
-            )}
+            {files.length > 0 && (() => {
+              const totalCostUSD = files.reduce((sum, f) => sum + (f.token_usage?.total_cost_usd || 0), 0);
+              return (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setCurrency(currency === 'USD' ? 'INR' : 'USD')}
+                    className="btn-primary-pill flex items-center gap-2 font-bold"
+                  >
+                    <CurrencyDollarIcon className="h-4 w-4" />
+                    {currency === 'USD' 
+                      ? `Total: $${totalCostUSD.toFixed(4)}` 
+                      : `Total: ₹${(totalCostUSD * USD_TO_INR).toFixed(2)}`
+                    }
+                  </button>
+                  <button
+                    onClick={loadFiles}
+                    className="btn-secondary-pill flex items-center gap-2"
+                  >
+                    <ArrowPathIcon className="h-4 w-4" />
+                    Refresh List
+                  </button>
+                </div>
+              );
+            })()}
           </div>
 
           {loading ? (
@@ -670,19 +689,30 @@ const IngestionPage = () => {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 flex-wrap">
-                          <h3 className="font-bold text-[#4a154b] truncate text-base md:text-lg display-title">{file.filename}</h3>
-                          <span className="text-[10px] font-extrabold text-[#696969] px-2.5 py-0.5 rounded-full bg-[#f4ede4] uppercase tracking-wider">{file.file_type || 'Document'}</span>
+                          <h3 className="font-semibold text-[#4a154b] truncate text-sm max-w-[200px] md:max-w-[400px]">{file.filename}</h3>
+                          <span className="text-[9px] font-extrabold text-[#696969] px-2 py-0.5 rounded-full bg-[#f4ede4] uppercase tracking-wider">{file.file_type || 'Document'}</span>
                           
                           {/* Total Time Badge */}
                           {(() => {
                             const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
                             return totalMs > 0 ? (
-                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-xs font-bold text-[#4a154b]">
-                                <ClockIcon className="h-3.5 w-3.5 text-[#4a154b]" />
-                                Total Time: {fmtDuration(totalMs)}
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-[10px] font-bold text-[#4a154b]">
+                                <ClockIcon className="h-3 w-3 text-[#4a154b]" />
+                                {fmtDuration(totalMs)}
                               </span>
                             ) : null;
                           })()}
+
+                          {/* Total Cost Badge */}
+                          {file.token_usage?.total_cost_usd !== undefined && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-[10px] font-bold text-[#4a154b]">
+                              <CurrencyDollarIcon className="h-3 w-3 text-[#4a154b]" />
+                              {currency === 'USD' 
+                                ? `$${file.token_usage.total_cost_usd.toFixed(4)}`
+                                : `₹${(file.token_usage.total_cost_usd * USD_TO_INR).toFixed(2)}`
+                              }
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -748,6 +778,32 @@ const IngestionPage = () => {
                             {file.indexed_tokens != null && (
                               <StatBlock label="Indexed" value={(file.indexed_tokens || 0).toLocaleString()} sub={`tokens · ${file.chunk_count || 0} chunks`} />
                             )}
+                          </div>
+                        )}
+
+                        {/* Row 1.5: Costs */}
+                        {file.token_usage?.by_model && Object.keys(file.token_usage.by_model).length > 0 && (
+                          <div className="flex flex-wrap gap-2.5 border-t border-[#e6e6e6] pt-3">
+                            <StatBlock 
+                              label="Total Cost" 
+                              value={currency === 'USD' 
+                                ? `$${(tu.total_cost_usd || 0).toFixed(4)}`
+                                : `₹${((tu.total_cost_usd || 0) * USD_TO_INR).toFixed(2)}`} 
+                            />
+                            {Object.entries(file.token_usage.by_model)
+                              .filter(([model]) => !model.toLowerCase().includes('embedding'))
+                              .map(([model, metrics]) => (
+                                <StatBlock 
+                                  key={model} 
+                                  label={model.split('/').pop()} 
+                                  value={currency === 'USD'
+                                    ? `$${(metrics.total_cost || 0).toFixed(4)}`
+                                    : `₹${((metrics.total_cost || 0) * USD_TO_INR).toFixed(2)}`} 
+                                  sub={currency === 'USD'
+                                    ? `in: $${(metrics.input_cost || 0).toFixed(4)} · out: $${(metrics.output_cost || 0).toFixed(4)}`
+                                    : `in: ₹${((metrics.input_cost || 0) * USD_TO_INR).toFixed(4)} · out: ₹${((metrics.output_cost || 0) * USD_TO_INR).toFixed(4)}`} 
+                                />
+                            ))}
                           </div>
                         )}
 

@@ -1757,7 +1757,7 @@ def run_agent(
                 "decision": "Direct Dynamic Greeting"
             })
 
-        token_usage = sink.totals()
+        token_usage = sink.totals(config=config)
         calls_log = sink.get_calls_log()
         execution_trace = list(_trace_sink)
         total_turn_sec = round(time.time() - turn_t0, 2)
@@ -1817,7 +1817,7 @@ def run_agent(
             "search_shortcircuit": False,
         })
 
-    token_usage = sink.totals()
+    token_usage = sink.totals(config=config)
     calls_log = sink.get_calls_log()
     execution_trace = list(_trace_sink)
     total_turn_sec = round(time.time() - turn_t0, 2)

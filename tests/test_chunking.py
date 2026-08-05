@@ -334,6 +334,31 @@ def test_non_redacted_block_produces_chunk_without_the_flag():
     Chunk(**chunks[0])
 
 
+def test_validate_repaired_rows_allows_synthesis_connector_words():
+    # Same intent as an origin/main test that targeted the now-superseded
+    # validate_repaired_chunks (no row_index anchoring) -- ported to the real,
+    # currently-used _validate_repaired_rows so the coverage isn't lost.
+    # Ordinary synthesis-connector words ("indicates", "detected",
+    # "recommended", "checking") must not trip the traceability check just for
+    # being connective prose -- they're in _REPAIR_STOPWORDS precisely so a
+    # correct repair using only its own row's real content isn't rejected.
+    from backend.chunking.chunk_tool import _validate_repaired_rows
+    headers = ["Alarm Code", "Meaning", "Corrective Action"]
+    rows = [["8bhh", "Overheating detected", "Check cooling fan and replace if damaged"]]
+    parsed = [{
+        "row_index": 0,
+        "chunk_text": "Context indicates event for Alarm Code 8bhh where overheating was "
+                      "detected. Recommended action includes checking cooling fan and "
+                      "replacing component.",
+        "structured": {"Alarm Code": "8bhh", "Meaning": "Overheating detected",
+                       "Corrective Action": "Check cooling fan and replace if damaged"},
+    }]
+    ordered, err = _validate_repaired_rows(parsed, headers, rows, "Section 5.2 Alarms",
+                                           "Preceding section text")
+    assert err == ""
+    assert ordered == parsed
+
+
 if __name__ == "__main__":
     test_text_splits_by_size_with_overlap()
     test_heading_merges_into_next_text()
@@ -354,4 +379,6 @@ if __name__ == "__main__":
     test_alarm_rows_with_distinct_ids_stay_separate_chunks()
     test_alarm_continuation_row_with_old_blank_style_still_merges()
     test_every_chunk_is_a_valid_chunk_schema()
+    test_validate_repaired_chunks_with_synthesis_connectors()
     print("chunking tests passed")
+

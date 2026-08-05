@@ -153,6 +153,9 @@ class PostgresConversationStore:
             # Migrations for history performance optimizations
             try:
                 pg.conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_document_id TEXT"
+                )
+                pg.conn.execute(
                     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT"
                 )
                 pg.conn.execute(
@@ -250,6 +253,39 @@ class PostgresConversationStore:
             )
         finally:
             pg.close()
+
+    def get_session_active_doc(self, session_id: str) -> str | None:
+        """Fetch current active_document_id for a session from Postgres."""
+        if not session_id:
+            return None
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT active_document_id FROM sessions WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            pg.close()
+
+    def set_session_active_doc(self, session_id: str, doc_id: str | None) -> None:
+        """Atomically UPSERT current active_document_id for a session in Postgres."""
+        if not session_id:
+            return
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, active_document_id, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET active_document_id = EXCLUDED.active_document_id, updated_at = NOW()
+                """,
+                (session_id, doc_id),
+            )
+        finally:
+            pg.close()
+
 
     def load_history(self, session_id: str, n: int = 10) -> list[dict]:
         pg = _get_store()

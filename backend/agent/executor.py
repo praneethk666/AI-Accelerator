@@ -19,8 +19,11 @@ this is proven out.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
+import re
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -48,6 +51,30 @@ def add_evidences(left: list[dict] | None, right: list[dict] | None) -> list[dic
     """LangGraph reducer to accumulate guard evidences across nodes."""
     return (left or []) + (right or [])
 
+# ---------------------------------------------------------------------------
+# Execution-trace sink — context-var based collector so every node appends
+# directly without relying on LangGraph's reducer (which proved unreliable).
+# Same pattern as usage.using_sink().
+# ---------------------------------------------------------------------------
+_trace_sink_var: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar(
+    "execution_trace_sink", default=None
+)
+
+@contextlib.contextmanager
+def _using_trace_sink():
+    sink: list[dict] = []
+    token = _trace_sink_var.set(sink)
+    try:
+        yield sink
+    finally:
+        _trace_sink_var.reset(token)
+
+def _append_trace(item: dict) -> None:
+    """Append a step dict to the active trace sink (no-op if no sink is active)."""
+    sink = _trace_sink_var.get()
+    if sink is not None:
+        sink.append(item)
+
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     iterations: int
@@ -61,6 +88,10 @@ class AgentState(TypedDict):
     guard_evidences: Annotated[list[dict], add_evidences]
     guard_risk_score: int
     guard_policy: str | None
+    # short-circuit flag: set True by tools_node when search_documents returned a
+    # complete answer so route_after_tools skips the redundant agent Turn 2 LLM call
+    search_shortcircuit: bool
+
 
 SYSTEM_PROMPT = (
     "You are a document intelligence assistant. Your job is to answer questions "
@@ -75,13 +106,10 @@ SYSTEM_PROMPT = (
     "'I could not find this in the provided documents.'\n\n"
 
     "## TOOLS\n"
-    "- search_documents(query, document_scope?, doc_type?, industry?): Search ingested docs. "
+    "- search_documents(query, document_scope?): Search ingested docs. "
     "Pass the user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
     "ONLY when the user explicitly quotes a real filename or document_id that you have seen in a "
-    "list_documents result — NEVER invent, guess, or make up a filename. "
-    "Pass `doc_type` (e.g. 'invoice', 'manual') or `industry` ONLY when the question clearly implies a scope (e.g. 'in the "
-    "invoices…') and the value matches something you saw via list_documents — otherwise omit "
-    "all filters and search everything. A filter should narrow on clear intent, never on a guess.\n"
+    "list_documents result — NEVER invent, guess, or make up a filename.\n"
     "- get_page_context(document_id, page): Fetch a document PAGE's full raw content, "
     "bypassing chunking entirely. Chunking sometimes fragments a page badly (e.g. a "
     "label/code split from the table that explains it) — if a search_documents result "
@@ -193,13 +221,6 @@ SYSTEM_PROMPT = (
     "- For mathematical formulas, ALWAYS use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never output bracket delimiters like '[ ... ]' or '\\[ ... \\]' for math equations."
 )
 
-class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    iterations: int
-    pending_approval: list[dict] | None
-    approved_writes: bool
-    approved_calls: list[dict] | None
-    clarification: dict | None
 
 
 def _args_key(args: dict | None) -> str:
@@ -364,10 +385,174 @@ async def _ainvoke_with_retry(llm_with_tools, messages, attempts: int = 2):
 
 _GREETINGS = {"hello", "hi", "hey", "thanks", "thank you", "bye", "goodbye", "good morning", "good evening"}
 
+_FAST_GREETINGS = {
+    # Basic Greetings
+    "hi", "hello", "hey", "heyy", "hiii", "howdy", "greetings",
+    "good morning", "good afternoon", "good evening", "good day",
+    # Conversational Greetings
+    "how are you", "how are you doing", "hows it going", "what's up", "sup",
+    "hi how are you", "hello how are you", "hey how are you",
+    # Thanks & Sign-offs
+    "thanks", "thank you", "thx", "thanks a lot",
+    "bye", "goodbye", "see ya", "have a good day",
+}
+
+_QUERY_KEYWORDS = {
+    "search", "find", "what", "where", "how", "show", "spec", "data", "file", "document",
+    "pdf", "excel", "sheet", "table", "calculate", "mounting", "instructions", "parameter",
+    "cost", "price", "serial", "code", "drawing", "list", "ingest", "database", "sql"
+}
+
+GREETING_SYSTEM_PROMPT = (
+    "You are a polite AI assistant for an enterprise document search system. "
+    "Reply naturally, warmly, and concisely (in 1 short sentence) to the user's greeting. "
+    "Briefly offer to help them search their ingested documents."
+)
+
 
 def _is_greeting(text: str) -> bool:
     clean = text.strip().lower().rstrip("!.,")
     return clean in _GREETINGS
+
+
+def _is_pure_fast_greeting(text: str) -> bool:
+    """Check if message is a pure greeting (<=4 words, greeting term, no search keywords)."""
+    clean = text.strip().lower().rstrip("!.,?").strip()
+    if clean in _FAST_GREETINGS:
+        return True
+    words = clean.split()
+    if len(words) <= 4:
+        has_greeting = any(
+            w in clean for w in ("hi", "hello", "hey", "morning", "evening", "thanks", "thank", "bye")
+        )
+        has_query_kw = any(w in clean for w in _QUERY_KEYWORDS)
+        if has_greeting and not has_query_kw:
+            return True
+    return False
+
+
+_GENERIC_DOC_TERMS = {
+    # Document-related terms
+    "manual", "document", "file", "pdf", "guide", "book", "report", "specification",
+    "specs", "explain", "about", "this", "that", "the", "what", "is", "for", "in",
+    "and", "or", "its", "our",
+    # Common English stop words that appear in any document's page1 text
+    "can", "you", "are", "was", "has", "had", "have", "been", "will", "not",
+    "all", "any", "but", "with", "from", "use", "used", "using", "may", "also",
+    "they", "their", "your", "more", "each", "both", "when", "how", "than",
+    "get", "set", "per", "out", "one", "two", "new", "see",
+}
+
+_SCOPE_RESET_PHRASES = {
+    "search all", "all documents", "all manuals", "across all files", "check everything",
+    "entire corpus", "all files", "unscope", "not just that", "clear scope", "reset scope"
+}
+
+
+def _resolve_turn_document_scope(
+    message: str, session_id: str, viewer_doc_id: str | None, config: dict
+) -> tuple[list[str] | str | None, str | None, bool]:
+    """5-Tier Priority Document Scope Resolver:
+    Returns (resolved_scope, active_filename, is_ambiguous_trigger)
+    - resolved_scope: list[str] | str | None for document_scope
+    - active_filename: human-readable name of active file
+    - is_ambiguous_trigger: True if agent MUST call request_clarification
+    """
+    import difflib
+    from backend.storage.conversation_store import PostgresConversationStore
+    from backend.storage.postgres_store import PostgresStore
+
+    msg_lower = message.strip().lower()
+
+    # Tier 1: Scope Clear / Reset Check
+    if any(phrase in msg_lower for phrase in _SCOPE_RESET_PHRASES):
+        if session_id:
+            PostgresConversationStore().set_session_active_doc(session_id, None)
+        return None, None, False
+
+    # Fetch available documents with metadata
+    try:
+        pg = PostgresStore(config=config)
+        try:
+            docs = pg.list_documents_with_metadata()
+        finally:
+            pg.conn.close()
+    except Exception as exc:
+        logger.warning("_resolve_turn_document_scope DB fetch failed: %s", exc)
+        return None, None, False
+
+    # Extract non-generic tokens from user prompt (min 4 chars to avoid "can", "you", etc.)
+    prompt_tokens = [
+        t for t in re.findall(r"\b[a-zA-Z0-9_-]{4,}\b", msg_lower)
+        if t not in _GENERIC_DOC_TERMS
+    ]
+
+    # If no meaningful tokens remain, skip Tier 2 matching entirely
+    if not prompt_tokens:
+        pass  # Fall through to Tier 3 (viewer) / Tier 4 (session state)
+
+
+    # Tier 2: Explicit Mention (Dual-Algorithm Matching)
+    matched_doc_ids = []
+    doc_id_to_name = {d["document_id"]: d["filename"] for d in docs}
+
+    if prompt_tokens:
+        for doc in docs:
+            doc_id = doc["document_id"]
+            fname = (doc["filename"] or "").lower()
+            page1 = (doc.get("page1_text") or "").lower()
+            doctype = (doc.get("document_type") or "").lower()
+            industry = (doc.get("industry") or "").lower()
+
+            # Algorithm A: difflib SequenceMatcher on clean filename tokens
+            fname_tokens = [t for t in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", fname) if t not in _GENERIC_DOC_TERMS]
+            score = 0.0
+            if fname_tokens and prompt_tokens:
+                ratio = difflib.SequenceMatcher(None, " ".join(prompt_tokens), " ".join(fname_tokens)).ratio()
+                if ratio >= 0.70:
+                    score = ratio
+
+            # Algorithm B: Exact non-generic token containment in page1_text / metadata
+            if score < 0.70:
+                meta_text = f"{fname} {doctype} {industry} {page1}".lower()
+                meta_token_set = set(re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", meta_text))
+                matches = sum(1 for pt in prompt_tokens if pt in meta_token_set)
+                if matches > 0 and len(prompt_tokens) > 0:
+                    containment_score = matches / len(prompt_tokens)
+                    if containment_score >= 0.70 or matches >= 2:
+                        score = 0.85
+
+            if score >= 0.70:
+                matched_doc_ids.append(doc_id)
+
+    if len(matched_doc_ids) == 1:
+        doc_id = matched_doc_ids[0]
+        if session_id:
+            PostgresConversationStore().set_session_active_doc(session_id, doc_id)
+        return doc_id, doc_id_to_name.get(doc_id), False
+    elif len(matched_doc_ids) > 1:
+        # Multi-doc comparison query ("compare Operation and Maintenance manual")
+        return matched_doc_ids, ", ".join([doc_id_to_name[i] for i in matched_doc_ids if i in doc_id_to_name]), False
+
+    # Tier 3: Frontend Viewer Active Document
+    if viewer_doc_id and viewer_doc_id in doc_id_to_name:
+        if session_id:
+            PostgresConversationStore().set_session_active_doc(session_id, viewer_doc_id)
+        return viewer_doc_id, doc_id_to_name[viewer_doc_id], False
+
+    # Tier 4: Postgres Stored Session State
+    stored_doc_id = PostgresConversationStore().get_session_active_doc(session_id) if session_id else None
+    if stored_doc_id and stored_doc_id in doc_id_to_name:
+        return stored_doc_id, doc_id_to_name[stored_doc_id], False
+
+    # Tier 5: Ambiguity Trigger (Deictic references without active context)
+    has_deictic = any(
+        term in msg_lower for term in ("this manual", "this document", "this file", "this pdf", "what is this about")
+    )
+    if has_deictic and len(docs) > 1 and not matched_doc_ids:
+        return None, None, True
+
+    return None, None, False
 
 
 def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
@@ -382,20 +567,32 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
     g_cfg = config.get("guardrails") or {}
 
     def input_guard_node(state: AgentState) -> dict:
+        import time
+        t0 = time.time()
         if not g_cfg.get("enabled", True):
+            dur_ms = round((time.time() - t0) * 1000, 2)
+            trace_item = {
+                "step": "Input Guardrail", "type": "guardrail", "status": "SKIPPED",
+                "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Guardrails disabled"
+            }
+            logger.info("🛡️  [STEP: Input Guardrail] Disabled -> SKIPPED (%.1fms)", dur_ms)
+            _append_trace(trace_item)
             return {
-                "guard_blocked": False,
-                "guard_evidences": [],
-                "guard_risk_score": 0,
+                "guard_blocked": False, "guard_evidences": [], "guard_risk_score": 0,
                 "guard_policy": "allow",
             }
 
         rollout_pct = g_cfg.get("rollout", {}).get("input_guard_pct", 100)
         if not should_apply_guard(rollout_pct, session_id):
+            dur_ms = round((time.time() - t0) * 1000, 2)
+            trace_item = {
+                "step": "Input Guardrail", "type": "guardrail", "status": "SKIPPED",
+                "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Rollout excluded"
+            }
+            logger.info("🛡️  [STEP: Input Guardrail] Rollout excluded -> SKIPPED (%.1fms)", dur_ms)
+            _append_trace(trace_item)
             return {
-                "guard_blocked": False,
-                "guard_evidences": [],
-                "guard_risk_score": 0,
+                "guard_blocked": False, "guard_evidences": [], "guard_risk_score": 0,
                 "guard_policy": "allow",
             }
 
@@ -406,10 +603,9 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 break
 
         if not raw_msg:
+            dur_ms = round((time.time() - t0) * 1000, 2)
             return {
-                "guard_blocked": False,
-                "guard_evidences": [],
-                "guard_risk_score": 0,
+                "guard_blocked": False, "guard_evidences": [], "guard_risk_score": 0,
                 "guard_policy": "allow",
             }
 
@@ -441,11 +637,26 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 
         engine = get_engine(config)
         policy_decision = engine.evaluate([ev])
+        dur_ms = round((time.time() - t0) * 1000, 2)
+        is_blocked = policy_decision == PolicyDecision.BLOCK or should_block_session
 
-        if policy_decision == PolicyDecision.BLOCK or should_block_session:
+        logger.info(
+            "🛡️  [STEP: Input Guardrail] Risk Score: %s | Policy: %s | Status: %s | Duration: %.1fms",
+            decision.risk_score, policy_decision.value.upper(), "BLOCKED" if is_blocked else "PASS", dur_ms
+        )
+
+        trace_item = {
+            "step": "Input Guardrail", "type": "guardrail",
+            "status": "BLOCKED" if is_blocked else "PASS",
+            "risk_score": decision.risk_score, "policy": policy_decision.value,
+            "duration_ms": dur_ms, "events": [decision.event_type] if decision.event_type else []
+        }
+
+        if is_blocked:
             blocked_msg = AIMessage(
                 content="Your request contains triggers that violate our safety policies."
             )
+            _append_trace(trace_item)
             return {
                 "messages": [blocked_msg],
                 "guard_blocked": True,
@@ -455,6 +666,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 "safe_answer": blocked_msg.content,
             }
 
+        _append_trace(trace_item)
         ret_dict = {
             "guard_blocked": False,
             "guard_evidences": [ev.__dict__],
@@ -475,24 +687,59 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         return ret_dict
 
     def agent_node(state: AgentState) -> dict:
+        import time
+        t0 = time.time()
         iters = state.get("iterations", 0)
         active_llm = llm_required if (iters == 0 and is_question) else llm_auto
         
         pruned_messages = _prune_messages_for_llm(state["messages"])
         response = _invoke_with_retry(active_llm, pruned_messages)
+        dur_ms = round((time.time() - t0) * 1000, 2)
 
         model_name, provider_name = resolve_model_provider(config, agent_cfg)
         usage.record_from_message("agent", response, prompt=pruned_messages, model=model_name, provider=provider_name)
+
+        # Extract token usage metadata from response if available
+        um = getattr(response, "usage_metadata", None) or {}
+        in_tok = um.get("input_tokens", 0) or len(str(pruned_messages)) // 4
+        out_tok = um.get("output_tokens", 0) or len(str(response.content)) // 4
+        tot_tok = um.get("total_tokens", in_tok + out_tok)
+
+        calls_requested = [c["name"] for c in getattr(response, "tool_calls", []) or []]
+        decision_str = f"Tools: {calls_requested}" if calls_requested else "Direct Text Answer"
+
+        logger.info(
+            "🧠 [STEP: Agent LLM Call (Turn %d)] Provider: %s | Model: %s | Tokens: %d (In: %d, Out: %d) | Choice: %s | Latency: %.1fms",
+            iters + 1, provider_name, model_name, tot_tok, in_tok, out_tok, decision_str, dur_ms
+        )
+
+        trace_item = {
+            "step": f"Agent LLM Planner (Turn {iters + 1})",
+            "type": "llm_call",
+            "provider": provider_name,
+            "model": model_name,
+            "prompt_tokens": in_tok,
+            "completion_tokens": out_tok,
+            "total_tokens": tot_tok,
+            "duration_ms": dur_ms,
+            "tool_calls_requested": calls_requested,
+            "decision": decision_str
+        }
+
+        _append_trace(trace_item)
         return {"messages": [response], "iterations": iters + 1}
 
     def tools_node(state: AgentState) -> dict:
+        import time
         last = state["messages"][-1]
         tool_messages: list[ToolMessage] = []
         pending: list[dict] = []
         clarification: dict | None = None
         new_evidences: list[dict] = []
+        step_traces: list[dict] = []
 
         for call in getattr(last, "tool_calls", None) or []:
+            t0 = time.time()
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
 
             if name in clarify_tools:
@@ -504,13 +751,17 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 tool_messages.append(ToolMessage(
                     content="awaiting user selection", tool_call_id=call_id, name=name,
                 ))
+                dur_ms = round((time.time() - t0) * 1000, 2)
+                step_traces.append({
+                    "step": f"Tool: {name}", "type": "tool_execution",
+                    "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "clarification_requested"
+                })
                 continue
 
             if name == "ingest_document":
                 import os
                 file_path = args.get("file_path", "")
                 
-                # Check database for existing document matching the filename
                 from backend.storage.postgres_store import PostgresStore
                 db_doc = None
                 try:
@@ -534,14 +785,13 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 except Exception as db_exc:
                     logger.warning("Failed to query documents table in tools_node: %s", db_exc)
 
-                # Resolve file_path to database file_path if it exists on disk
                 resolved_path = file_path
                 if db_doc and db_doc["file_path"] and os.path.isfile(db_doc["file_path"]):
                     resolved_path = db_doc["file_path"]
                     args["file_path"] = resolved_path
 
-                # If the document is already ready and file exists, we don't even need approval or tool execution!
                 if db_doc and db_doc["status"] == "ready" and os.path.isfile(resolved_path):
+                    dur_ms = round((time.time() - t0) * 1000, 2)
                     tool_messages.append(ToolMessage(
                         content=json.dumps({
                             "document_id": db_doc["document_id"],
@@ -550,10 +800,14 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                         }, default=str),
                         tool_call_id=call_id, name=name,
                     ))
+                    step_traces.append({
+                        "step": f"Tool: {name}", "type": "tool_execution",
+                        "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "already_ready"
+                    })
                     continue
 
-                # If file path doesn't exist on disk, return FileNotFoundError immediately
                 if not resolved_path or not os.path.isfile(resolved_path):
+                    dur_ms = round((time.time() - t0) * 1000, 2)
                     tool_messages.append(ToolMessage(
                         content=json.dumps({
                             "error": f"FileNotFoundError: File {file_path!r} does not exist. "
@@ -561,17 +815,25 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                         }, default=str),
                         tool_call_id=call_id, name=name,
                     ))
+                    step_traces.append({
+                        "step": f"Tool: {name}", "type": "tool_execution",
+                        "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "file_not_found"
+                    })
                     continue
 
             if name in write_tools and not (
                 state.get("approved_writes") and _is_approved(name, args, state.get("approved_calls"))
             ):
+                dur_ms = round((time.time() - t0) * 1000, 2)
                 pending.append({"id": call_id, "name": name, "args": args})
                 tool_messages.append(ToolMessage(
-                    content="blocked: this action writes data and needs human "
-                            "approval before it can run.",
+                    content="blocked: this action writes data and needs human approval before it can run.",
                     tool_call_id=call_id, name=name,
                 ))
+                step_traces.append({
+                    "step": f"Tool: {name}", "type": "tool_execution",
+                    "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "pending_user_approval"
+                })
                 continue
 
             tool = registry.get(name)
@@ -610,22 +872,95 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 cleaned_result = scan_decision.sanitized_value if scan_decision.sanitized_value is not None else result
                 span["output"] = cleaned_result
                 
+            dur_ms = round((time.time() - t0) * 1000, 2)
+            args_str = json.dumps(args, default=str)
+            if len(args_str) > 120:
+                args_str = args_str[:120] + "..."
+            
+            res_str = json.dumps(cleaned_result, default=str)
+            if len(res_str) > 150:
+                res_summary = res_str[:150] + "..."
+            else:
+                res_summary = res_str
+
+            logger.info(
+                "🛠️  [STEP: Tool Executed] Tool: %s | Args: %s | Duration: %.1fms",
+                name, args_str, dur_ms
+            )
+
+            step_traces.append({
+                "step": f"Tool: {name}", "type": "tool_execution",
+                "tool_name": name, "args": args, "duration_ms": dur_ms,
+                "status": "success" if not (isinstance(cleaned_result, dict) and "error" in cleaned_result) else "error",
+                "output_summary": res_summary
+            })
+
             tool_messages.append(ToolMessage(
                 content=json.dumps(cleaned_result, default=str), tool_call_id=call_id, name=name,
             ))
+
+        for t in step_traces:
+            _append_trace(t)
+
+        # --- Search short-circuit: skip agent Turn 2 if search_documents was the
+        # ONLY tool called this turn and it returned a complete non-refusal answer.
+        # Saves ~6-7s and ~4000 tokens per standard question. ---
+        shortcircuit = False
+        all_calls = getattr(last, "tool_calls", None) or []
+        if (
+            len(all_calls) == 1
+            and all_calls[0]["name"] == "search_documents"
+            and not pending
+            and not clarification
+            and tool_messages
+        ):
+            try:
+                result_data = json.loads(tool_messages[-1].content)
+                search_answer = (result_data.get("answer") or "").strip()
+                _REFUSAL_HINTS = (
+                    "could not find this in the provided",
+                    "no relevant passages found",
+                    "not in the provided documents",
+                )
+                is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
+                if search_answer and not is_refusal:
+                    # Inject a synthetic AIMessage so output_guard_node can find it
+                    tool_messages.append(AIMessage(content=search_answer))
+                    shortcircuit = True
+                    logger.info(
+                        "⚡ [SHORT-CIRCUIT] search_documents returned complete answer — "
+                        "skipping agent Turn 2 LLM call"
+                    )
+                    _append_trace({
+                        "step": "Search Short-Circuit", "type": "routing",
+                        "details": "search_documents answer injected directly, agent Turn 2 skipped"
+                    })
+            except Exception:
+                pass  # JSON parse failed — fall through to normal agent Turn 2
 
         return {
             "messages": tool_messages,
             "pending_approval": pending or None,
             "clarification": clarification,
             "guard_evidences": new_evidences,
+            "search_shortcircuit": shortcircuit,
         }
 
+
     def output_guard_node(state: AgentState) -> dict:
+        import time
+        t0 = time.time()
         last = state["messages"][-1]
         raw_answer = clean_message_content(last.content) if isinstance(last, AIMessage) else ""
         
         if not g_cfg.get("enabled", True):
+            dur_ms = round((time.time() - t0) * 1000, 2)
+            trace_item = {
+                "step": "Output Guardrail", "type": "guardrail", "status": "SKIPPED",
+                "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Guardrails disabled"
+            }
+            logger.info("🛡️  [STEP: Output Guardrail] Disabled -> SKIPPED (%.1fms)", dur_ms)
+            _append_trace(trace_item)
             return {
                 "safe_answer": raw_answer,
             }
@@ -637,6 +972,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 break
 
         if raw_msg is None:
+            dur_ms = round((time.time() - t0) * 1000, 2)
             return {
                 "safe_answer": raw_answer,
             }
@@ -683,7 +1019,21 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 
         scores = [e.risk_score for e in ev_objs]
         max_score = max(scores) if scores else 0
+        dur_ms = round((time.time() - t0) * 1000, 2)
 
+        logger.info(
+            "🛡️  [STEP: Output Guardrail] Risk Score: %s | Policy: %s | Status: %s | Duration: %.1fms",
+            decision.risk_score, policy_decision.value.upper(), "BLOCKED" if blocked else "PASS", dur_ms
+        )
+
+        trace_item = {
+            "step": "Output Guardrail", "type": "guardrail",
+            "status": "BLOCKED" if blocked else "PASS",
+            "risk_score": decision.risk_score, "policy": policy_decision.value,
+            "duration_ms": dur_ms, "sanitized": bool(decision.sanitized_value)
+        }
+
+        _append_trace(trace_item)
         return {
             "messages": [redacted_msg],
             "safe_answer": safe_content,
@@ -692,6 +1042,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
             "guard_risk_score": max_score,
             "guard_policy": policy_decision.value,
         }
+
 
     def route_after_input(state: AgentState) -> str:
         if state.get("guard_blocked"):
@@ -712,6 +1063,8 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
     def route_after_tools(state: AgentState) -> str:
         if state.get("pending_approval") or state.get("clarification"):
             return "output_guard"
+        if state.get("search_shortcircuit"):
+            return "output_guard"  # skip agent Turn 2 — answer already in messages
         if state.get("iterations", 0) >= max_iterations:
             return "output_guard"
         return "agent"
@@ -984,11 +1337,37 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                 content=json.dumps(cleaned_result, default=str), tool_call_id=call_id,
             ))
 
+        # Search short-circuit (async path — same logic as sync _build_graph)
+        shortcircuit = False
+        all_calls = getattr(last, "tool_calls", None) or []
+        if (
+            len(all_calls) == 1
+            and all_calls[0]["name"] == "search_documents"
+            and not pending
+            and not clarification
+            and tool_messages
+        ):
+            try:
+                result_data = json.loads(tool_messages[-1].content)
+                search_answer = (result_data.get("answer") or "").strip()
+                _REFUSAL_HINTS = (
+                    "could not find this in the provided",
+                    "no relevant passages found",
+                    "not in the provided documents",
+                )
+                is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
+                if search_answer and not is_refusal:
+                    tool_messages.append(AIMessage(content=search_answer))
+                    shortcircuit = True
+            except Exception:
+                pass
+
         return {
             "messages": tool_messages,
             "pending_approval": pending or None,
             "clarification": clarification,
             "guard_evidences": new_evidences,
+            "search_shortcircuit": shortcircuit,
         }
 
     async def output_guard_node(state: AgentState) -> dict:
@@ -1082,6 +1461,8 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
     def route_after_tools(state: AgentState) -> str:
         if state.get("pending_approval") or state.get("clarification"):
             return "output_guard"
+        if state.get("search_shortcircuit"):
+            return "output_guard"  # skip agent Turn 2 — answer already in messages
         if state.get("iterations", 0) >= max_iterations:
             return "output_guard"
         return "agent"
@@ -1261,33 +1642,8 @@ def run_agent(
     approved_writes: bool = False,
     approved_calls: list[dict] | None = None,
     session_id: str = "",
+    active_document_id: str | None = None,
 ) -> dict:
-    """Run one turn of the agent loop.
-
-    Returns:
-      {"status": "done", "answer": str, "tool_calls": [...], "messages": [...],
-       "token_usage": {...}, "trace_id": str|None}
-      {"status": "needs_approval", "pending": [{"id","name","args"}], "tool_calls": [...],
-       "answer": None, "messages": [...], "token_usage": {...}, "trace_id": str|None}
-      {"status": "needs_clarification", "question": str, "options": [str], "answer": question,
-       "tool_calls": [...], "messages": [...], "token_usage": {...}, "trace_id": str|None}
-
-    Approval is BOUND to args: to approve a pending write, re-invoke with
-    approved_writes=True AND approved_calls=<the pending list you showed the user>;
-    a write runs only if its name+args match an approved call.
-
-    `messages` in the return is the growing LangChain message list — pass it back
-    in as `conversation_history` (plus the next user message) to continue the
-    conversation with memory of what was asked/called before.
-
-    The whole turn (agent tool-picking LLM calls, every dispatched tool, and any
-    LLM calls those tools make internally — e.g. search_documents' query_planner /
-    retrieval / answerer) runs inside ONE OpenTelemetry root span (`traced_request`,
-    no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set) and ONE token-usage sink, so a
-    single request shows up as a single trace_id in Grafana Tempo with every tool
-    as a child span, and "tokens used" in the API response covers the whole turn,
-    not just the agent's own tool-picking calls
-    """
     registry = registry if registry is not None else build_agent_registry()
     agent_cfg = (config.get("query") or {}).get("agent") or {}
     max_iterations = agent_cfg.get("max_iterations", 5)
@@ -1295,16 +1651,72 @@ def run_agent(
     clarify_tools = set(agent_cfg.get("clarify_tools") or ["request_clarification"])
 
     if llm is None:
-        # get_llm_for handles base_url/api_key overrides too (not just provider/model)
-        # — needed when the agent points at a DIFFERENT OpenAI-compatible endpoint
-        # than the global llm block (e.g. NVIDIA NIM vs z.ai — both provider: openai,
-        # different base_url/key; a provider-only diff check would miss this and try
-        # NVIDIA's model name against z.ai's endpoint).
         llm = get_llm_for(config, agent_cfg)
+
+    # 5-Tier Document Scope Resolution
+    try:
+        resolved_scope, active_fname, is_ambiguous_trigger = _resolve_turn_document_scope(
+            message, session_id, active_document_id, config
+        )
+    except Exception as scope_exc:
+        logger.warning("_resolve_turn_document_scope failed: %s", scope_exc)
+        resolved_scope, active_fname, is_ambiguous_trigger = None, None, False
+
+    if is_ambiguous_trigger:
+        from backend.storage.postgres_store import PostgresStore
+        _SEARCHABLE_EXTS = {".pdf", ".xlsx", ".xls", ".csv", ".docx", ".doc", ".txt", ".pptx", ".ppt"}
+        pg = PostgresStore(config=config)
+        try:
+            docs = pg.list_documents()
+            seen = set()
+            options = []
+            for d in docs:
+                fname = d.get("filename", "")
+                if not fname:
+                    continue
+                ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                if ext not in _SEARCHABLE_EXTS:
+                    continue
+                if fname not in seen:
+                    seen.add(fname)
+                    options.append(fname)
+        finally:
+            pg.conn.close()
+
+        clar_question = "Which document would you like to search?"
+        logger.info("⚡ [AMBIGUITY FAST-PATH] Returning request_clarification for ambiguous prompt")
+        return {
+            "status": "needs_clarification",
+            "question": clar_question,
+            "options": options,
+            "answer": clar_question,
+            "tool_calls": [{"id": "clarify_1", "name": "request_clarification", "args": {"question": clar_question, "options": options}}],
+            "execution_trace": [],
+            "messages": [HumanMessage(message)],
+            "token_usage": {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0},
+            "trace_id": None,
+        }
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
     is_question = not _is_greeting(message)
-    messages: list[BaseMessage] = [SystemMessage(SYSTEM_PROMPT)]
+
+    system_prompt_text = SYSTEM_PROMPT
+    if resolved_scope:
+        system_prompt_text += (
+            f"\n\n## ACTIVE DOCUMENT SCOPE RULES\n"
+            f"- Resolved Active Document: '{active_fname}' (Scope: {resolved_scope!r}).\n"
+            f"- For any question, 'this manual', 'this file', 'this document', or follow-up in this session, "
+            f"you MUST restrict your search_documents tool call by passing document_scope={resolved_scope!r}.\n"
+        )
+    elif is_ambiguous_trigger:
+        system_prompt_text += (
+            "\n\n## AMBIGUITY DISAMBIGUATION MANDATE\n"
+            "- The user asks an ambiguous question ('this manual', 'what is this about') but NO document is currently "
+            "active or specified, and multiple documents exist in the corpus. You are STRICTLY PROHIBITED from guessing "
+            "or doing an un-scoped search. You MUST call request_clarification to ask the user which manual they mean."
+        )
+
+    messages: list[BaseMessage] = [SystemMessage(system_prompt_text)]
     clean_history = [
         m for m in (conversation_history or [])
         if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
@@ -1321,6 +1733,71 @@ def run_agent(
     messages.append(HumanMessage(message))
 
 
+    import time
+    turn_t0 = time.time()
+    logger.info("\n================================================================================")
+    logger.info("[TURN START] Question: %r", message[:120])
+    logger.info("--------------------------------------------------------------------------------")
+
+    # --- Fast-Path: Pure User Greeting Bypass ---
+    if _is_pure_fast_greeting(message):
+        logger.info("⚡ [FAST GREETING] Pure greeting detected — executing 1-line greeting LLM call")
+        with _using_trace_sink() as _trace_sink, traced_request(
+            "agent_chat", input=message,
+            metadata={"session_id": session_id, "approved_writes": False},
+        ) as trace_info, usage.using_sink() as sink:
+            greeting_messages = [
+                SystemMessage(GREETING_SYSTEM_PROMPT),
+                HumanMessage(message),
+            ]
+            response = llm.invoke(greeting_messages, config={"max_tokens": 40})
+            model_name, provider_name = resolve_model_provider(config, agent_cfg)
+            usage.record_from_message("fast_greeting", response, prompt=greeting_messages, model=model_name, provider=provider_name)
+
+            raw_answer = clean_message_content(response.content).strip()
+            _append_trace({
+                "step": "Fast Greeting LLM Call",
+                "type": "llm_call",
+                "provider": provider_name,
+                "model": model_name,
+                "duration_ms": round((time.time() - turn_t0) * 1000, 2),
+                "decision": "Direct Dynamic Greeting"
+            })
+
+        token_usage = sink.totals()
+        calls_log = sink.get_calls_log()
+        execution_trace = list(_trace_sink)
+        total_turn_sec = round(time.time() - turn_t0, 2)
+        logger.info(
+            "✅ [TURN COMPLETE - FAST GREETING] Latency: %.2fs | Total Tokens: %d",
+            total_turn_sec, token_usage.get("total_tokens", 0)
+        )
+        logger.info("================================================================================\n")
+
+        if calls_log:
+            try:
+                from backend.storage.postgres_store import PostgresStore
+                pg = PostgresStore()
+                try:
+                    pg.write_llm_calls(document_id=None, calls=calls_log, session_id=session_id)
+                finally:
+                    pg.close()
+            except Exception as db_exc:
+                logger.warning("Failed to persist fast_greeting llm_calls to Postgres: %s", db_exc)
+
+        return {
+            "status": "done",
+            "answer": raw_answer,
+            "tool_calls": [],
+            "llm_calls": calls_log,
+            "execution_trace": [],
+            "messages": [HumanMessage(message), AIMessage(content=raw_answer)],
+            "token_usage": token_usage,
+            "trace_id": trace_info.get("trace_id"),
+            "guard_risk_score": 0,
+            "guard_policy": "allow",
+        }
+
     graph = _build_graph(llm, tool_schemas, registry, write_tools, clarify_tools,
                           max_iterations, is_question, config, agent_cfg, session_id=session_id)
 
@@ -1328,7 +1805,7 @@ def run_agent(
     # and tool dispatch below (however deep, e.g. search_documents' internal
     # query_planner/retrieval/answerer LLM calls) nests under this single trace
     # and accumulates into this single usage total. See tracing.py / usage.py.
-    with traced_request(
+    with _using_trace_sink() as _trace_sink, traced_request(
         "agent_chat", input=message,
         metadata={"session_id": session_id, "approved_writes": approved_writes},
     ) as trace_info, usage.using_sink() as sink:
@@ -1344,10 +1821,25 @@ def run_agent(
             "guard_evidences": [],
             "guard_risk_score": 0,
             "guard_policy": "allow",
+            "search_shortcircuit": False,
         })
 
     token_usage = sink.totals()
     calls_log = sink.get_calls_log()
+    execution_trace = list(_trace_sink)
+    total_turn_sec = round(time.time() - turn_t0, 2)
+
+    logger.info("--------------------------------------------------------------------------------")
+    logger.info(
+        "✅ [TURN COMPLETE] Total Latency: %.2fs | Total Tokens: %d (In: %d, Out: %d) | Steps Executed: %d",
+        total_turn_sec,
+        token_usage.get("total_tokens", 0),
+        token_usage.get("input_tokens", 0),
+        token_usage.get("output_tokens", 0),
+        len(execution_trace)
+    )
+    logger.info("================================================================================\n")
+
     if calls_log:
         try:
             from backend.storage.postgres_store import PostgresStore
@@ -1370,6 +1862,7 @@ def run_agent(
             "answer": clar.get("question"),
             "tool_calls": tool_calls,
             "llm_calls": calls_log,
+            "execution_trace": execution_trace,
             "messages": final_state["messages"],
             "token_usage": token_usage,
             "trace_id": trace_info["trace_id"],
@@ -1380,6 +1873,7 @@ def run_agent(
             "pending": final_state["pending_approval"],
             "tool_calls": tool_calls,
             "llm_calls": calls_log,
+            "execution_trace": execution_trace,
             "answer": None,
             "messages": final_state["messages"],
             "token_usage": token_usage,
@@ -1450,10 +1944,22 @@ def run_agent(
                             name=call.get("name")
                         ))
                 messages_for_fallback = fallback_messages + [SystemMessage(content=fallback_prompt)]
+                t_fb0 = time.time()
                 fallback_response = llm.invoke(messages_for_fallback)
+                fb_dur_ms = round((time.time() - t_fb0) * 1000, 2)
                 answer = clean_message_content(fallback_response.content)
                 model_name, provider_name = resolve_model_provider(config, agent_cfg)
                 usage.record_from_message("agent_fallback", fallback_response, prompt=messages_for_fallback, model=model_name, provider=provider_name)
+                
+                um = getattr(fallback_response, "usage_metadata", None) or {}
+                in_t = um.get("input_tokens", 0)
+                out_t = um.get("output_tokens", 0)
+                execution_trace.append({
+                    "step": "Fallback Synthesis LLM", "type": "llm_call",
+                    "provider": provider_name, "model": model_name,
+                    "prompt_tokens": in_t, "completion_tokens": out_t, "total_tokens": in_t + out_t,
+                    "duration_ms": fb_dur_ms
+                })
             except Exception as exc:
                 logger.warning("Agent fallback LLM invocation failed: %s", exc)
 
@@ -1473,9 +1979,11 @@ def run_agent(
         "answer": final_answer,
         "tool_calls": tool_calls,
         "llm_calls": calls_log,
+        "execution_trace": execution_trace,
         "messages": final_state["messages"],
         "token_usage": token_usage,
         "trace_id": trace_info["trace_id"],
         "guard_risk_score": final_state.get("guard_risk_score", 0),
         "guard_policy": final_state.get("guard_policy", "allow"),
     }
+

@@ -121,7 +121,11 @@ def _get_api_key(vcfg: dict, default_env_var: str) -> str | None:
     if api_key and "," in api_key:
         keys = [k.strip() for k in api_key.split(",") if k.strip()]
         if keys:
-            api_key = random.choice(keys)
+            chosen = random.choice(keys)
+            idx = keys.index(chosen)
+            masked = chosen[:6] + "..." + chosen[-4:] if len(chosen) > 10 else "..."
+            logger.info("Vision API call using rotated key %d of %d (%s)", idx + 1, len(keys), masked)
+            return chosen
     return api_key
 
 

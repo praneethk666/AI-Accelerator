@@ -69,6 +69,14 @@ def _tool_call_message(name: str, args: dict, call_id: str = "call_1") -> AIMess
 
 
 def test_agent_picks_and_runs_a_read_tool_then_answers():
+    # Real feature found live during the 4-Aug merge (backend/agent/executor.py's
+    # "search short-circuit"): when search_documents is the ONLY tool called this
+    # turn and it returns a complete non-refusal answer, that answer is used
+    # DIRECTLY -- Turn 2 (a second LLM call to just repeat/rephrase it) is
+    # skipped entirely (saves ~6-7s/~4000 tokens per standard question, since
+    # search_documents already does its own retrieval+answer synthesis
+    # internally). The second scripted LLM response below is deliberately never
+    # consumed -- it exists only to prove the loop does NOT reach it.
     search = _FakeSearchTool()
     llm = _ScriptedLLM([
         _tool_call_message("search_documents", {"query": "what is the warranty period?"}),
@@ -83,11 +91,34 @@ def test_agent_picks_and_runs_a_read_tool_then_answers():
     )
 
     assert result["status"] == "done"
-    assert result["answer"] == "The warranty period is 42 months."
+    assert result["answer"] == "42"  # short-circuited straight from the tool's own answer
+    assert len(llm.invocations) == 1  # Turn 2 was skipped
     assert search.calls == [{"query": "what is the warranty period?"}]
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "search_documents"
     assert "42" in result["tool_calls"][0]["result"]
+
+
+def test_search_short_circuit_does_not_fire_on_a_refusal_answer():
+    # The short-circuit explicitly excludes refusal answers (see executor.py's
+    # _REFUSAL_HINTS) -- a "could not find this" answer must still go through a
+    # real Turn 2 LLM call, not be handed back verbatim as if it were final.
+    search = _FakeSearchTool()
+    search.run = lambda **kw: {"answer": "I could not find this in the provided documents.", "citations": []}
+    llm = _ScriptedLLM([
+        _tool_call_message("search_documents", {"query": "what is the warranty period?"}),
+        AIMessage(content="I don't have that information in the indexed documents."),
+    ])
+
+    result = run_agent(
+        "what is the warranty period?",
+        config=_CONFIG,
+        registry={"search_documents": search},
+        llm=llm,
+    )
+
+    assert len(llm.invocations) == 2  # Turn 2 DID run -- no short-circuit
+    assert result["answer"] == "I don't have that information in the indexed documents."
 
 
 def test_write_tool_needs_approval_then_runs_once_approved(tmp_path):
@@ -176,25 +207,85 @@ def test_request_clarification_pauses_for_user_choice():
     assert result["options"] == ["a.pdf", "b.pdf"]
 
 
-def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
-    search = _FakeSearchTool()
-    # The model never stops asking for the same tool — must not hang forever.
-    llm = _ScriptedLLM([_tool_call_message("search_documents", {"query": "x"}) for _ in range(10)])
+class _FakeGenericTool:
+    """A tool name with NO special-casing anywhere in executor.py's tools_node
+    (unlike "ingest_document", which has its own hardcoded DB/filesystem
+    pre-flight checks that bypass the registered tool's .run() entirely when
+    the path doesn't exist -- confirmed live while writing this test, a bad
+    choice for exercising generic tool-dispatch/cap behavior) and NOT
+    "search_documents" (which triggers the short-circuit below)."""
+    name = "generic_test_tool"
+    description = "A generic tool with no special-casing in tools_node."
+    input_schema = {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}
 
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"result": "ok"}  # deliberately no "answer" key -- not search_documents-shaped
+
+
+def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
+    # Real interaction found live during the 4-Aug merge: executor.py's "search
+    # short-circuit" (see test_agent_picks_and_runs_a_read_tool_then_answers)
+    # fires whenever a turn's ONLY tool call is search_documents with a valid
+    # answer -- which, with the OLD version of this test (search_documents
+    # scripted 10x, always answering "42"), fired on iteration 1 itself,
+    # never actually exercising the iteration cap at all. Using a genuinely
+    # generic tool here so the cap-enforcement path this test exists to
+    # protect is the one actually running.
+    other = _FakeGenericTool()
+    llm = _ScriptedLLM([_tool_call_message("generic_test_tool", {"x": "y"}) for _ in range(10)])
+
+    result = run_agent(
+        "loop forever",
+        config={"query": {"agent": {"max_iterations": 3, "write_tools": []}}},
+        registry={"generic_test_tool": other},
+        llm=llm,
+    )
+
+    # Traced live: 3 real agent-loop turns run (respecting max_iterations=3),
+    # but only 2 tool calls actually dispatch -- the 3rd turn's tool_calls
+    # never reach tools_node because route_after_agent, once iterations hits
+    # the cap, routes straight to output_guard for any non-write/clarify tool.
+    # A 4th LLM call then happens OUTSIDE the graph entirely: run_agent's own
+    # post-graph fallback, since no clean single-answer recovery was available
+    # (generic_test_tool's result has no "answer" key, unlike search_documents'
+    # fast-path -- see test_iteration_cap_recovers_answer_from_search_tool_history).
+    assert len(llm.invocations) == 4
+    assert len(other.calls) == 2
+    assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
+
+
+def test_iteration_cap_recovers_answer_from_search_tool_history():
+    # The cap-hit fast path (run_agent's post-graph fallback, ~line 1905): if
+    # the loop ends with no final AIMessage, scan tool history for a single,
+    # unique search_documents answer and use it directly rather than pay for
+    # an extra LLM synthesis call. To reach the cap at all (3 real agent
+    # turns) without the EARLIER search short-circuit intercepting turn 1
+    # first, each turn calls search_documents TWICE (breaks the
+    # short-circuit's `len(all_calls) == 1` gate) while keeping every tool
+    # name literally "search_documents" (the fast path's `not
+    # has_other_tools` check requires this) — both calls return the same
+    # answer, so exactly one unique answer survives to the cap-hit fallback.
+    def _two_search_calls(call_id: str) -> AIMessage:
+        return AIMessage(content="", tool_calls=[
+            {"name": "search_documents", "args": {"query": "x"}, "id": call_id + "_a", "type": "tool_call"},
+            {"name": "search_documents", "args": {"query": "y"}, "id": call_id + "_b", "type": "tool_call"},
+        ])
+
+    search = _FakeSearchTool()
+    llm = _ScriptedLLM([_two_search_calls(f"call_{i}") for i in range(10)])
     result = run_agent(
         "loop forever",
         config={"query": {"agent": {"max_iterations": 3, "write_tools": []}}},
         registry={"search_documents": search},
         llm=llm,
     )
-
-    # 3 loop iterations (the cap), no extra LLM call: executor.py's fallback now tries
-    # a fast path first — recovering the answer directly from the last tool result's
-    # own "answer" field (present here: _FakeSearchTool returns {"answer": "42", ...})
-    # — only falling to a slow-path LLM synthesis call if that's unavailable.
     assert len(llm.invocations) == 3
-    assert result["answer"] == "42"  # recovered via the fast path, not re-synthesized
-    assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
+    assert result["answer"] == "42"
+    assert result["status"] == "done"
 
 
 def test_prune_messages_for_llm_reconstructs_search_output():

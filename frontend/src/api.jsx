@@ -99,12 +99,13 @@ export const getProgress = async (fileId) => {
  * @param {boolean} approvedWrites
  * @returns {Promise} { status, answer, pending, tool_calls }
  */
-export const sendAgentChat = async (message, sessionId, approvedWrites = false, approvedCalls = null, signal = null) => {
+export const sendAgentChat = async (message, sessionId, approvedWrites = false, approvedCalls = null, signal = null, activeDocumentId = null) => {
   return API.post('/agent/chat', {
     message,
     session_id: sessionId,
     approved_writes: approvedWrites,
     approved_calls: approvedCalls,
+    active_document_id: activeDocumentId,
   }, { timeout: AGENT_TIMEOUT_MS, signal });
 };
 
@@ -176,6 +177,6 @@ export const saveProfile = async (name, yamlText) =>
 export const activateProfile = async (name) =>
   API.post('/config/activate', { name });
 
-export const checkDoclingServer = async () => API.get('/health/docling-server', { timeout: 8000 });
+export const checkDoclingServer = async (url, mode) => API.get('/health/docling-server', { params: { url, mode }, timeout: 8000 });
 
 export default API;

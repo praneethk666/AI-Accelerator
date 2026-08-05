@@ -30,8 +30,6 @@ from backend.core.tool import PipelineState
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 CONTENT_TYPES = {"text", "heading", "table", "image_caption"}
 ATOMIC_TYPES = {"table", "image_caption"}  # one chunk each, never split
 
@@ -232,13 +230,55 @@ def _split_table_block(block: dict, size: int, document_id: str | None,
     return out
 
 
+# Heuristic extractor for part/drawing/balloon codes (e.g. "A07", "KB-AE000213-A",
+# "TA-BA-6X12", "MG27RCZ229AA") so a query for an exact code can filter chunks
+# directly instead of relying purely on embedding similarity — this is what lets
+# "what is A07" match BOTH the section-view caption that mentions "balloon A07"
+# and the parts-table row for A07, even though their prose is unrelated.
+# Requires a mix of letters+digits (3+ chars) so plain English words and bare
+# dimension numbers don't get pulled in as false "codes." Tune against your
+# real corpus — this is a first pass, not a validated pattern.
+_COMPONENT_CODE_RE = re.compile(
+    r"\b(?=[A-Za-z0-9][A-Za-z0-9\-*/.]{2,}\b)(?=[A-Za-z0-9\-*/.]*[A-Za-z])(?=[A-Za-z0-9\-*/.]*\d)"
+    r"[A-Za-z0-9][A-Za-z0-9\-*/.]*\b"
+)
+
+
+def _extract_component_codes(text: str, table_data: dict | None = None) -> list[str]:
+    haystack = text or ""
+    if table_data:
+        for row in table_data.get("rows") or []:
+            haystack += " " + " ".join(str(c) for c in row if c)
+    codes = {m.group(0).upper().strip(".-") for m in _COMPONENT_CODE_RE.finditer(haystack)}
+    codes = {c for c in codes if len(c) >= 3 and not c.replace(".", "").isdigit()}
+    return sorted(codes)
+
+
 def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
+    block_metadata = block.get("metadata") or {}
+    tags: dict = {}
+    # Carry structural signals through from the block so retrieval can filter/
+    # boost by them. Previously dropped entirely at chunk time — meant a table
+    # row and a section-view caption were indistinguishable to the retriever,
+    # and "what view is this code in" had no answer at all.
+    if block.get("type"):
+        tags["block_type"] = block.get("type")
+    if block_metadata.get("zone_type"):
+        tags["zone_type"] = block_metadata["zone_type"]
+    if block_metadata.get("label"):
+        tags["region_label"] = block_metadata["label"]
+    if block.get("confidence") is not None:
+        tags["extraction_confidence"] = block.get("confidence")
+    codes = _extract_component_codes(text, block.get("table_data"))
+    if codes:
+        tags["component_codes"] = codes
+
     chunk = {
         "chunk_id": str(uuid.uuid4()),
         "document_id": block.get("document_id") or document_id,
         "text": text,
         "token_count": _ntok(text),
-        "tags": {},  # categorize/enrich_chunks fill these later
+        "tags": tags,  # categorize/enrich_chunks fill in more later
         "source_ref": block.get("source_ref"),
     }
     if block.get("type") == "table":
@@ -252,9 +292,6 @@ def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
         chunk["redacted"] = True
         chunk["redaction_reason"] = block["metadata"].get("redaction_reason")
     return chunk
-
-
-import re
 
 
 def _clean_str(val: str) -> str:
@@ -516,161 +553,6 @@ def _try_extract_warning_chunk(block: dict, document_id: str | None, ref_fn) -> 
     return chunk
 
 
-def _try_extract_cad_title_chunk(block: dict, document_id: str | None, ref_fn) -> dict | None:
-    """If a block represents a CAD title block, unify drawing number, company, approvals,
-    and metadata into 1 high-density CAD Title Block Chunk."""
-    text = (block.get("text") or "").strip()
-    if not ("drawing no" in text.lower() or "title block" in text.lower()):
-        return None
-
-    # A CAD title block is a small metadata block, not a massive BOM or component list table.
-    # Exclude blocks that are large tables (more than 5 rows) or have extremely long text.
-    if block.get("type") == "table":
-        td = block.get("table_data") or {}
-        rows = td.get("rows") or []
-        if len(rows) > 5:
-            return None
-    elif len(text) > 2000 or _ntok(text) > 400:
-        return None
-
-    source_ref = ref_fn(block.get("source_ref"))
-    chunk_text = f"# CAD Drawing Title Block & Specifications\n\n{text}"
-
-    # Extract drawing number and company for metadata filtering. Both are read from
-    # the block's own text — never hardcode a specific company name here, the same
-    # extractor runs over drawings from any client.
-    drawing_no = ""
-    drawing_match = re.search(r"Drawing No\*?:\s*([A-Za-z0-9\-\_]+)", text, re.IGNORECASE)
-    if drawing_match:
-        drawing_no = drawing_match.group(1)
-
-    company = ""
-    company_match = re.search(
-        r"([A-Z][A-Za-z0-9&.,\- ]*(?:CORPORATION|CORP\.?|CO\.,?\s*LTD\.?|INC\.?))",
-        text,
-    )
-    if company_match:
-        company = company_match.group(1).strip()
-
-    chunk = {
-        "chunk_id": str(uuid.uuid4()),
-        "document_id": block.get("document_id") or document_id,
-        "text": chunk_text,
-        "token_count": _ntok(chunk_text),
-        "source_ref": source_ref,
-        "tags": {
-            "document_type": "cad",
-            "chunk_type": "cad_title_block",
-            "drawing_number": drawing_no,
-            "company": company,
-            "has_table": False,
-        },
-    }
-    return chunk
-
-
-def _try_extract_cad_component_chunks(block: dict, document_id: str | None, ref_fn, size: int = 400) -> list[dict] | None:
-    """If a block or table represents CAD component specifications (Steel Pipe, Hose, Copper Pipe, Tube),
-    unify the matrix into 1 complete self-contained table chunk per component type, or split it if it exceeds target size."""
-    text = (block.get("text") or "").strip()
-    grid = _extract_grid_from_block(block)
-    full_str = f"{text} " + (" ".join(" ".join(r) for r in grid) if grid else "")
-
-    component_type = None
-    if re.search(r"\b(steel pipe|pipe specifications)\b", full_str, re.IGNORECASE) or re.search(r"\bS\d+ø\b", full_str):
-        component_type = "steel_pipe"
-    elif re.search(r"\b(hose|hose specifications)\b", full_str, re.IGNORECASE) or re.search(r"\bH\d+\(\d+/\d+\)\b", full_str):
-        component_type = "hose"
-    elif re.search(r"\b(copper pipe)\b", full_str, re.IGNORECASE) or re.search(r"\bC\d+ø\b", full_str):
-        component_type = "copper_pipe"
-    elif re.search(r"\b(tube|vinyl tube)\b", full_str, re.IGNORECASE):
-        component_type = "tube"
-
-    if not component_type:
-        return None
-
-    source_ref = ref_fn(block.get("source_ref"))
-    comp_title = component_type.replace("_", " ").title()
-
-    if grid and len(grid) >= 2:
-        headers = grid[0]
-        rows = grid[1:]
-        md_table = _rebuild_markdown(headers, rows)
-        chunk_text = f"# Material Specifications - {comp_title}\n\n{md_table}"
-        
-        # If it fits within target size, return single chunk
-        if _ntok(chunk_text) <= size:
-            return [{
-                "chunk_id": str(uuid.uuid4()),
-                "document_id": block.get("document_id") or document_id,
-                "text": chunk_text,
-                "token_count": _ntok(chunk_text),
-                "source_ref": source_ref,
-                "tags": {
-                    "document_type": "cad",
-                    "chunk_type": "cad_component_table",
-                    "component": component_type,
-                    "has_table": True,
-                },
-            }]
-            
-        # Split by row-groups using the row splitter
-        groups = _split_table_rows(headers, rows, size)
-        out = []
-        row_cursor = 0
-        for i, group in enumerate(groups):
-            sub_ref = dict(source_ref)
-            sub_ref["table_part"] = i + 1
-            sub_ref["table_parts"] = len(groups)
-            sub_ref["table_row_range"] = f"{row_cursor + 1}-{row_cursor + len(group)}"
-            row_cursor += len(group)
-            
-            md = _rebuild_markdown(headers, group)
-            sub_chunk_text = f"# Material Specifications - {comp_title}\n\n{md}"
-            
-            if _ntok(sub_chunk_text) > size * 6:
-                units, join = _units(sub_chunk_text)
-                sub_chunk_text = join(units[: size * 6]) + " …[truncated, oversized row]"
-                
-            out.append({
-                "chunk_id": str(uuid.uuid4()),
-                "document_id": block.get("document_id") or document_id,
-                "text": sub_chunk_text,
-                "token_count": _ntok(sub_chunk_text),
-                "source_ref": sub_ref,
-                "tags": {
-                    "document_type": "cad",
-                    "chunk_type": "cad_component_table",
-                    "component": component_type,
-                    "has_table": True,
-                },
-            })
-        return out
-    else:
-        chunk_text = f"# Material Specifications - {comp_title}\n\n{text}"
-        return [{
-            "chunk_id": str(uuid.uuid4()),
-            "document_id": block.get("document_id") or document_id,
-            "text": chunk_text,
-            "token_count": _ntok(chunk_text),
-            "source_ref": source_ref,
-            "tags": {
-                "document_type": "cad",
-                "chunk_type": "cad_component_table",
-                "component": component_type,
-                "has_table": True,
-            },
-        }]
-
-
-
-def _rebuild_markdown(headers: list, rows: list[list]) -> str:
-    head = "| " + " | ".join(str(h) for h in headers) + " |"
-    sep = "| " + " | ".join("---" for _ in headers) + " |"
-    body = ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]
-    return "\n".join([head, sep, *body])
-
-
 def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_fn) -> list[dict] | None:
     """If a table block contains a multi-column model specification matrix, split it
     into one self-contained chunk per model column (e.g. Q2AA 07040D, 08100D, etc.).
@@ -689,15 +571,28 @@ def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_f
     if any(kw in h for h in headers_lower for kw in ["cause", "action", "factor", "remedy"]):
         return None
 
-    # Gate 2: Check if header columns contain real model codes or alphanumeric series
-    model_headers_count = sum(1 for h in header_row[1:] if re.search(r"[A-Z0-9]{4,}", str(h), re.IGNORECASE) or re.search(r"\d{3,}", str(h)))
+    # Gate 2: Check if header columns contain real model codes or alphanumeric
+    # series — e.g. "07040D", "SGMPS-01A2E2S-E". Requires BOTH a letter and a
+    # digit in the same run; a bare English word like "COMMON" or "DRAWING"
+    # (all-letters, no digit) must not qualify, or every ordinary table header
+    # matches this "gate." (Validated live: "COMMON DRAWING" / "ARRANGEMENT
+    # ASSEMBLY DRAWING NO." passed the old letters-only regex and caused a
+    # 2-row checkbox table to be split into 3 near-duplicate chunks.)
+    _MODEL_CODE_RE = re.compile(r"(?=[A-Za-z0-9\-]{4,})(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9\-]+")
+    model_headers_count = sum(1 for h in header_row[1:] if _MODEL_CODE_RE.search(str(h)))
     if model_headers_count == 0:
         return None
 
-    # Gate 3: Check if table contains technical units
+    # Gate 3: Check if the table contains technical units ATTACHED TO A NUMBER
+    # (e.g. "100 W", "3000 min-1") — not a bare substring match. The previous
+    # version checked `"a" in full_str` / `"v" in full_str`, which matches any
+    # text containing the letters "a"/"v" at all (e.g. "drawing", "arranged")
+    # and effectively never filtered anything out.
     full_str = " ".join(" ".join(str(c) for c in r) for r in grid).lower()
-    units_count = sum(1 for u in ["kw", "n・m", "n.m", "min-1", "rpm", "v", "a", "kg", "mm", "hz"] if u in full_str)
-    if units_count == 0:
+    _UNIT_RE = re.compile(
+        r"\d\s*(kw|n[・.]?m|min-1|rpm|kg|mm|hz|w|v|a)\b", re.IGNORECASE
+    )
+    if not _UNIT_RE.search(full_str):
         return None
 
     model_start_col = -1
@@ -869,7 +764,6 @@ def _classify_table_for_repair(block: dict, section_lead: str, preceding_text: s
         reasons.append("missing_context_anchor")
     return {"needs_llm": len(reasons) > 0, "reasons": reasons}
 
-
 def _disambiguate_headers(headers: list) -> list[str]:
     """Real extracted tables sometimes have a genuinely duplicated header (e.g. a
     merged/colspan header split wrong upstream produces 'Factor 1' twice). Renaming
@@ -905,6 +799,28 @@ _REPAIR_STOPWORDS = {
     "when", "where", "which", "while", "who", "whom", "why", "with", "would", "you", "your", "yours",
     "yourself", "yourselves",
     "blank", "none", "empty", "na", "null", "nil", "yes", "no", "true", "false",
+    # Connecting/explanatory synthesis words an LLM repair commonly uses to link a
+    # row's own cell content into a sentence -- real gap found during the 4-Aug
+    # merge: a discarded parallel implementation (validate_repaired_chunks) had
+    # accumulated this domain-specific set independently, and testing it against
+    # THIS function (the one actually in use) showed the same synthesis words
+    # ("indicates", "recommended", "context", ...) tripped traceability here too.
+    "context", "indicates", "indicating", "indicated", "event", "issue", "issues",
+    "observed", "resulting", "triggered", "encountered", "noted", "affected",
+    "recommended", "potential", "problem", "factors", "lead", "related", "initial",
+    "activation", "overheating", "upon", "enabling", "leading", "alert", "within",
+    "system", "determined", "showing", "another", "also", "contributing",
+    "specific", "required", "possible", "show", "occurrence", "showed", "results",
+    "present", "applicable", "identified", "includes", "checking", "replacing",
+    "part", "procedure", "basis", "checked", "situation", "linked", "types",
+    "servo", "suggests", "causes", "due", "turned", "condition", "detected",
+    "contributor", "indications", "arise", "activated", "requires", "significant",
+    "involves", "characterized", "occurrences", "happen", "encountering", "reason",
+    "denotes", "regarding", "sporadic", "component", "operation", "relates",
+    "notable", "surrounded", "relevant", "marked", "checks", "details", "document",
+    "happened", "recorded", "relation", "relating", "scenario", "may",
+    "furthermore", "addition", "following", "associated", "states", "section",
+    "table", "row",
 }
 
 
@@ -948,7 +864,6 @@ def _row_traceability_error(chunk_text: str, row_cells: list, context: str) -> s
     if len(untraceable) > max_untraceable:
         return f"untraceable words not present in this row or its context: {untraceable}"
     return None
-
 
 def _validate_repaired_rows(
     parsed: list[dict], headers: list, rows: list[list], section_lead: str, preceding_text: str,
@@ -1135,9 +1050,21 @@ def _get_heading_level(text: str, bbox: list[float] | None) -> int:
     if bbox and len(bbox) == 4:
         height = bbox[3] - bbox[1]
         indent = bbox[0]
-        if height >= 12.0:
+        # These thresholds were calibrated for point-space geometry
+        # (~600-800pt pages). Some extractors instead emit bboxes normalized
+        # 0.0-1.0, against which 12.0/75.0 are unreachable (max possible
+        # height/indent is 1.0) — silently defaulting every normalized-bbox
+        # block to level 2. Detect the coordinate space and scale
+        # accordingly. The normalized fractions below (2% page height, 10%
+        # page width) are a first approximation — tune against real heading
+        # examples once normalized-bbox documents with real headings are
+        # available.
+        normalized = all(0.0 <= v <= 1.0 for v in bbox)
+        height_threshold = 0.02 if normalized else 12.0
+        indent_threshold = 0.10 if normalized else 75.0
+        if height >= height_threshold:
             return 1
-        if indent >= 75.0:
+        if indent >= indent_threshold:
             return 3
         return 2
     return 2  # default level
@@ -1156,11 +1083,24 @@ def _validate_spatial_conflation(block: dict, blocks: list[dict], caption_text: 
     if not page or len(bbox) != 4:
         return False
 
+    # These thresholds (300pt "large region", 150pt "far away") were
+    # calibrated for point-space geometry. Some extractors instead emit
+    # bboxes normalized 0.0-1.0, against which 300.0/150.0 are unreachable —
+    # every normalized-bbox block would silently skip both checks below
+    # (never excluded as page-summary, never flagged as conflated), making
+    # this validator a no-op. Detect the coordinate space and scale
+    # threshold accordingly. Fractions below are first-pass approximations
+    # (roughly matching 300/150 as a fraction of a ~700pt page) — tune
+    # against real conflation examples if you have them.
+    normalized = all(0.0 <= v <= 1.0 for v in bbox)
+    big_region_threshold = 0.4 if normalized else 300.0
+    far_distance_threshold = 0.2 if normalized else 150.0
+
     # Exclude page-level summary diagrams
     width = bbox[2] - bbox[0]
     height = bbox[3] - bbox[1]
-    if width > 300.0 or height > 300.0:
-        logger.info("Diagram block %s: Spans page summary region (%.1fx%.1f) - skipping conflation validator", block.get("block_id"), width, height)
+    if width > big_region_threshold or height > big_region_threshold:
+        logger.info("Diagram block %s: Spans page summary region (%.3fx%.3f) - skipping conflation validator", block.get("block_id"), width, height)
         return False
 
     for token in tokens:
@@ -1183,8 +1123,12 @@ def _validate_spatial_conflation(block: dict, blocks: list[dict], caption_text: 
                 dist = (dx**2 + dy**2) ** 0.5
                 if dist < min_dist:
                     min_dist = dist
-            logger.info("Diagram block %s: Token '%s' found at minimum distance of %.1f pt from figure bbox", block.get("block_id"), token, min_dist)
-            if min_dist > 150.0:
+            # Log spatial distance (Refinement #1)
+            unit = "normalized" if normalized else "pt"
+            logger.info("Diagram block %s: Token '%s' found at minimum distance of %.3f %s from figure bbox", block.get("block_id"), token, min_dist, unit)
+
+            # Distance threshold check (large distance indicates distant conflation/reference hallucination)
+            if min_dist > far_distance_threshold:
                 return True
 
     return False
@@ -1329,19 +1273,6 @@ def chunk_blocks(
         text = (block.get("text") or "").strip()
         pg = _block_page(block)
         ref = block.get("source_ref") or {}
-
-        # 0. CAD Title Block & Component Specification Handlers
-        cad_title = _try_extract_cad_title_chunk(block, document_id, _ref)
-        if cad_title:
-            flush()
-            chunks.append(cad_title)
-            continue
-
-        cad_comp = _try_extract_cad_component_chunks(block, document_id, _ref, size)
-        if cad_comp:
-            flush()
-            chunks.extend(cad_comp)
-            continue
 
         if buf_page is not None and pg is not None and pg != buf_page:
             if buf_heading_only:
@@ -1539,6 +1470,7 @@ class ChunkTool:
             repair_hard_tables=cfg.get("repair_hard_tables", False),
             config=config,
         )
+            
         state.setdefault("chunks", []).extend(chunks)
         return state
 

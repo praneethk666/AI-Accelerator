@@ -33,6 +33,8 @@ import {
   ChevronUpIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CommandLineIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline';
 
 // "2m ago" / "3h ago" / "5d ago" — good enough for a sidebar, no library needed.
@@ -325,6 +327,12 @@ const ChatPage = () => {
                     toolCalls: m.tool_calls || [],
                     tokenUsage: m.token_usage || null,
                     traceId: m.trace_id || null,
+                    // Restore clarification / approval state from DB metadata
+                    status: m.status || m.metadata?.status,
+                    options: m.options || m.metadata?.options || [],
+                    question: m.question || m.metadata?.question || null,
+                    pending: m.pending || m.metadata?.pending || [],
+                    clarifyAnswered: m.clarifyAnswered || m.metadata?.clarifyAnswered || false,
                     // Show "Ingesting..." on the empty placeholder if a file was attached
                     ...(m.role === 'assistant' && !m.content && hadFileAttachment
                       ? { isIngesting: true } : {}),
@@ -478,6 +486,12 @@ const ChatPage = () => {
             toolCalls: m.tool_calls || [],
             tokenUsage: m.token_usage || null,
             traceId: m.trace_id || null,
+            // Restore clarification / approval state from DB metadata
+            status: m.status || m.metadata?.status,
+            options: m.options || m.metadata?.options || [],
+            question: m.question || m.metadata?.question || null,
+            pending: m.pending || m.metadata?.pending || [],
+            clarifyAnswered: m.clarifyAnswered || m.metadata?.clarifyAnswered || false,
             // Restore direct ingestion fields from DB metadata
             type: m.type || m.metadata?.type,
             filename: m.filename || m.metadata?.filename,
@@ -601,6 +615,7 @@ const ChatPage = () => {
     status: data.status,
     content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
     toolCalls: data.tool_calls || [],
+    executionTrace: data.execution_trace || [],
     pending: data.pending || [],
     question: data.question || null,
     options: data.options || [],
@@ -635,6 +650,7 @@ const ChatPage = () => {
         role: 'assistant',
         content: '',
         toolCalls: [],
+        executionTrace: [],
         pending: [],
         question: null,
         options: [],
@@ -645,8 +661,9 @@ const ChatPage = () => {
       },
     ]);
 
+    const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
     try {
-      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal);
+      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -661,6 +678,7 @@ const ChatPage = () => {
                 status: data.status,
                 content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
                 toolCalls: data.tool_calls || [],
+                executionTrace: data.execution_trace || [],
                 pending: data.pending || [],
                 question: data.question || null,
                 options: data.options || [],
@@ -670,6 +688,7 @@ const ChatPage = () => {
             : m
         )
       );
+
       setSessionLoading(reqSession, false);
       loadSessions();
       updatePageViewer(data);
@@ -792,7 +811,8 @@ const ChatPage = () => {
     ]);
 
     try {
-      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal);
+      const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
+      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -807,6 +827,7 @@ const ChatPage = () => {
                 status: data.status,
                 content: typeof data.answer === 'string' ? data.answer : (data.answer ? JSON.stringify(data.answer) : ''),
                 toolCalls: data.tool_calls || [],
+                executionTrace: data.execution_trace || [],
                 pending: data.pending || [],
                 question: data.question || null,
                 options: data.options || [],
@@ -816,6 +837,7 @@ const ChatPage = () => {
             : m
         )
       );
+
       setSessionLoading(reqSession, false);
       loadSessions();
       updatePageViewer(data);
@@ -1055,7 +1077,8 @@ const ChatPage = () => {
     ]);
 
     try {
-      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal);
+      const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
+      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -1160,7 +1183,8 @@ const ChatPage = () => {
     );
 
     try {
-      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal);
+      const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
+      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -2398,6 +2422,8 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
   };
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isListExpanded, setIsListExpanded] = useState(false);
+  const [isTraceExpanded, setIsTraceExpanded] = useState(false);
+
 
   // Sources for the "View Source" button — filtered + sorted by score.
   // Covers PDF pages, docx (whole doc, snippet-matched), and images (whole file).
@@ -2761,6 +2787,9 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                     <span>Context: {msg.tokenUsage.context_tokens}</span>
                   </div>
                 )}
+
+
+
 
                 {/* Write awaiting approval */}
                 {msg.status === 'needs_approval' && (

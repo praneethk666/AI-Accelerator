@@ -30,6 +30,18 @@ from backend.core.paths import display_filename
 
 logger = logging.getLogger(__name__)
 
+# Suppress noisy internal library loggers from docling, docling_core, etc.
+for _noisy in [
+    "docling",
+    "docling.document_converter",
+    "docling.pipeline",
+    "docling.pipeline.standard_pdf_pipeline",
+    "docling.pipeline.base_pipeline",
+    "docling_core",
+    "deepsearch_glm",
+]:
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 # One converter per process — building it loads the layout + TableFormer models.
 _CONVERTER = None
 _CONVERTER_KEY = None
@@ -223,9 +235,12 @@ def _vlm_table(pdf_path, page_no, bbox, config) -> str:
     from backend.vision.pdf_cropper import PDFCropper
     from backend.core.vision_client import describe_image
     from backend.core import prompts
+    logger.info("👁️ [Vision API] Page %s: Complex table detected -> Transcribing via Vision model...", page_no)
     png = PDFCropper().crop_region(pdf_path, page_no, bbox)
     vcfg = {"vision": config.get("vision_ocr")}
-    return describe_image(png, prompts.TABLE_TRANSCRIBE, vcfg).strip()
+    res = describe_image(png, prompts.TABLE_TRANSCRIBE, vcfg).strip()
+    logger.info("✅ [Vision API] Page %s: Vision table transcription completed", page_no)
+    return res
 
 
 def _local_table_engine(config) -> bool:
@@ -953,8 +968,10 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 else:
                     blocks.append(b)
 
+    import time
+    start_time = time.perf_counter()
+
     if mode == "local":
-        logger.info("docling: Running local extraction for doc %s", document_id)
         if report is not None:
             report["mode"] = "local"
         fdoc = None
@@ -980,6 +997,9 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         except Exception as e:
             logger.warning("Failed to open PDF to count pages: %s", e)
 
+        logger.info("📄 [Docling PDF] Starting extraction: '%s' (%d pages) [Mode: %s | Table Source: %s]",
+                    filename, total_pages, mode, table_source)
+
         # accumulate page text so each figure is captioned WITH its page context
         page_text = {}
         pic_jobs = []   # defer figure crop/caption until page text is gathered
@@ -997,6 +1017,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 check_cancelled(document_id)
                 _update_page_progress(document_id, "docling_pdf", pg_num, total_pages)
                 _page_start_idx = len(blocks)   # checkpoint boundary -- see end of loop body
+                pg_start_blocks = len(blocks)   # structured per-page logging -- see end of loop body
+                pg_start_pics = len(pic_jobs)
                 try:
                     res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
                     doc = res.document
@@ -1067,6 +1089,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         if use_pymupdf:
                             td = pmd_td
                             md = _render_table_markdown(td)
+                            logger.info("📊 [Docling Table] Page %d: Ruled table extracted via PyMuPDF vector lines", page_no)
                         elif use_vlm:
                             td = None
                             if _local_table_engine(config):
@@ -1087,6 +1110,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                                     md, td = _table_markdown(item, doc), _table_data(item, doc)
                         else:
                             md, td = _table_markdown(item, doc), _table_data(item, doc)
+                            logger.info("📊 [Docling Table] Page %d: Structured table extracted via TableFormer (%d cols)", page_no, ncols)
                         if td is None:
                             td = _markdown_table_data(md)
                         if report is not None:
@@ -1123,6 +1147,12 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 _checkpoint_page_blocks(
                     document_id, pg_num,
                     [b for b in blocks[_page_start_idx:] if b is not None])
+
+                pg_text_cnt = sum(1 for b in blocks[pg_start_blocks:] if b and b.get("type") in ("text", "heading"))
+                pg_tbl_cnt = sum(1 for b in blocks[pg_start_blocks:] if b and b.get("type") == "table")
+                pg_pic_cnt = len(pic_jobs) - pg_start_pics
+                logger.info("📑 [Docling PDF] Page %d/%d: Extracted %d text block(s), %d table(s), %d figure(s)",
+                            pg_num, total_pages, pg_text_cnt, pg_tbl_cnt, pg_pic_cnt)
         else:
             # Fallback to full conversion if page count could not be retrieved
             res = conv.convert(pdf_path)
@@ -1342,14 +1372,12 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for rec in report.get("per_page", {}).values():
             rec["figures"]["dropped"] = rec["figures"]["proposed"] - rec["figures"]["kept"]
 
-    if mode == "remote":
-        logger.info("docling (remote): %d blocks from %d pages (%d tables, %d pictures)",
-                    len(blocks), report["pages"]["total"] if report else 0,
-                    report["tables"]["total"] if report else 0,
-                    report["figures"].get("proposed", 0) if report else 0)
-    else:
-        logger.info("docling: %d blocks from %d pages (%d tables, %d pictures)",
-                    len(blocks), len(doc.pages), len(doc.tables), len(doc.pictures))
+    elapsed = time.perf_counter() - start_time
+    n_text = sum(1 for b in blocks if b.get("type") in ("text", "heading"))
+    n_tables = sum(1 for b in blocks if b.get("type") == "table")
+    n_figs = sum(1 for b in blocks if b.get("type") == "image_caption")
+    logger.info("✨ [Docling PDF] Completed '%s': %d total blocks (%d text, %d tables, %d figures) in %.2fs",
+                filename, len(blocks), n_text, n_tables, n_figs, elapsed)
     return blocks
 
 
@@ -1551,6 +1579,8 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
 
     known_caption = (cap_info or {}).get("text") or ""
     # Gate FIRST (before writing the crop to disk) so dropped furniture leaves no file.
+    logger.info("👁️ [Vision API] Page %s: Captioning figure crop (bbox: %s) via Vision model...",
+                page_no, [round(float(x), 1) for x in bbox] if bbox else [])
     try:
         from backend.extraction.vision_ocr import classify_caption_crop
         res = classify_caption_crop(png, " ".join(page_lines)[:1000], config,
@@ -1560,7 +1590,16 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
         res = {"keep": True, "kind": "unknown", "caption": known_caption or "[figure]"}
         b["metadata"]["pending_vision"] = True
     if not res.get("keep"):
+        logger.info("🗑️ [Semantic Gate] Page %s: Filtered non-informative element (kind: %s)",
+                    page_no, res.get("kind", "unknown"))
         return None  # logo/banner/text/decoration/blank — not a real figure
+
+    cap_snippet = (res.get("caption") or "[figure]").strip().replace("\n", " ")
+    if len(cap_snippet) > 80:
+        cap_snippet = cap_snippet[:77] + "..."
+    logger.info("✅ [Vision API] Page %s: Caption generated [%s]: \"%s\"",
+                page_no, res.get("kind", "unknown"), cap_snippet)
+
     img_dir = os.path.join("uploads", "images", document_id)
     os.makedirs(img_dir, exist_ok=True)
     fname = f"{b['block_id']}.png"

@@ -51,9 +51,18 @@ _noisy_loggers = [
 for _logger_name in _noisy_loggers:
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
 
+class EndpointFilter(logging.Filter):
+    """Filter out noisy background polling endpoints (/progress, /health) from Uvicorn access logs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("/progress" in msg or "/health" in msg)
+
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
 from backend.core.db_logging import setup_db_logging
 # We don't hold the reference to listener here, it runs natively in background
 setup_db_logging(level=logging.INFO)
+
 
 
 
@@ -461,6 +470,8 @@ class AgentChatRequest(BaseModel):
     # the pending write(s) the user approved, echoed back so approval is bound to the
     # exact name+args that were shown (not whatever the model re-proposes).
     approved_calls: list[dict] | None = None
+    active_document_id: str | None = None  # Active document open in frontend viewer
+
 
 
 class ConfigSave(BaseModel):
@@ -551,7 +562,19 @@ def _settings_view(cfg: dict) -> dict:
                 return default
             cur = cur.get(k)
         return cur if cur is not None else default
+    load_dotenv(override=True)
     view = {k: dig(p) for k, p in _SETTINGS_MAP.items()}
+    # Resolve env var placeholder in docling_server_url if present
+    durl = str(view.get("docling_server_url") or "").strip()
+    if durl.startswith("${") and durl.endswith("}"):
+        var_name = durl[2:-1].strip()
+        if var_name.startswith("http://") or var_name.startswith("https://"):
+            view["docling_server_url"] = var_name
+        else:
+            view["docling_server_url"] = os.getenv(var_name) or os.getenv("DOCLING_SERVER_URL", "http://localhost:8083")
+    elif not durl:
+        view["docling_server_url"] = os.getenv("DOCLING_SERVER_URL", "http://localhost:8083")
+
     # structured (dict/list) settings edited with dedicated UI widgets
     view["vision_prompts"] = dig(["vision", "prompt"]) or {}
     view["ingestion_steps"] = dig(["ingestion", "steps"]) or []
@@ -1112,33 +1135,22 @@ def file_page_image_ondemand(file_id: str, page: int):
     if not doc:
         raise HTTPException(404, "document not found")
 
-    file_path = doc.get("file_path") or ""
     file_type = doc.get("file_type") or ""
+    file_path = _ensure_local_file(file_id, doc)
 
     if file_type == "ppt":
         page_dir = os.path.join(_PAGES_DIR, file_id)
         img_path = os.path.join(page_dir, f"p{page}.jpg")
         if not os.path.isfile(img_path):
-            import glob as _glob
-            matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*"))
-            if matches:
-                ppt_path = matches[0]
-                from backend.core.office_renderer import render_pptx_slides
-                logger.info("On-demand slide rendering triggered for PPT: %s", ppt_path)
-                try:
-                    render_pptx_slides(ppt_path, page_dir)
-                except Exception as render_err:
-                    logger.exception("Failed on-demand PPT rendering: %s", render_err)
+            from backend.core.office_renderer import render_pptx_slides
+            logger.info("On-demand slide rendering triggered for PPT: %s", file_path)
+            try:
+                render_pptx_slides(file_path, page_dir)
+            except Exception as render_err:
+                logger.exception("Failed on-demand PPT rendering: %s", render_err)
         if os.path.isfile(img_path):
             return FileResponse(img_path, media_type="image/jpeg")
         raise HTTPException(404, f"Slide image not found: page {page}")
-
-    if not file_path or not os.path.isfile(file_path):
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
-        if not matches:
-            raise HTTPException(404, "PDF file not found on disk")
-        file_path = matches[0]
 
     try:
         pdf = fitz.open(file_path)
@@ -1152,6 +1164,8 @@ def file_page_image_ondemand(file_id: str, page: int):
         pdf.close()
 
         return Response(content=image_bytes, media_type="image/jpeg")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Failed to render page %d on-demand for %s", page, file_id)
         raise HTTPException(500, f"failed to render page: {exc}")
@@ -1169,8 +1183,8 @@ def file_pdf_info(file_id: str):
     if not doc:
         raise HTTPException(404, "document not found")
 
-    file_path = doc.get("file_path") or ""
     file_type = doc.get("file_type") or ""
+    file_path = _ensure_local_file(file_id, doc)
 
     if file_type == "ppt":
         page_dir = os.path.join(_PAGES_DIR, file_id)
@@ -1186,13 +1200,6 @@ def file_pdf_info(file_id: str):
         except Exception:
             pass
         return {"total_pages": 0}
-
-    if not file_path or not os.path.isfile(file_path):
-        import glob as _glob
-        matches = _glob.glob(os.path.join(UPLOAD_DIR, f"{file_id}_*.pdf"))
-        if not matches:
-            raise HTTPException(404, "PDF file not found on disk")
-        file_path = matches[0]
 
     try:
         pdf = fitz.open(file_path)
@@ -1387,6 +1394,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
         req.message, config=_config, registry=_agent_registry,
         conversation_history=history, approved_writes=req.approved_writes,
         approved_calls=req.approved_calls, session_id=req.session_id,
+        active_document_id=req.active_document_id,
     )
 
     # 2. Reconcile token budget
@@ -1401,6 +1409,8 @@ def agent_chat(req: AgentChatRequest, response: Response):
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
         for c in result.get("tool_calls", [])
     ]
+    exec_trace = result.get("execution_trace") or []
+
     if result["status"] == "done":
         _agent_sessions[req.session_id] = _qa_only(result["messages"])[-max_history:]
         try:
@@ -1408,11 +1418,13 @@ def agent_chat(req: AgentChatRequest, response: Response):
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
                 metadata={
+                    "status": "done",
                     "tool_calls": tool_calls,
                     "llm_calls": result.get("llm_calls"),
+                    "execution_trace": exec_trace,
                     "token_usage": result.get("token_usage"),
                     "trace_id": result.get("trace_id"),
-                } if (tool_calls or result.get("token_usage") or result.get("llm_calls")) else None,
+                },
             )
         except Exception:
             logger.debug("agent chat history save failed", exc_info=True)
@@ -1423,10 +1435,40 @@ def agent_chat(req: AgentChatRequest, response: Response):
 
         try:
             store = get_conversation_store()
-            store.save_turn(req.session_id, "assistant",
-                            result.get("question") or result.get("answer") or "")
+            store.save_turn(
+                req.session_id, "assistant",
+                result.get("question") or result.get("answer") or "",
+                metadata={
+                    "status": "needs_clarification",
+                    "question": result.get("question"),
+                    "options": result.get("options") or [],
+                    "tool_calls": tool_calls,
+                    "llm_calls": result.get("llm_calls") or [],
+                    "execution_trace": exec_trace,
+                    "token_usage": result.get("token_usage"),
+                    "trace_id": result.get("trace_id"),
+                },
+            )
         except Exception:
             logger.debug("agent chat clarification save failed", exc_info=True)
+    elif result["status"] == "needs_approval":
+        try:
+            store = get_conversation_store()
+            store.save_turn(
+                req.session_id, "assistant",
+                result.get("answer") or "",
+                metadata={
+                    "status": "needs_approval",
+                    "pending": result.get("pending") or [],
+                    "tool_calls": tool_calls,
+                    "llm_calls": result.get("llm_calls") or [],
+                    "execution_trace": exec_trace,
+                    "token_usage": result.get("token_usage"),
+                    "trace_id": result.get("trace_id"),
+                },
+            )
+        except Exception:
+            logger.debug("agent chat approval save failed", exc_info=True)
     return {
         "status": result["status"],
         "answer": result.get("answer"),
@@ -1436,9 +1478,11 @@ def agent_chat(req: AgentChatRequest, response: Response):
         "options": result.get("options"),
         "tool_calls": tool_calls,
         "llm_calls": result.get("llm_calls") or [],
+        "execution_trace": exec_trace,
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),
     }
+
 
 
 
@@ -1460,10 +1504,41 @@ def get_agent_session(session_id: str):
     from backend.storage.conversation_store import get_conversation_store
 
     history = get_conversation_store().load_history(session_id, n=50)
-    return [
-        {"role": h["role"], "content": h["content"], **(h.get("metadata") or {})}
-        for h in history
-    ]
+    out = []
+    cached_options = None
+    for h in history:
+        meta = h.get("metadata") or {}
+        item = {"role": h["role"], "content": h["content"], **meta}
+        # If this turn was a clarification question and options are missing, restore them
+        if item.get("role") == "assistant" and (
+            item.get("status") == "needs_clarification" or
+            item.get("content") == "Which document would you like to search?"
+        ) and not item.get("options"):
+            if cached_options is None:
+                from backend.storage.postgres_store import PostgresStore
+                _SEARCHABLE_EXTS = {".pdf", ".xlsx", ".xls", ".csv", ".docx", ".doc", ".txt", ".pptx", ".ppt"}
+                pg = PostgresStore(config=_config)
+                try:
+                    docs = pg.list_documents()
+                    seen = set()
+                    cached_options = []
+                    for d in docs:
+                        fname = d.get("filename", "")
+                        if not fname:
+                            continue
+                        ext = "." + fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                        if ext not in _SEARCHABLE_EXTS:
+                            continue
+                        if fname not in seen:
+                            seen.add(fname)
+                            cached_options.append(fname)
+                finally:
+                    pg.close()
+            item["status"] = "needs_clarification"
+            item["options"] = cached_options
+            item["question"] = item.get("question") or item.get("content")
+        out.append(item)
+    return out
 
 
 @app.patch("/agent/sessions/{session_id}")
@@ -1576,27 +1651,36 @@ def config_activate(body: ProfileActivate):
 
 
 @app.get("/health/docling-server")
-def health_docling_server():
-    """Ping the configured remote Docling server and return its status."""
+def health_docling_server(url: str | None = None, mode: str | None = None):
+    """Ping the configured or requested remote Docling server and return its status."""
+    load_dotenv(override=True)
     dcfg = (_config.get("extraction") or {}).get("docling") or {}
-    mode = (dcfg.get("mode") or "local").lower()
-    if mode != "remote":
+    selected_mode = (mode or dcfg.get("mode") or "local").lower()
+    
+    # If mode is not remote and no explicit URL was passed to test, report local mode
+    if selected_mode != "remote" and not url:
         return {"mode": "local", "reachable": None, "message": "Local mode — no server to check"}
 
-    server_url = dcfg.get("server_url") or os.environ.get("DOCLING_SERVER_URL", "")
-    if "${" in str(server_url):
-        server_url = os.environ.get("DOCLING_SERVER_URL", "")
+    server_url = str(url or dcfg.get("server_url") or os.environ.get("DOCLING_SERVER_URL", "")).strip()
+    if server_url.startswith("${") and server_url.endswith("}"):
+        inner = server_url[2:-1].strip()
+        if inner.startswith("http://") or inner.startswith("https://"):
+            server_url = inner
+        else:
+            server_url = os.environ.get(inner, os.environ.get("DOCLING_SERVER_URL", "http://localhost:8083"))
+    elif "${" in server_url or not server_url:
+        server_url = os.environ.get("DOCLING_SERVER_URL", "http://localhost:8083")
 
     if not server_url:
-        return {"mode": "remote", "reachable": False, "message": "No server URL configured"}
+        return {"mode": selected_mode, "reachable": False, "message": "No server URL configured"}
 
     try:
         import requests as _req
         r = _req.get(f"{server_url.rstrip('/')}/health", timeout=5)
         r.raise_for_status()
-        return {"mode": "remote", "reachable": True, "url": server_url, "detail": r.json()}
+        return {"mode": selected_mode, "reachable": True, "url": server_url, "detail": r.json()}
     except Exception as e:
-        return {"mode": "remote", "reachable": False, "url": server_url, "message": str(e)}
+        return {"mode": selected_mode, "reachable": False, "url": server_url, "message": str(e)}
 
 
 @app.get("/llm/calls")

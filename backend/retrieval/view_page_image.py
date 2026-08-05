@@ -14,6 +14,18 @@ single call, and returns a text answer the agent can use like any other tool
 result. Real vision-model call, real cost/latency — the system prompt should
 steer the agent to try get_page_context first and reach for this only when text
 genuinely isn't enough.
+
+block_id (optional, ADDED 4-Aug): every figure -- eagerly captioned or deferred
+(caption_deferred, e.g. metadata.defer_reason "large_document_lazy"/
+"small_image_lazy") -- already has its CROP saved to disk at ingest time (see
+docling_extract.py::_figure_block). A deferred figure's own placeholder text
+names the page and tells the agent to use this tool, but until now this tool
+always re-rendered and re-cropped the WHOLE page fresh, ignoring that
+already-saved, EXACT crop. When block_id is given, use the saved crop directly
+instead -- more precise (same bbox the block was indexed with, not a fresh
+guess) and cheaper (a file read, not a PDF re-render). Falls back to a
+whole-page render if block_id is omitted or the crop can't be resolved, so
+existing callers are unaffected.
 """
 from __future__ import annotations
 
@@ -49,6 +61,42 @@ def _resolve_pdf_path(document_id: str) -> str | None:
     return matches[0] if matches else None
 
 
+def _resolve_block_crop_bytes(document_id: str, block_id: str) -> bytes | None:
+    """Read the already-saved crop for one block, if it has one. Returns None
+    (never raises) so the caller can fall back to a whole-page render -- a
+    missing/unreadable crop must not break the tool, just make it less precise."""
+    from backend.storage.postgres_store import PostgresStore
+
+    store = PostgresStore()
+    try:
+        blocks = store.get_blocks(document_id)
+    except Exception as exc:
+        logger.warning("view_page_image: block lookup failed for %s: %s", document_id, exc)
+        return None
+    finally:
+        store.close()
+
+    block = next((b for b in (blocks or []) if b.get("block_id") == block_id), None)
+    if not block:
+        return None
+    image_path = (block.get("metadata") or {}).get("image_path") or ""
+    if not image_path:
+        return None
+
+    # image_path is the WEB path this block was served at ("/images/<doc>/<f>.png");
+    # map back to the real file under uploads/.
+    parts = image_path.strip("/").split("/")
+    if len(parts) < 3 or parts[0] != "images":
+        return None
+    local_path = os.path.join("uploads", "images", *parts[1:])
+    try:
+        with open(local_path, "rb") as f:
+            return f.read()
+    except Exception as exc:
+        logger.warning("view_page_image: crop file read failed (%s): %s", local_path, exc)
+        return None
+
+
 class ViewPageImageTool:
     """Agent-callable tool: answer a question by looking at a page's real image.
 
@@ -81,12 +129,19 @@ class ViewPageImageTool:
                 "description": "What you need to know from looking at this page — "
                 "be specific (e.g. 'which warning icon is next to the Factor 3 row?').",
             },
+            "block_id": {
+                "type": "string",
+                "description": "Optional: a specific figure's block_id (e.g. from a "
+                "deferred-figure placeholder's citation) to look at JUST that figure's "
+                "own saved crop instead of the whole page — more precise and cheaper. "
+                "Omit to look at the whole page.",
+            },
         },
         "required": ["document_id", "page", "question"],
     }
 
     def run(self, document_id: str = "", page: int | str | None = None,
-            question: str = "") -> dict[str, Any]:
+            question: str = "", block_id: str = "") -> dict[str, Any]:
         if not document_id or page is None:
             return {"error": "document_id and page are both required."}
         try:
@@ -97,37 +152,45 @@ class ViewPageImageTool:
         if not question:
             return {"error": "question is required — say what you need to see on this page."}
 
-        pdf_path = _resolve_pdf_path(document_id)
-        if not pdf_path:
-            return {"error": f"Could not find the PDF file for document_id {document_id!r}."}
+        png_bytes = None
+        used_crop = False
+        if block_id:
+            png_bytes = _resolve_block_crop_bytes(document_id, block_id)
+            used_crop = png_bytes is not None
 
-        try:
-            import fitz
-            doc = fitz.open(pdf_path)
-            if not (1 <= page_no <= len(doc)):
+        if png_bytes is None:
+            pdf_path = _resolve_pdf_path(document_id)
+            if not pdf_path:
+                return {"error": f"Could not find the PDF file for document_id {document_id!r}."}
+            try:
+                import fitz
+                doc = fitz.open(pdf_path)
+                if not (1 <= page_no <= len(doc)):
+                    doc.close()
+                    return {"error": f"page {page_no} is out of range (document has {len(doc)} pages)."}
+                pix = doc[page_no - 1].get_pixmap(dpi=150)
+                png_bytes = pix.tobytes("png")
                 doc.close()
-                return {"error": f"page {page_no} is out of range (document has {len(doc)} pages)."}
-            pix = doc[page_no - 1].get_pixmap(dpi=150)
-            png_bytes = pix.tobytes("png")
-            doc.close()
-        except Exception as exc:
-            logger.exception("view_page_image: render failed for %s page %s", document_id, page_no)
-            return {"error": f"failed to render page: {exc}"}
+            except Exception as exc:
+                logger.exception("view_page_image: render failed for %s page %s", document_id, page_no)
+                return {"error": f"failed to render page: {exc}"}
 
         try:
             from backend.core.config import load_config
             from backend.core.vision_client import describe_image
             config = load_config(CONFIG_PATH)
+            subject = "this cropped figure" if used_crop else "this page image"
             prompt = (
-                "Answer this specific question about the page image, precisely and "
+                f"Answer this specific question about {subject}, precisely and "
                 "concisely, quoting any relevant text/labels VERBATIM. If the answer "
-                "isn't visible on this page, say so plainly.\n\nQuestion: " + question
+                f"isn't visible in {subject}, say so plainly.\n\nQuestion: " + question
             )
             answer = describe_image(png_bytes, prompt, config).strip()
         except Exception as exc:
             logger.exception("view_page_image: vision call failed for %s page %s", document_id, page_no)
             return {"error": f"vision call failed: {exc}"}
 
-        return {"document_id": document_id, "page": page_no, "question": question, "answer": answer}
+        return {"document_id": document_id, "page": page_no, "question": question,
+                "answer": answer, "used_saved_crop": used_crop}
 
     __call__ = run

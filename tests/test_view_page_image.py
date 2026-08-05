@@ -70,6 +70,86 @@ def test_page_out_of_range_returns_error():
     assert "error" in result
 
 
+def test_block_id_uses_saved_crop_directly_skips_page_render(tmp_path, monkeypatch):
+    # Real feature added 4-Aug: every figure (deferred or not) already has its
+    # crop saved to disk at ingest time -- when block_id is given, use that
+    # EXACT saved crop instead of re-rendering the whole page fresh.
+    monkeypatch.chdir(tmp_path)
+    img_dir = tmp_path / "uploads" / "images" / "d1"
+    img_dir.mkdir(parents=True)
+    (img_dir / "b1.png").write_bytes(b"saved-crop-bytes")
+
+    store = MagicMock()
+    store.get_blocks.return_value = [
+        {"block_id": "b1", "metadata": {"image_path": "/images/d1/b1.png"}},
+    ]
+
+    with patch("backend.storage.postgres_store.PostgresStore", return_value=store), \
+         patch("backend.core.config.load_config", return_value={}), \
+         patch("fitz.open") as mock_fitz_open, \
+         patch("backend.core.vision_client.describe_image",
+               return_value="This crop shows a fire-hazard icon.") as mock_describe:
+        result = ViewPageImageTool().run(
+            document_id="d1", page=3, question="what icon is this?", block_id="b1"
+        )
+
+    mock_fitz_open.assert_not_called()  # never fell back to a page render
+    mock_describe.assert_called_once()
+    assert mock_describe.call_args[0][0] == b"saved-crop-bytes"
+    assert result["used_saved_crop"] is True
+    assert result["answer"] == "This crop shows a fire-hazard icon."
+
+
+def test_block_id_not_found_falls_back_to_page_render():
+    doc = {"file_path": "/fake/manual.pdf"}
+    fake_page = MagicMock()
+    fake_pix = MagicMock()
+    fake_pix.tobytes.return_value = b"fake-page-bytes"
+    fake_page.get_pixmap.return_value = fake_pix
+    fake_doc = MagicMock()
+    fake_doc.__len__.return_value = 10
+    fake_doc.__getitem__.return_value = fake_page
+
+    store = MagicMock()
+    store.get_document.return_value = doc
+    store.get_blocks.return_value = []  # no matching block
+
+    with patch("backend.storage.postgres_store.PostgresStore", return_value=store), \
+         patch("os.path.isfile", return_value=True), \
+         patch("fitz.open", return_value=fake_doc), \
+         patch("backend.core.config.load_config", return_value={}), \
+         patch("backend.core.vision_client.describe_image",
+               return_value="answer") as mock_describe:
+        result = ViewPageImageTool().run(
+            document_id="d1", page=3, question="what?", block_id="does-not-exist"
+        )
+
+    assert result["used_saved_crop"] is False
+    mock_describe.assert_called_once()
+    assert mock_describe.call_args[0][0] == b"fake-page-bytes"
+
+
+def test_no_block_id_uses_page_render_by_default():
+    doc = {"file_path": "/fake/manual.pdf"}
+    fake_page = MagicMock()
+    fake_pix = MagicMock()
+    fake_pix.tobytes.return_value = b"fake-page-bytes"
+    fake_page.get_pixmap.return_value = fake_pix
+    fake_doc = MagicMock()
+    fake_doc.__len__.return_value = 10
+    fake_doc.__getitem__.return_value = fake_page
+
+    with patch("backend.storage.postgres_store.PostgresStore",
+               return_value=_fake_store(doc)), \
+         patch("os.path.isfile", return_value=True), \
+         patch("fitz.open", return_value=fake_doc), \
+         patch("backend.core.config.load_config", return_value={}), \
+         patch("backend.core.vision_client.describe_image", return_value="answer"):
+        result = ViewPageImageTool().run(document_id="d1", page=3, question="what?")
+
+    assert result["used_saved_crop"] is False
+
+
 def test_vision_call_failure_returns_error_not_exception():
     doc = {"file_path": "/fake/manual.pdf"}
     fake_page = MagicMock()

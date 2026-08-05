@@ -288,6 +288,19 @@ extraction:
     # every figure captioned at ingest time regardless of document size.
     figure_caption_mode: size_based   # eager | size_based
     defer_figures_above_pages: 250
+    # PER-IMAGE size-based lazy captioning -- ADDED 4-Aug, a separate/orthogonal axis
+    # from defer_figures_above_pages above (which is per-DOCUMENT length). Real gap:
+    # we already know which page/bbox every figure belongs to and can pull it on
+    # demand (view_page_image), so eagerly VLM-captioning every small/minor figure in
+    # a NORMAL-sized document (which the per-document gate above never touches) is
+    # real, avoidable ingestion cost. Figures narrower than this fraction of the page
+    # area get deferred PERMANENTLY (same on-demand-only policy as
+    # large_document_lazy), regardless of document length. 0 = disabled (unchanged
+    # behavior -- every figure above the min_picture_area_frac speck floor above gets
+    # captioned eagerly). 0.02 (2% of page area) is a first-pass estimate, not yet
+    # validated against real query patterns -- tune once there's usage data on which
+    # figure sizes actually get asked about.
+    eager_caption_min_area_frac: 0
     device: auto              # auto | cpu | cuda | mps
     num_threads: 4
     table_engine: local       # vlm (default, hosted) | local (self-hosted engine, picked

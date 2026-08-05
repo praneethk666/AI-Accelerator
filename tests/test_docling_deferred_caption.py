@@ -174,6 +174,24 @@ def test_large_document_lazy_figures_are_never_auto_resolved():
     assert resolved["metadata"]["caption_deferred"] is True   # still deferred
 
 
+def test_small_image_lazy_figures_are_never_auto_resolved():
+    # Real design, 4-Aug: PER-IMAGE size-based lazy captioning (a separate axis
+    # from the per-document one above) also defers PERMANENTLY as a cost-control
+    # policy -- same "never auto-resolve, only on-demand via view_page_image"
+    # treatment as large_document_lazy.
+    b = _deferred_block("fig1", page=1)
+    b["metadata"]["defer_reason"] = "small_image_lazy"
+    _write_fake_image(b["metadata"]["image_path"])
+    blocks = [_text_block(1, "plenty of real page text here"), b]
+
+    with patch("backend.extraction.vision_ocr.classify_caption_crop") as mock_gate:
+        out = caption_deferred_figures(blocks, {})
+
+    mock_gate.assert_not_called()
+    resolved = next(x for x in out if x.get("block_id") == "fig1")
+    assert resolved["metadata"]["caption_deferred"] is True   # still deferred
+
+
 def test_scanned_no_text_reason_still_auto_resolves():
     # The OTHER reason (scanned page, no text at crop-time) must keep working
     # exactly as before -- only large_document_lazy is permanently skipped.

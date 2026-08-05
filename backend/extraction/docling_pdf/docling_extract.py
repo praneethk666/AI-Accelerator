@@ -745,6 +745,29 @@ def _fig_too_small(bb, page_area: float, min_pic: float, min_area_frac: float) -
     return w < min_pic or h < min_pic
 
 
+def _bbox_area_frac(bb, pdf_path: str, page_no: int) -> float:
+    """Fraction of the page area this bbox covers -- used by PER-IMAGE size-based
+    lazy captioning (extraction.docling.eager_caption_min_area_frac). Cheap (local
+    PDF geometry only, no VLM/network call) -- safe to compute per figure. Fails
+    OPEN (returns 1.0, i.e. "caption eagerly") on any error, since silently
+    deferring real content because of a geometry bug would be worse than just
+    paying for a caption."""
+    try:
+        import fitz
+        fdoc = fitz.open(pdf_path)
+        try:
+            prect = fdoc[page_no - 1].rect
+            page_area = prect.width * prect.height
+        finally:
+            fdoc.close()
+        if page_area <= 0:
+            return 1.0
+        bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+        return max(0.0, bw * bh) / page_area
+    except Exception:
+        return 1.0
+
+
 def picture_boxes(pdf_path: str, config: dict) -> dict[int, list]:
     """Figure-localization ONLY: run Docling's layout model and return
     {page_no: [bbox, ...]} in top-left PDF points for cropping.
@@ -1314,6 +1337,20 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     lazy_threshold = int(dcfg.get("defer_figures_above_pages", 250) or 250)
     size_lazy = figure_mode == "size_based" and total_pages > lazy_threshold
 
+    # PER-IMAGE size-based lazy captioning -- a separate, orthogonal axis from the
+    # per-DOCUMENT one above. Real gap found live, 4-Aug: we already know which page/
+    # bbox every figure belongs to and can render+answer from it on demand
+    # (view_page_image), so eagerly paying a VLM call for every small/minor figure in
+    # a NORMAL-sized document (which size_lazy above never touches) is real,
+    # avoidable ingestion cost for images that may never actually be queried. Figures
+    # narrower than this fraction of the page area get deferred PERMANENTLY (same
+    # policy as large_document_lazy -- never auto-resolved by route_and_rescue, only
+    # resolved on-demand), regardless of document length. 0 = disabled (default,
+    # unchanged behavior) -- opt in per deployment. 0.02 (2% of page area) is a
+    # first-pass estimate, not yet validated against a real corpus of eagerly- vs
+    # lazily-captioned figures -- tune once there's real query-pattern data.
+    eager_min_area_frac = float(dcfg.get("eager_caption_min_area_frac", 0) or 0)
+
     # Caption figures now that page text is complete. Run CONCURRENTLY (the slow part is
     # the VLM call latency): vision.max_concurrency workers, each paced by describe_image's
     # rate limiter so we overlap latency without bursting past the provider RPM. Context is
@@ -1325,7 +1362,14 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         check_cancelled(document_id)
         others = [b for j_idx, b in page_to_boxes.get(page_no, []) if j_idx != idx]
         no_text = not page_text.get(page_no)
-        defer_reason = "scanned_no_text" if no_text else ("large_document_lazy" if size_lazy else None)
+        if no_text:
+            defer_reason = "scanned_no_text"
+        elif size_lazy:
+            defer_reason = "large_document_lazy"
+        elif eager_min_area_frac > 0 and _bbox_area_frac(bb, pdf_path, page_no) < eager_min_area_frac:
+            defer_reason = "small_image_lazy"
+        else:
+            defer_reason = None
         defer = defer_ok and defer_reason is not None
         return idx, _figure_block(pdf_path, document_id, page_no, filename, bb,
                                   page_text.get(page_no, []), config, cap_info=cap_info,
@@ -1566,15 +1610,19 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
         b["metadata"]["pending_vision"] = True
         b["metadata"]["caption_deferred"] = True
         b["metadata"]["defer_reason"] = defer_reason
-        # "large_document_lazy" figures are NEVER auto-resolved during ingestion
-        # (see caption_deferred_figures()) -- give them real, useful text now so
-        # they're still findable via normal search instead of sitting as a bare
-        # "[figure]" forever. view_page_image is how an agent actually looks at
+        # "large_document_lazy" and "small_image_lazy" figures are NEVER auto-resolved
+        # during ingestion (see caption_deferred_figures()) -- give them real, useful
+        # text now so they're still findable via normal search instead of sitting as a
+        # bare "[figure]" forever. view_page_image is how an agent actually looks at
         # one on demand.
         if defer_reason == "large_document_lazy":
             b["text"] = ("[Figure present on this page -- not yet captioned "
                          "(large document, captions load on demand). Use "
                          "view_page_image on this page to see it.]")
+        elif defer_reason == "small_image_lazy":
+            b["text"] = ("[Small figure present on this page -- not yet captioned "
+                         "(minor images load on demand). Use view_page_image on "
+                         "this page to see it.]")
         return b
 
     known_caption = (cap_info or {}).get("text") or ""
@@ -1629,13 +1677,15 @@ def caption_deferred_figures(blocks: list[dict], config: dict) -> list[dict]:
     the same worker budget as the original captioning pass; a per-figure failure
     leaves it pending (self-healing on a future re-run) rather than failing the batch.
 
-    Deliberately SKIPS defer_reason="large_document_lazy" figures -- those were
-    deferred as a permanent cost-control policy (size-based lazy captioning, see
+    Deliberately SKIPS defer_reason in ("large_document_lazy", "small_image_lazy")
+    figures -- those were deferred as a permanent cost-control policy (size-based
+    lazy captioning, by document length or by individual image size -- see
     extract_docling), not because they're waiting on OCR text that's now available.
     They stay deferred until an agent looks at that page on demand (view_page_image)."""
+    _PERMANENT_DEFER_REASONS = ("large_document_lazy", "small_image_lazy")
     pending = [b for b in blocks if b and b.get("type") == "image_caption"
                and (b.get("metadata") or {}).get("caption_deferred")
-               and (b.get("metadata") or {}).get("defer_reason") != "large_document_lazy"]
+               and (b.get("metadata") or {}).get("defer_reason") not in _PERMANENT_DEFER_REASONS]
     if not pending:
         return blocks
 

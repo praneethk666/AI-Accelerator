@@ -60,7 +60,10 @@ _ANSWER_SYSTEM = (
     "the technical content, systems, components, parameters, or procedures visible in the "
     "context passages. Cite every claim with its page/section. Do NOT refuse simply because "
     "a formal introduction section is absent.\n"
-    "- If the answer is not in the context, reply EXACTLY: "
+    "- If the exact answer is not in the context, provide any closely related partial "
+    "information you CAN find in the context passages and cite it — then clearly state "
+    "which specific part of the question could not be confirmed from the documents. "
+    "Only if the context contains absolutely nothing relevant at all should you say: "
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler.\n"
     "- For mathematical formulas, use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never use single brackets '[ ... ]' for math blocks."
@@ -72,8 +75,7 @@ _ANSWER_SYSTEM = (
 _REFUSAL_MARKERS = (
     "could not find this in the provided",
     "no relevant passages found",
-    "not in the provided documents",
-    "don't have information",
+    "nothing relevant",
 )
 
 
@@ -453,6 +455,52 @@ class AnswererTool:
             usage.record_from_message("answer", response, model=model_name, provider=provider_name)
             answer_text = clean_message_content(response.content).strip()
 
+            # ── Refusal-triggered retry (page-expansion) ──────────────────────
+            # If the LLM says it couldn't find the answer, the retrieved chunks
+            # were likely fragmented (e.g. a section header on one page, its table
+            # on another). Expand EVERY retrieved chunk to its full page and retry
+            # once — this is a last-resort pass to give the LLM more context.
+            retrieval_fb_cfg = config.get("query", {}).get("retrieval") or {}
+            if _looks_like_refusal(answer_text) and retrieval_fb_cfg.get("fallback_enabled", False):
+                logger.info(
+                    "AnswererTool: LLM returned refusal — triggering page-expansion retry for %d chunks",
+                    len(chunks),
+                )
+                # Force-expand ALL chunks to full page, not just thin ones.
+                expanded_chunks = _expand_all_chunks_to_pages(chunks)
+                if expanded_chunks:
+                    retry_context_blocks = []
+                    retry_used = 0
+                    for i, chunk in enumerate(expanded_chunks, start=1):
+                        ref   = chunk.get("source_ref") or {}
+                        label = _locator(ref)
+                        chunk_text = chunk.get("text") or ""
+                        block = f"[{i}] ({label})\n{chunk_text}"
+                        block_tokens = len(block) // 4
+                        if max_ctx_tokens and retry_used + block_tokens > max_ctx_tokens:
+                            break
+                        retry_context_blocks.append(block)
+                        retry_used += block_tokens
+
+                    if retry_context_blocks:
+                        retry_msg = (
+                            "Context:\n\n"
+                            + "\n\n".join(retry_context_blocks)
+                            + f"\n\nQuestion: {standalone_query}"
+                        )
+                        retry_response = llm.invoke([
+                            {"role": "system", "content": _ANSWER_SYSTEM},
+                            {"role": "user",   "content": retry_msg},
+                        ])
+                        usage.record_from_message("answer_retry", retry_response, model=model_name, provider=provider_name)
+                        retry_text = clean_message_content(retry_response.content).strip()
+                        if not _looks_like_refusal(retry_text):
+                            logger.info("AnswererTool: page-expansion retry succeeded.")
+                            answer_text = retry_text
+                            chunks = expanded_chunks
+                        else:
+                            logger.info("AnswererTool: page-expansion retry also returned refusal.")
+
             # Build citations — image_path and table_data are top-level chunk fields.
             # source_ref varies by file type (page for PDF, sheet for Excel, slide
             # for PPT), so read every locator field with .get and never assume page.
@@ -537,3 +585,90 @@ def _log(
         PGStore.log_conversation(config, session_id, turn, question, answer)
     except Exception as exc:
         logger.warning("Failed to log conversation to Postgres: %s", exc)
+
+
+def _expand_all_chunks_to_pages(chunks: list[dict], max_pages: int = 10) -> list[dict]:
+    """Force-expand every retrieved chunk to its full page content from document_blocks.
+
+    Unlike _expand_thin_chunks (which only expands thin/fragmented chunks), this
+    helper ALWAYS expands — used as the last-resort retry when the LLM already
+    returned a refusal on the original chunks. The goal is to give the LLM the
+    widest possible context for one more attempt.
+
+    Skips Excel sheets (token bloat risk), deduplicates by (document_id, page),
+    and caps DB fetches at max_pages to bound latency.
+    """
+    from backend.storage.postgres_store import PostgresStore
+
+    seen: set[tuple] = set()
+    to_expand: list[tuple] = []
+    for c in chunks:
+        ref = c.get("source_ref") or {}
+        filename = ref.get("filename") or ""
+        if filename.lower().endswith((".xlsx", ".xls", ".xlsm")) or ref.get("sheet") is not None:
+            continue
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide")
+        if not doc_id or page_val is None:
+            continue
+        key = (str(doc_id), page_val)
+        if key not in seen and len(seen) < max_pages:
+            seen.add(key)
+            to_expand.append((key, c))
+
+    if not to_expand:
+        return []
+
+    store = None
+    cache: dict[tuple, str] = {}
+    try:
+        store = PostgresStore()
+        for (doc_id, page_val), _ in to_expand:
+            try:
+                blocks = store.get_blocks(doc_id)
+            except Exception:
+                logger.exception(
+                    "_expand_all_chunks_to_pages: get_blocks failed doc=%s page=%s",
+                    doc_id, page_val,
+                )
+                continue
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_val or
+                    b["source_ref"].get("slide") == page_val
+                )
+            ]
+            parts = []
+            for b in page_blocks:
+                t = (b.get("text") or "").strip()
+                if t:
+                    parts.append(t)
+                td = b.get("table_data")
+                if td and td.get("rows"):
+                    headers = td.get("headers") or []
+                    rows_str = "\n".join(
+                        " | ".join(str(v) for v in row) for row in td["rows"]
+                    )
+                    parts.append(
+                        f"Columns: {' | '.join(str(h) for h in headers)}\n{rows_str}"
+                    )
+            if parts:
+                cache[(doc_id, page_val)] = "\n\n".join(parts)
+    finally:
+        if store is not None:
+            store.close()
+
+    if not cache:
+        return []
+
+    out = []
+    for key, seed_chunk in to_expand:
+        if key in cache:
+            c = dict(seed_chunk)
+            c["text"] = cache[key]
+            out.append(c)
+    logger.info(
+        "_expand_all_chunks_to_pages: expanded %d pages for retry", len(out)
+    )
+    return out

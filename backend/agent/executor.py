@@ -109,7 +109,7 @@ SYSTEM_PROMPT = (
     "- search_documents(query, document_scope?): Search ingested docs. "
     "Pass the user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
     "ONLY when the user explicitly quotes a real filename or document_id that you have seen in a "
-    "list_documents result — NEVER invent, guess, or make up a filename.\n"
+    "list_documents result — NEVER invent, guess, infer, or make up a filename. If the user does not explicitly specify a file, leave document_scope null.\n"
     "- get_page_context(document_id, page): Fetch a document PAGE's full raw content, "
     "bypassing chunking entirely. Chunking sometimes fragments a page badly (e.g. a "
     "label/code split from the table that explains it) — if a search_documents result "
@@ -152,7 +152,7 @@ SYSTEM_PROMPT = (
     "If the user query or conversation history mentions a specific file name "
     "(e.g., 'major-08.pptx'), you MUST restrict your search strictly to that document "
     "by passing its filename or UUID in the `document_scope` parameter of `search_documents`. "
-    "Never search the entire corpus when a specific file is targeted.\n\n"
+    "Never search the entire corpus when a specific file is targeted. Conversely, if no explicit file is named, YOU MUST NEVER supply a document_scope.\n\n"
 
     "## AFTER AN INGEST\n"
     "When the user attaches a file: ingest it first. Then if they ask a question "
@@ -167,14 +167,18 @@ SYSTEM_PROMPT = (
     "- You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
     "then search_documents scoped to it; several searches for a multi-part question; "
     "or search_documents followed by get_page_context on a fragmented result. "
-    "Work step by step. Just don't repeat the SAME call with the same arguments.\n"
-    "- CRITICAL FALLBACK: If search_documents returns 'I could not find this in the provided documents.' "
-    "or yields no results, and the user's question asks for specific tabular data (such as a part "
-    "description, quantity, price, serial number, code, drawing number, or status) that could reside in a spreadsheet:\n"
-    "  1. Call list_documents() to see the list of all ingested files.\n"
-    "  2. For any Excel/CSV spreadsheet files found (e.g. ending in .xlsx, .xls, .csv), use the excel_tool to "
-    "inspect or query their sheets directly.\n"
-    "  3. Do NOT immediately return the 'I could not find this' message. Check the spreadsheets first!\n\n"
+    "Work step by step.\n"
+    "- STRICT NO-REPEAT RULE: If a tool call (same tool name + same arguments) has already been made "
+    "in this turn and returned a result, you MUST NOT call it again with the same arguments. "
+    "If you are stuck, stop and give the best answer you have with what was found so far.\n"
+    "- CRITICAL FALLBACK (If search_documents returns 'I could not find this...'):\n"
+    "  A. If the question is PROCEDURAL (how-to, steps, replacing, installing, operating, safety):\n"
+    "     - Try ONE broader search_documents with simpler keywords (e.g. 'workpiece holder' instead of 'replace workpiece holder cylinder grinder').\n"
+    "     - NEVER use excel_tool for procedural/how-to questions. If it still fails, state plainly that it is not in the documents.\n"
+    "  B. If the question asks for specific TABULAR DATA (part numbers, drawing numbers, quantities, prices, serials):\n"
+    "     - Call list_documents() to see all ingested files.\n"
+    "     - For any .xlsx/.xls/.csv files found, use excel_tool to query them.\n"
+    "     - Do NOT immediately return a refusal — check the spreadsheets first!\n\n"
 
     "## COMPLETION\n"
 
@@ -415,8 +419,7 @@ def _is_pure_fast_greeting(text: str) -> bool:
 
 _GENERIC_DOC_TERMS = {
     # Document-related terms
-    "manual", "document", "file", "pdf", "guide", "book", "report", "specification",
-    "specs", "explain", "about", "this", "that", "the", "what", "is", "for", "in",
+    "document", "file", "pdf", "explain", "about", "this", "that", "the", "what", "is", "for", "in",
     "and", "or", "its", "our",
     # Common English stop words that appear in any document's page1 text
     "can", "you", "are", "was", "has", "had", "have", "been", "will", "not",
@@ -719,10 +722,25 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         clarification: dict | None = None
         new_evidences: list[dict] = []
         step_traces: list[dict] = []
+        seen_calls: set[str] = set()
 
         for call in getattr(last, "tool_calls", None) or []:
             t0 = time.time()
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
+
+            call_key = f"{name}::{json.dumps(args, sort_keys=True)}"
+            if call_key in seen_calls:
+                dur_ms = round((time.time() - t0) * 1000, 2)
+                tool_messages.append(ToolMessage(
+                    content=json.dumps({"error": "Duplicate call detected — this exact tool call was already made in this turn. Use the previous result and stop retrying."}, default=str),
+                    tool_call_id=call_id, name=name,
+                ))
+                step_traces.append({
+                    "step": f"Tool: {name}", "type": "tool_execution",
+                    "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "duplicate_skipped"
+                })
+                continue
+            seen_calls.add(call_key)
 
             if name in clarify_tools:
                 if clarification is None:
@@ -905,7 +923,8 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                     "not in the provided documents",
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
-                if search_answer and not is_refusal:
+                is_error = search_answer.lower().startswith("error:")
+                if search_answer and not is_refusal and not is_error:
                     # Inject a synthetic AIMessage so output_guard_node can find it
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
@@ -1186,9 +1205,19 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
         pending: list[dict] = []
         clarification: dict | None = None
         new_evidences: list[dict] = []
+        seen_calls: set[str] = set()
 
         for call in getattr(last, "tool_calls", None) or []:
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
+
+            call_key = f"{name}::{json.dumps(args, sort_keys=True)}"
+            if call_key in seen_calls:
+                tool_messages.append(ToolMessage(
+                    content=json.dumps({"error": "Duplicate call detected — this exact tool call was already made in this turn. Use the previous result and stop retrying."}, default=str),
+                    tool_call_id=call_id, name=name,
+                ))
+                continue
+            seen_calls.add(call_key)
 
             if name in clarify_tools:
                 if clarification is None:
@@ -1338,7 +1367,8 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                     "not in the provided documents",
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
-                if search_answer and not is_refusal:
+                is_error = search_answer.lower().startswith("error:")
+                if search_answer and not is_refusal and not is_error:
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
             except Exception:
@@ -1473,31 +1503,6 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
 # 2000 chars ≈ 500 tokens — enough to retain answer + top citations, trim the rest.
 _TOOL_MSG_MAX_CHARS = 2000
 
-
-# def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
-#     """Cap large ToolMessage payloads to _TOOL_MSG_MAX_CHARS to prevent context bloat.
-
-#     Keeps SystemMessage / HumanMessage / AIMessage intact (they're small).
-#     Only trims ToolMessages that carry large JSON search results — the agent
-#     only needs the answer + a citation summary, not every raw snippet field.
-#     """
-#     pruned = []
-#     for msg in messages:
-#         if isinstance(msg, ToolMessage) and len(msg.content) > _TOOL_MSG_MAX_CHARS:
-#             truncated = msg.content[:_TOOL_MSG_MAX_CHARS]
-#             # Try to keep valid JSON by finding the last complete top-level value
-#             last_brace = max(truncated.rfind("}"), truncated.rfind("]"))
-#             if last_brace > 0:
-#                 truncated = truncated[: last_brace + 1]
-#             truncated += "\n...[truncated for context efficiency]"
-#             # ToolMessage is immutable — create a copy with the shorter content
-#             msg = ToolMessage(
-#                 content=truncated,
-#                 tool_call_id=msg.tool_call_id,
-#                 name=getattr(msg, "name", None),
-#             )
-#         pruned.append(msg)
-#     return pruned
 
 def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Reduce ToolMessage payload size without losing answer or citations.
@@ -1908,10 +1913,11 @@ def run_agent(
                             search_answers.append(ans)
 
         unique_answers = list(set(search_answers))
-        if len(unique_answers) == 1 and not has_other_tools:
-            answer = unique_answers[0]
+        if unique_answers:
+            # Rescue the most recent unique search answer even if other tools were called
+            answer = unique_answers[-1]
             logger.info("Recovered answer from prior tool result (fast-path fallback)")
-        # else: len > 1 -> fall through to slow-path LLM synthesis below
+        # else: no search answers -> fall through to slow-path LLM synthesis below
 
         # Slow path: ask the LLM to synthesize from history without tools.
         if not answer.strip():

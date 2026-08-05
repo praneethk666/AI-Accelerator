@@ -1350,6 +1350,8 @@ def _history_to_messages(history: list[dict]) -> list:
     return msgs
 
 
+
+
 @app.post("/agent/chat")
 def agent_chat(req: AgentChatRequest, response: Response):
     """Agentic chat: the model picks which tool to call (ingest/search/sql) instead

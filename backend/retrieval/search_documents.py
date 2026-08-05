@@ -92,7 +92,7 @@ class SearchDocumentsTool:
                     }
                 ],
                 "description": "Optional list of document ids or filenames to restrict the search to. "
-                               "Can be an array of strings, a single string, or null."
+                               "Can be an array of strings, a single string, or null. NEVER guess, infer, or invent a filename. Leave null to search all documents."
             },
         },
         "required": ["query"],

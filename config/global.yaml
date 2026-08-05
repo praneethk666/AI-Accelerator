@@ -313,8 +313,11 @@ query:
     rerank_top_k: 5             # chunks kept after reranking
     dense_weight: 0.6           # RRF weight for dense vector leg
     sparse_weight: 0.4          # RRF weight for sparse/BM25 leg
+    fallback_enabled: true      # expand to full page when top score is low
+    fallback_threshold: -1.0    # bge-reranker logit below this triggers page expansion
+    fallback_top_k: 2           # number of low-score chunks to expand into full pages
   agent:
-    max_iterations: 5           # maximum tool-calling reasoning turns
+    max_iterations: 8           # maximum tool-calling reasoning turns
     max_history_messages: 20    # sliding window of conversation messages
     provider: openai
     model: gpt-4o-mini

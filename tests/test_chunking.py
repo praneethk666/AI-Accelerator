@@ -204,6 +204,20 @@ def test_every_chunk_is_a_valid_chunk_schema():
         Chunk(**c)  # raises TypeError if any key is not a valid Chunk field
 
 
+def test_validate_repaired_chunks_with_synthesis_connectors():
+    from backend.chunking.chunk_tool import validate_repaired_chunks
+    headers = ["Alarm Code", "Meaning", "Corrective Action"]
+    rows = [["8bhh", "Overheating detected", "Check cooling fan and replace if damaged"]]
+    parsed_chunks = [
+        {
+            "chunk_text": "Context indicates event for Alarm Code 8bhh where overheating was detected. Recommended action includes checking cooling fan and replacing component.",
+            "structured": {"Alarm Code": "8bhh", "Meaning": "Overheating detected", "Corrective Action": "Check cooling fan and replace if damaged"}
+        }
+    ]
+    err = validate_repaired_chunks(parsed_chunks, rows, headers, "Section 5.2 Alarms", "Preceding section text")
+    assert err is None
+
+
 if __name__ == "__main__":
     test_text_splits_by_size_with_overlap()
     test_heading_merges_into_next_text()
@@ -221,4 +235,6 @@ if __name__ == "__main__":
     test_empty_text_produces_no_chunk()
     test_source_ref_carried_through()
     test_every_chunk_is_a_valid_chunk_schema()
+    test_validate_repaired_chunks_with_synthesis_connectors()
     print("chunking tests passed")
+

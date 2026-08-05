@@ -525,6 +525,41 @@ class PostgresStore:
             out.append(doc)
         return out
 
+    _doc_meta_cache: tuple[float, list[dict]] | None = None
+
+    def list_documents_with_metadata(self, ttl_sec: int = 60) -> list[dict]:
+        """List documents joined with page 1 header text for scope matching (60s TTL cache)."""
+        import time
+        now = time.time()
+        if PostgresStore._doc_meta_cache and (now - PostgresStore._doc_meta_cache[0]) < ttl_sec:
+            return PostgresStore._doc_meta_cache[1]
+
+        rows = self.conn.execute(
+            """
+            SELECT d.document_id, d.filename, d.document_type, d.industry,
+                   COALESCE(string_agg(b.text, ' '), '') AS page1_text
+            FROM documents d
+            LEFT JOIN document_blocks b ON b.document_id::text = d.document_id::text
+              AND (b.source_ref->>'page' = '1' OR b.source_ref->>'slide' = '1' OR b.source_ref->>'sheet' = '1' OR b.block_order < 3)
+            WHERE d.status = 'ready'
+            GROUP BY d.document_id, d.filename, d.document_type, d.industry, d.created_at
+            ORDER BY d.created_at DESC
+            """
+        ).fetchall()
+        result = [
+            {
+                "document_id": str(r[0]),
+                "filename": r[1],
+                "document_type": r[2],
+                "industry": r[3],
+                "page1_text": r[4],
+            }
+            for r in rows
+        ]
+        PostgresStore._doc_meta_cache = (now, result)
+        return result
+
+
     def get_document(self, document_id: str) -> dict | None:
         """Full document + live progress (the API's progress source of truth)."""
         row = self.conn.execute(

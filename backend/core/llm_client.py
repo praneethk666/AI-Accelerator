@@ -217,7 +217,11 @@ def _clean(value):
     if isinstance(value, str) and "," in value:
         keys = [k.strip() for k in value.split(",") if k.strip()]
         if keys:
-            return random.choice(keys)
+            chosen = random.choice(keys)
+            idx = keys.index(chosen)
+            masked = chosen[:6] + "..." + chosen[-4:] if len(chosen) > 10 else "..."
+            logger.info("LLM API call using rotated key %d of %d (%s)", idx + 1, len(keys), masked)
+            return chosen
     return value
 
 

@@ -219,7 +219,7 @@ extraction:
     device: auto              # auto | cpu | cuda | mps
     num_threads: 4
     mode: local               # local (in-process) | server (remote Docling microservice)
-    server_url: ${DOCLING_SERVER_URL} # remote Docling server endpoint
+    server_url: ${DOCLING_SERVER_URL} # remote Docling server endpoint (e.g. http://100.49.250.232:8083)
     server_key: ${DOCLING_API_KEY}
   by_kind:
     digital:

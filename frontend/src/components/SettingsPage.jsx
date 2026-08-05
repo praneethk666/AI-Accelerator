@@ -85,7 +85,7 @@ const SettingsPage = () => {
   const testDoclingServer = async () => {
     setServerStatus('checking');
     try {
-      const { data } = await checkDoclingServer();
+      const { data } = await checkDoclingServer(s.docling_server_url, s.docling_mode || 'remote');
       setServerStatus(data.reachable ? 'online' : 'offline');
     } catch {
       setServerStatus('offline');

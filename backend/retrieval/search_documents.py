@@ -68,10 +68,8 @@ class SearchDocumentsTool:
     description = (
         "Search the ingested documents and answer a question, returning the answer "
         "with citations and a deduplicated list of source references. Optionally "
-        "restrict to specific document ids/filenames (document_scope), or SOFT-filter "
-        "by doc_type / industry — but pass those ONLY when the question clearly implies "
-        "a scope (e.g. 'in the invoices…'), and use a value you saw from list_documents. "
-        "When unsure, omit all filters and search the whole corpus."
+        "restrict to specific document ids/filenames (document_scope). "
+        "Search queries across the whole corpus when document_scope is omitted."
     )
     input_schema = {
         "type": "object",
@@ -96,17 +94,6 @@ class SearchDocumentsTool:
                 "description": "Optional list of document ids or filenames to restrict the search to. "
                                "Can be an array of strings, a single string, or null."
             },
-            "doc_type": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Optional soft filter by document type (e.g. 'invoice', 'manual', "
-                               "'cad_drawing'). Use ONLY when the question clearly implies a type "
-                               "and it matches a type you saw via list_documents. Else null.",
-            },
-            "industry": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "description": "Optional soft filter by industry (e.g. 'finance', 'manufacturing'). "
-                               "Use sparingly — only when the question clearly names an industry. Else null.",
-            },
         },
         "required": ["query"],
     }
@@ -117,8 +104,9 @@ class SearchDocumentsTool:
             document_scope = None
         elif isinstance(document_scope, str):
             document_scope = [document_scope]
-        doc_type = None if doc_type in (None, "", "null", "None") else str(doc_type).strip().lower()
-        industry = None if industry in (None, "", "null", "None") else str(industry).strip().lower()
+        # Ignore doc_type / industry soft filters to prevent missing relevant document chunks
+        doc_type = None
+        industry = None
 
         from backend.storage.postgres_store import PostgresStore
         store = PostgresStore()
@@ -127,15 +115,16 @@ class SearchDocumentsTool:
         finally:
             store.close()
 
-        # Build maps: id -> id, and filename -> id
+        # Build maps: id -> id, and filename -> list[id] (to safely handle duplicates)
         id_set = {str(d["document_id"]) for d in docs}
-        filename_map = {}
+        filename_to_ids: dict[str, list[str]] = {}
         for d in docs:
             fname = d.get("filename")
             if fname:
-                filename_map[fname.lower()] = str(d["document_id"])
+                k = fname.lower().strip()
+                filename_to_ids.setdefault(k, []).append(str(d["document_id"]))
 
-        resolved_scope = []
+        resolved_scope: list[str] = []
 
         if document_scope:
             for item in document_scope:
@@ -143,35 +132,28 @@ class SearchDocumentsTool:
                 item_lower = item_str.lower()
                 if item_str in id_set:
                     resolved_scope.append(item_str)
-                elif item_lower in filename_map:
-                    resolved_scope.append(filename_map[item_lower])
+                elif item_lower in filename_to_ids:
+                    resolved_scope.extend(filename_to_ids[item_lower])
                 else:
                     # filename without extension (exact stem match, >=3 chars)
-                    stem_hit = next(
-                        (fid for fname, fid in filename_map.items()
-                         if os.path.splitext(fname)[0] == item_lower and len(item_lower) >= 3),
-                        None,
-                    )
-                    if stem_hit:
-                        resolved_scope.append(stem_hit)
-                    else:
-                        # Unresolvable scope item: DROP it. Injecting it as a document_id
-                        # would match zero points and yield a false 'not found'. If nothing
-                        # resolves we fall through to a whole-corpus search.
+                    matched_stem = False
+                    for fname, fids in filename_to_ids.items():
+                        if os.path.splitext(fname)[0] == item_lower and len(item_lower) >= 3:
+                            resolved_scope.extend(fids)
+                            matched_stem = True
+                    if not matched_stem:
                         logger.warning(
                             "search_documents: document_scope item %r matched no ingested "
                             "id/filename — ignoring it", item_str,
                         )
 
         # Auto-scope from the query TEXT only on a STRONG, intentional signal: a full
-        # filename WITH extension appearing verbatim in the question. NOT a bare stem —
-        # on a large corpus of generic names ('report.pdf', 'data.pdf') a stem match
-        # would silently restrict a normal question to one (usually wrong) document.
+        # filename WITH extension appearing verbatim in the question.
         if not resolved_scope:
             query_lower = query.lower()
-            for fname, fid in filename_map.items():
+            for fname, fids in filename_to_ids.items():
                 if "." in fname and fname in query_lower:
-                    resolved_scope.append(fid)
+                    resolved_scope.extend(fids)
 
         final_scope = list(set(resolved_scope)) if resolved_scope else None
 
@@ -192,7 +174,7 @@ class SearchDocumentsTool:
                             "sources": [],
                         }
 
-        return search_documents(query, final_scope, doc_type=doc_type, industry=industry, session_id=session_id)
+        return search_documents(query, final_scope, doc_type=None, industry=None, session_id=session_id)
 
     __call__ = run
 

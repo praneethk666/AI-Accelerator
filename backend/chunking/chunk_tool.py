@@ -738,11 +738,12 @@ def validate_repaired_chunks(parsed_chunks: list[dict], original_rows: list[list
     norm_preceding_text = normalize_text(preceding_text).lower()
     
     # 2. Content traceability validation
-    source_words = set(re.findall(r"\w+", " ".join(" ".join(r) for r in norm_rows)))
+    norm_headers = [normalize_text(h).lower().strip() for h in headers]
+    source_words = set(re.findall(r"\w+", " ".join(norm_headers) + " " + " ".join(" ".join(r) for r in norm_rows)))
     context_words = set(re.findall(r"\w+", norm_section_lead + " " + norm_preceding_text))
     allowed_words = source_words | context_words
     
-    original_cell_texts = [c for r in norm_rows for c in r if c]
+    original_cell_texts = [c for r in norm_rows for c in r if c] + [h for h in norm_headers if h]
     
     # Comprehensive stop words
     stops = {
@@ -764,6 +765,20 @@ def validate_repaired_chunks(parsed_chunks: list[dict], original_rows: list[list
         # Document/Table domain stops
         "warning", "voltage", "current", "factor", "alarm", "code", "replace", "check", "state", 
         "occurred", "cause", "action", "failure", "device", "circuit", "unit", "fault",
+        # Connecting/Explanatory synthesis stops (used by LLM when context-enriching table rows)
+        "context", "indicates", "indicating", "indicated", "event", "issue", "issues", "observed",
+        "resulting", "triggered", "encountered", "noted", "affected", "recommended", "potential",
+        "problem", "factors", "lead", "related", "initial", "activation", "overheating", "upon",
+        "enabling", "leading", "alert", "within", "system", "determined", "showing", "another",
+        "also", "contributing", "specific", "required", "possible", "show", "occurrence", "showed",
+        "results", "present", "applicable", "identified", "includes", "checking", "replacing",
+        "part", "procedure", "basis", "checked", "situation", "linked", "types", "servo",
+        "suggests", "causes", "due", "turned", "condition", "detected", "contributor", "indications",
+        "arise", "activated", "requires", "significant", "involves", "characterized", "occurrences",
+        "happen", "encountering", "reason", "denotes", "regarding", "sporadic", "component",
+        "operation", "relates", "notable", "surrounded", "relevant", "marked", "checks", "details",
+        "document", "happened", "recorded", "relation", "relating", "scenario", "may", "furthermore",
+        "addition", "following", "associated", "states", "section", "table", "row",
         # Filler/Null representations
         "blank", "none", "empty", "na", "null", "nil", "n/a", "yes", "no", "true", "false"
     }

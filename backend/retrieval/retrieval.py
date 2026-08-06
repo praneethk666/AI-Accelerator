@@ -55,6 +55,24 @@ class RetrievalTool:
                 state["retrieved_chunks"] = []
                 return state
 
+        # Safety net: always search the raw, unmodified user query too, so a
+        # query_planner mis-rewrite (e.g. acronym hallucination) can never fully
+        # starve retrieval of the literal terms the user actually typed.
+        # Case-insensitive dedup avoids a redundant search when the planner's
+        # rewrite already matches the raw query modulo case. Bounded to a sane
+        # max length so a pathological/garbage query can't blow up the fan-out.
+        raw_query = (state.get("query") or "").strip()
+        _MAX_RAW_QUERY_CHARS = 500
+        if raw_query and len(raw_query) <= _MAX_RAW_QUERY_CHARS:
+            existing_lower = {q.strip().lower() for q in sub_questions}
+            if raw_query.lower() not in existing_lower:
+                sub_questions = sub_questions + [raw_query]
+                logger.info(
+                    "RetrievalTool: added raw query as safety-net search variant "
+                    "(planner sub_questions did not include it verbatim): %r",
+                    raw_query[:80],
+                )
+
         retrieval_cfg = config["query"]["retrieval"]
         # HARD filter = explicit document_id scope (a choice the user/agent made — respect it).
         # SOFT filter = doc_type / industry (a hint the agent inferred). Both are ANDed by the

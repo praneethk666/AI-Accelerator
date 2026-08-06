@@ -37,8 +37,10 @@ User question: {query}
 Do two things:
 1. Rewrite the question so it stands alone without the conversation (resolve "it",
    "that", "they", etc.). If it is already standalone, keep it as-is.
-   If the user question is a single keyword, entity, or a name (e.g. "Manoj", "stipend"), rewrite it as a proper search question asking for information about that keyword.
+   If the user question is a single keyword, entity, or a proper name (e.g. "warranty period", "employee onboarding"), rewrite it as a proper search question asking for information about that keyword.
+   CRITICAL: Do NOT expand, translate, or reinterpret any acronym, abbreviation, code, or short technical term you are not 100% certain about (e.g. "MS LED", "DLNK-M2", "PCB", "ECU", "MS"). Preserve such terms EXACTLY as written, verbatim, same case. Never assume a short acronym refers to a well-known company or consumer product (e.g. never expand "MS" to "Microsoft") — in an enterprise document search engine, short acronyms almost always refer to domain-specific equipment, parts, or components, not brand names.
 2. Break it into 1 to {max_subs} focused search sub-questions.
+   - ALWAYS include the user's original phrase verbatim (with acronyms untouched) as one of the sub-questions, in addition to any expanded/rewritten versions.
    - For domain-specific or technical questions (e.g. safety, errors, incidents, parameters, procedures), include synonym and concept expansions that appear in technical manuals and standard documents (e.g., expand "high-severity incidents / escalation steps" to include "danger warning classifications (DANGER/WARNING/CAUTION)" and "emergency safety/shutdown procedures").
    - A simple, specific question can remain 1-2 sub-questions.
 
@@ -63,6 +65,14 @@ class QueryPlannerTool:
             plan = _plan(query, state.get("conversation_history") or [], config, max_subs)
             standalone = (plan.get("standalone_query") or query).strip()
             subs = [s.strip() for s in (plan.get("sub_questions") or []) if s and s.strip()]
+
+            # Backstop: don't rely solely on the LLM obeying the "always include
+            # verbatim" instruction. If it dropped the raw query anyway, add it
+            # back deterministically (case-insensitive check) so this guarantee
+            # holds even on an off-spec model response.
+            if query and query.lower() not in {s.lower() for s in subs}:
+                subs.append(query)
+
             state["standalone_query"] = standalone
             state["sub_questions"] = subs[:max_subs] or [standalone]
         except Exception as exc:

@@ -128,9 +128,10 @@ SYSTEM_PROMPT = (
     "filtering, aggregation, comparison, or any data lookup/manipulation on Excel sheets. You MUST follow these rules:\n"
     "      1. Assign the final output to `result` (e.g., `result = ...`). Do NOT use return statements.\n"
     "      2. NEVER use `import` statements or restricted builtins like `dir()`, `globals()`, `locals()`, `hasattr()`, `setattr()`, `getattr()`, `eval()`, `exec()` — they are blocked by the secure sandbox. Pandas (pd), Numpy (np), sqlite3, math, datetime, re, and json are pre-imported and available.\n"
-    "      3. To list all sheets, set sheet_name='all' and use `list(dfs.keys())`.\n"
-    "      4. To inspect columns/rows of sheet 'Vendor A', use `dfs['Vendor A'].columns.tolist()` or `dfs['Vendor A'].iloc[:5]`.\n"
-    "      5. Work step-by-step: first list the sheet names, then inspect columns/rows of relevant sheets to find headers, then perform the final calculation.\n"
+    "      3. NEVER call `pd.read_excel()`, `pd.read_csv()`, or any file-reading function inside the `code` block. The file is already loaded for you. Use `df` (the active sheet) or `dfs` (dict of all sheets) directly — they are injected into your namespace before your code runs.\n"
+    "      4. To list all sheets, set sheet_name='all' and use `result = list(dfs.keys())`.\n"
+    "      5. To inspect columns/rows of sheet 'Vendor A', use `dfs['Vendor A'].columns.tolist()` or `dfs['Vendor A'].iloc[:5]`.\n"
+    "      6. Work step-by-step: first list the sheet names, then inspect columns/rows of relevant sheets to find headers, then perform the final calculation.\n"
     "- request_clarification(question, options?): Ask the USER to choose when their "
     "request is ambiguous (e.g. several documents match). Prefer this over guessing.\n\n"
 
@@ -143,10 +144,12 @@ SYSTEM_PROMPT = (
     "looking up text notes/inclusions/exclusions/metadata on Excel files (e.g. 'sum column X', "
     "'which company has highest revenue', 'is scaffolding included', 'list exclusions') — call excel_tool instead. "
     "It runs real Pandas code on the actual data and is far more accurate and token-efficient than searching chunked text.\n"
-    "   CRITICAL: Bypassing excel_tool for Excel files and calling search_documents is STRICTLY PROHIBITED. RAG/Search "
-    "retrieves massive amounts of raw text/tables, which causes extreme context window bloat (up to 500,000+ tokens) and poor "
-    "computational accuracy. First resolve the Excel file name using list_documents/sql_read if needed, then run your "
-    "computational/filtering code entirely inside excel_tool.\n\n"
+    "   CRITICAL: If the user mentions 'data sheets', 'spreadsheet', 'excel', or asks a question that clearly targets tabular data, "
+    "you MUST use `excel_tool`. Do NOT call `search_documents` for these questions. RAG/Search retrieves raw text chunks which causes "
+    "poor computational accuracy and UI citation issues. First resolve the Excel file name using list_documents/sql_read if needed, then "
+    "run your computational/filtering code entirely inside excel_tool.\n"
+    "   UI BEHAVIOR WARNING: If you can answer a question fully using `excel_tool`, DO NOT redundantly call `search_documents` "
+    "to look for text matches. The UI will prioritize and show PDF text citations over Excel data. Rely purely on `excel_tool` for Excel data.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
@@ -1694,14 +1697,7 @@ def run_agent(
     is_question = not _is_greeting(message)
 
     system_prompt_text = SYSTEM_PROMPT
-    if resolved_scope:
-        system_prompt_text += (
-            f"\n\n## ACTIVE DOCUMENT SCOPE RULES\n"
-            f"- Resolved Active Document: '{active_fname}' (Scope: {resolved_scope!r}).\n"
-            f"- For any question, 'this manual', 'this file', 'this document', or follow-up in this session, "
-            f"you MUST restrict your search_documents tool call by passing document_scope={resolved_scope!r}.\n"
-        )
-    elif is_ambiguous_trigger:
+    if is_ambiguous_trigger:
         system_prompt_text += (
             "\n\n## AMBIGUITY DISAMBIGUATION MANDATE\n"
             "- The user asks an ambiguous question ('this manual', 'what is this about') but NO document is currently "

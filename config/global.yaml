@@ -301,7 +301,7 @@ extractors:
   docx: word_extraction
   image: image_extraction
 pdf_extractors:
-  digital: pymupdf_pdf
+  digital: docling_pdf
   scanned: docling_pdf
   mixed: docling_pdf
 route_extractors:

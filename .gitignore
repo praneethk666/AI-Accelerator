@@ -266,3 +266,6 @@ docs/
 
 # Agent customizations & local rules
 .agents/
+
+# Obsidian Vault
+obsidian_vault/

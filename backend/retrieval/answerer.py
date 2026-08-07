@@ -46,8 +46,8 @@ _ANSWER_SYSTEM = (
     "Rules:\n"
     "- Answer using ONLY the provided context passages. Never use outside knowledge "
     "or guess.\n"
-    "- Cite every fact inline as [filename, p.N], using the passage you drew it from; "
-    "if several support it, cite the most specific.\n"
+    "- Cite every fact inline using ONLY the block index number provided in the context, e.g. [1] or [3]. "
+    "Do NOT cite the filename or page directly in the text.\n"
     "- Copy exact values VERBATIM — part numbers, model names, measurements, torque "
     "specs, fault codes. Never paraphrase or round a number.\n"
     "- Do NOT add your own derivations, reformulations, or 'equivalent forms' of formulas "
@@ -94,21 +94,31 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     answer_lower = answer.lower()
 
     # 1. Parse bracketed index citations, e.g. [1], [2, p.3], [1-3]
-    cited_indices = set()
-    brackets = re.findall(r'\[([^\]]+)\]', answer)
-    for content in brackets:
+    # Keep track of the earliest position each index is cited
+    cited_index_positions = {}  # idx -> first_mention_pos
+    
+    for m in re.finditer(r'\[([^\]]+)\]', answer):
+        pos = m.start()
+        content = m.group(1)
+        # Strip out page references (like p.1, pg 2, page 3) so they aren't parsed as index numbers
+        clean_content = re.sub(r'\b(?:p|pg|page)\.?\s*\d+', '', content, flags=re.IGNORECASE)
+        
         # Check for ranges first, e.g. 1-3
-        for start, end in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', content):
+        for start, end in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', clean_content):
             try:
                 s, e = int(start), int(end)
                 if s <= e and e - s < 50:
-                    cited_indices.update(range(s, e + 1))
+                    for i in range(s, e + 1):
+                        if i not in cited_index_positions:
+                            cited_index_positions[i] = pos
             except ValueError:
                 pass
         # Individual index numbers
-        for num_str in re.findall(r'\b\d+\b', content):
+        for num_str in re.findall(r'\b\d+\b', clean_content):
             try:
-                cited_indices.add(int(num_str))
+                i = int(num_str)
+                if i not in cited_index_positions:
+                    cited_index_positions[i] = pos
             except ValueError:
                 pass
 
@@ -143,17 +153,24 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     }
 
     # 2. Filter citations
-    filtered = []
+    filtered_with_pos = []
+    
+    # If the LLM successfully used bracketed index citations, we should be strict
+    # and ONLY use bracket citations to avoid fuzzy-matching explosions (where just
+    # mentioning a filename pulls in all retrieved chunks from that file).
+    has_bracket_citations = len(cited_index_positions) > 0
     
     for idx, cit in enumerate(citations, start=1):
         is_cited = False
+        first_mention_pos = 10 ** 9
         
         # Check A: Cited by index [i]
-        if idx in cited_indices:
+        if idx in cited_index_positions:
             is_cited = True
+            first_mention_pos = min(first_mention_pos, cited_index_positions[idx])
             
-        else:
-            # Check B: Cited by name and optionally page/slide/sheet
+        elif not has_bracket_citations:
+            # Check B: Cited by name and optionally page/slide/sheet (Fallback only)
             fname = cit.get("filename") or ""
             if fname:
                 fname_clean = fname.lower()
@@ -202,6 +219,7 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                                         p_int = int(float(page_val))
                                         if p_int in nums:
                                             matches_any_page_spec = True
+                                            first_mention_pos = min(first_mention_pos, m.start())
                                             break
                                     except (ValueError, TypeError):
                                         pass
@@ -209,6 +227,7 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                                 # Check sheet match
                                 if sheet_val and str(sheet_val).lower() in context:
                                     matches_any_page_spec = True
+                                    first_mention_pos = min(first_mention_pos, m.start())
                                     break
                                     
                         if has_specific_citation:
@@ -217,13 +236,18 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                         else:
                             # General mention without specific page references -> count as cited
                             is_cited = True
+                            first_mention_pos = min(first_mention_pos, matches[0].start())
                             
         if is_cited:
-            filtered.append(cit)
+            filtered_with_pos.append((first_mention_pos, cit))
             
     # 3. Fallback: if parsing failed to extract any valid citation matches, 
     # keep all retrieved chunks to ensure the sources list is not empty.
-    return filtered if filtered else citations
+    if filtered_with_pos:
+        # Sort by vector search score (highest first) so the primary relevant document opens first
+        filtered_with_pos.sort(key=lambda x: x[1].get("score", 0.0), reverse=True)
+        return [x[1] for x in filtered_with_pos]
+    return citations
 
 
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
@@ -529,6 +553,7 @@ class AnswererTool:
                 citations = []
             else:
                 citations = _filter_cited_citations(answer_text, citations)
+
 
             state["answer"]    = answer_text
             state["citations"] = citations

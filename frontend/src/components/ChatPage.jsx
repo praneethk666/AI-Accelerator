@@ -206,7 +206,7 @@ const Tooltip = ({ children, content }) => {
   );
 };
 
-const USD_TO_INR = 83.50;
+const USD_TO_INR = 95.20;
 
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
@@ -2071,14 +2071,13 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       ) : (
         <div
           ref={containerRef}
-          className="flex-1 overflow-auto bg-[#f4ede4]/60 p-6 flex justify-center items-start"
+          className={`flex-1 overflow-auto bg-[#f4ede4]/60 p-6 flex items-start ${scale <= 1 ? 'justify-center' : 'justify-start'}`}
         >
           {imageUrl && (
             <div
+              className="flex-shrink-0"
               style={{
                 width: `${Math.round(scale * 100)}%`,
-                marginLeft: scale <= 1 ? 'auto' : '0',
-                marginRight: scale <= 1 ? 'auto' : '0',
                 transition: 'width 150ms ease-out',
                 position: 'relative',
               }}

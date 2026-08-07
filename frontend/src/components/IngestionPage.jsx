@@ -70,7 +70,7 @@ const fmtLlmCallsSub = (tu) => {
   return `${total} LLM calls`;
 };
 
-const USD_TO_INR = 83.50;
+const USD_TO_INR = 95.20;
 
 const IngestionPage = () => {
   const navigate = useNavigate();
@@ -696,17 +696,29 @@ const IngestionPage = () => {
                           {(() => {
                             const totalMs = (file.metrics || []).reduce((sum, m) => sum + (m.ms || 0), 0);
                             return totalMs > 0 ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-[10px] font-bold text-[#4a154b]">
-                                <ClockIcon className="h-3 w-3 text-[#4a154b]" />
+                              <span className="inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-sm font-bold text-[#4a154b]">
+                                <ClockIcon className="h-4 w-4 text-[#4a154b]" />
                                 {fmtDuration(totalMs)}
+                              </span>
+                            ) : null;
+                          })()}
+
+                          {/* Total Pages Badge */}
+                          {(() => {
+                            const extractMetric = (file.metrics || []).find(m => m.step === 'docling_pdf' || m.step === 'pymupdf_pdf' || m.step === 'pdf_digital' || m.step === 'scanned_pdf' || m.step === 'mixed_pdf');
+                            const totalPages = extractMetric?.report?.pages?.total;
+                            return totalPages ? (
+                              <span className="inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-sm font-bold text-[#4a154b]">
+                                <DocumentIcon className="h-4 w-4 text-[#4a154b]" />
+                                {totalPages} {totalPages === 1 ? 'Page' : 'Pages'}
                               </span>
                             ) : null;
                           })()}
 
                           {/* Total Cost Badge */}
                           {file.token_usage?.total_cost_usd !== undefined && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-[10px] font-bold text-[#4a154b]">
-                              <CurrencyDollarIcon className="h-3 w-3 text-[#4a154b]" />
+                            <span className="inline-flex items-center gap-1.5 px-4 py-1 rounded-full bg-[#f9f0ff] border border-[#e6e6e6] text-sm font-bold text-[#4a154b]">
+                              <CurrencyDollarIcon className="h-4 w-4 text-[#4a154b]" />
                               {currency === 'USD' 
                                 ? `$${file.token_usage.total_cost_usd.toFixed(4)}`
                                 : `₹${(file.token_usage.total_cost_usd * USD_TO_INR).toFixed(2)}`

@@ -9,88 +9,88 @@ categorization:
     categorization_low_confidence: 0.5
   industry_keywords:
     automotive:
-    - toyota
-    - ford
-    - bmw
-    - vehicle
-    - engine
-    - torque
-    - transmission
-    - chassis
-    - automotive
+      - toyota
+      - ford
+      - bmw
+      - vehicle
+      - engine
+      - torque
+      - transmission
+      - chassis
+      - automotive
     electronics:
-    - circuit
-    - pcb
-    - schematic
-    - voltage
-    - resistor
-    - capacitor
-    - signal
-    - semiconductor
+      - circuit
+      - pcb
+      - schematic
+      - voltage
+      - resistor
+      - capacitor
+      - signal
+      - semiconductor
     manufacturing:
-    - assembly
-    - drawing
-    - tolerance
-    - weld
-    - machining
-    - fixture
-    - jig
-    - bom
-    - part number
+      - assembly
+      - drawing
+      - tolerance
+      - weld
+      - machining
+      - fixture
+      - jig
+      - bom
+      - part number
     finance:
-    - balance sheet
-    - revenue
-    - profit
-    - ledger
-    - audit
-    - fiscal
-    - equity
-    - financial statement
+      - balance sheet
+      - revenue
+      - profit
+      - ledger
+      - audit
+      - fiscal
+      - equity
+      - financial statement
     legal:
-    - contract
-    - agreement
-    - clause
-    - liability
-    - indemnity
-    - arbitration
-    - jurisdiction
+      - contract
+      - agreement
+      - clause
+      - liability
+      - indemnity
+      - arbitration
+      - jurisdiction
     healthcare:
-    - patient
-    - diagnosis
-    - clinical
-    - pharma
-    - dosage
-    - trial
-    - medical
-    - drug
-    - therapy
+      - patient
+      - diagnosis
+      - clinical
+      - pharma
+      - dosage
+      - trial
+      - medical
+      - drug
+      - therapy
     retail_ecommerce:
-    - order id
-    - add to cart
-    - delivery address
-    - shipped
-    - return policy
-    - sku
-    - cart total
-    - mrp
+      - order id
+      - add to cart
+      - delivery address
+      - shipped
+      - return policy
+      - sku
+      - cart total
+      - mrp
     travel_transport:
-    - pnr
-    - boarding point
-    - seat number
-    - departure time
-    - ticket number
-    - passenger name
-    - bus operator
-    - coach number
+      - pnr
+      - boarding point
+      - seat number
+      - departure time
+      - ticket number
+      - passenger name
+      - bus operator
+      - coach number
     entertainment_media:
-    - showtime
-    - screen number
-    - movie ticket
-    - booking id
-    - seat no
-    - show timing
-    - multiplex
-    - cinema hall
+      - showtime
+      - screen number
+      - movie ticket
+      - booking id
+      - seat no
+      - show timing
+      - multiplex
+      - cinema hall
     general: []
 vision:
   provider: openai
@@ -105,20 +105,13 @@ vision:
   max_concurrency: 2
   min_interval_s: 2
   prompt:
-    default: 'Describe what this image shows in 2-3 sentences. Be specific about the
-      type of visual (diagram, chart, photo, schematic) and capture component labels,
-      part numbers, dimensions, and any visible text VERBATIM (do not paraphrase numbers).
+    default: 'Describe what this image shows in 2-3 sentences. Be specific about the type of visual (diagram, chart, photo, schematic) and capture component labels, part numbers, dimensions, and any visible text VERBATIM (do not paraphrase numbers).
 
       '
-    automotive: 'You are analyzing a page from a vehicle/equipment service manual.
-      Capture exploded views and assembly diagrams, part names and part numbers, callout
-      numbers, fasteners, torque/clearance specs, and any labels, warnings, or measurements.
-      Be precise — this is used for parts/maintenance search.
+    automotive: 'You are analyzing a page from a vehicle/equipment service manual. Capture exploded views and assembly diagrams, part names and part numbers, callout numbers, fasteners, torque/clearance specs, and any labels, warnings, or measurements. Be precise — this is used for parts/maintenance search.
 
       '
-    cad_route: 'Describe all visible circuit components, reference designators (R1,
-      C4), net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any visible
-      dimensions or tolerances. Be precise — this is used for search.
+    cad_route: 'Describe all visible circuit components, reference designators (R1, C4), net names (e.g. 5V_RAIL, GND), connector types, pin counts, and any visible dimensions or tolerances. Be precise — this is used for search.
 
       '
 vision_ocr:
@@ -209,24 +202,19 @@ enrichment:
   model: gpt-4o-mini
   base_url: https://api.openai.com/v1
   api_key: ${OPENAI_API_KEY}
-  prompt: 'You label document chunks for a technical search index. For each chunk
-    produce a one-sentence summary stating what it is about and what a reader would
-    learn (in the document''s own terms), plus 6-10 SPECIFIC search terms taken from
-    the chunk — part numbers, model names, component/procedure names, specs and units,
-    domain terms. Never use stopwords, generic words (information, section, manual),
-    or terms not present in the chunk.
+  prompt: 'You label document chunks for a technical search index. For each chunk produce a one-sentence summary stating what it is about and what a reader would learn (in the document''s own terms), plus 6-10 SPECIFIC search terms taken from the chunk — part numbers, model names, component/procedure names, specs and units, domain terms. Never use stopwords, generic words (information, section, manual), or terms not present in the chunk.
 
     '
 query:
   small_corpus_tokens: 100000
   max_context_tokens: 0
   steps:
-  - query_planner
-  - retrieval
-  - answerer
+    - query_planner
+    - retrieval
+    - answerer
   planner:
     max_sub_questions: 4
-  answerer: null
+  answerer:
   hyde:
     enabled: false
   retrieval:
@@ -248,35 +236,35 @@ query:
     api_key: ${OPENAI_API_KEY}
     extra_body: {}
     write_tools:
-    - ingest_document
+      - ingest_document
 document_types:
-- invoice
-- purchase_order
-- financial_statement
-- report
-- research_paper
-- manual
-- contract
-- policy
-- datasheet
-- presentation
-- spreadsheet
-- cad_drawing
-- circuit_diagram
-- schematic
-- image
-- unknown
+  - invoice
+  - purchase_order
+  - financial_statement
+  - report
+  - research_paper
+  - manual
+  - contract
+  - policy
+  - datasheet
+  - presentation
+  - spreadsheet
+  - cad_drawing
+  - circuit_diagram
+  - schematic
+  - image
+  - unknown
 industries:
-- automotive
-- electronics
-- manufacturing
-- finance
-- legal
-- healthcare
-- retail_ecommerce
-- travel_transport
-- entertainment_media
-- general
+  - automotive
+  - electronics
+  - manufacturing
+  - finance
+  - legal
+  - healthcare
+  - retail_ecommerce
+  - travel_transport
+  - entertainment_media
+  - general
 default_industry: general
 type_to_route:
   cad_drawing: cad_route
@@ -310,70 +298,70 @@ route_extractors:
 routes:
   text_default:
     steps:
-    - categorize
-    - extract
-    - chunk
-    - enrich_chunks
-    - embed
-    - index
+      - categorize
+      - extract
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   diagram_heavy:
     steps:
-    - categorize
-    - extract
-    - vision_enrichment
-    - chunk
-    - enrich_chunks
-    - embed
-    - index
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
   cad_route:
     steps:
-    - categorize
-    - extract
-    - cad_chunk_llm
-    - embed
-    - index
+      - categorize
+      - extract
+      - cad_chunk_llm
+      - embed
+      - index
   circuit_route:
     steps:
-    - categorize
-    - extract
-    - cad_chunk_llm
-    - embed
-    - index
+      - categorize
+      - extract
+      - cad_chunk_llm
+      - embed
+      - index
   image_route:
     steps:
+      - categorize
+      - extract
+      - vision_enrichment
+      - chunk
+      - enrich_chunks
+      - embed
+      - index
+ingestion:
+  steps:
     - categorize
     - extract
     - vision_enrichment
     - chunk
+    - cad_chunk_llm
     - enrich_chunks
     - embed
     - index
-ingestion:
-  steps:
-  - categorize
-  - extract
-  - vision_enrichment
-  - chunk
-  - cad_chunk_llm
-  - enrich_chunks
-  - embed
-  - index
   route_gates:
     vision_enrichment:
-    - text_default
-    - diagram_heavy
-    - image_route
+      - text_default
+      - diagram_heavy
+      - image_route
     chunk:
-    - text_default
-    - diagram_heavy
-    - image_route
+      - text_default
+      - diagram_heavy
+      - image_route
     enrich_chunks:
-    - text_default
-    - diagram_heavy
-    - image_route
+      - text_default
+      - diagram_heavy
+      - image_route
     cad_chunk_llm:
-    - cad_route
-    - circuit_route
+      - cad_route
+      - circuit_route
 database:
   postgres_url: ${POSTGRES_URL}
   qdrant_url: ${QDRANT_URL}
@@ -432,7 +420,7 @@ guardrails:
     enabled: true
     window_minutes: 30
     session_block_threshold: 150
-    redis_url: null
+    redis_url:
   degradation:
     qdrant_max_retries: 2
     qdrant_base_delay_s: 0.5

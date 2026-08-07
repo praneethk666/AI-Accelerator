@@ -75,6 +75,10 @@ class QueryPlannerTool:
 
             state["standalone_query"] = standalone
             state["sub_questions"] = subs[:max_subs] or [standalone]
+            
+            logger.info("🔍 [Query Planner] Original Query: %r", query)
+            logger.info("🔍 [Query Planner] Rewritten Query: %r", state["standalone_query"])
+            logger.info("🔍 [Query Planner] Search Sub-questions: %s", state["sub_questions"])
         except Exception as exc:
             logger.warning("QueryPlannerTool fell back to raw query: %s", exc)
             errors = state.get("errors") or []

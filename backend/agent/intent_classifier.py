@@ -43,14 +43,22 @@ one of these labels and nothing else:
 
 document_question - needs information from the user's uploaded documents \
 (specs, manuals, reports, invoices, drawings, data in their files).
-action - asks to perform an operation, e.g. ingest/upload a file, list documents, \
-run a query against a database.
-follow_up - refers to the conversation so far and can be answered from it, e.g. \
-"summarise that", "explain your last answer", "what did you just say about X".
+action - asks the system to DO something to the corpus or database: ingest, upload, \
+index or re-process a file; list, count or check the status of ingested files; run a \
+database query. Not merely mentioning a file, and not reformatting an answer.
+follow_up - refers to the conversation so far and can be answered from it, including \
+restating, reformatting, shortening, tabulating or translating a previous answer, e.g. \
+"summarise that", "explain your last answer", "put that in a table".
 general - general knowledge, reasoning, chit-chat, maths, or definitions that need \
 neither the documents nor the prior conversation.
 
-If the message plausibly needs the user's documents, choose document_question.
+Tie-breakers, in order:
+1. A terse phrase or bare noun phrase with no conversational reference (e.g. "model \
+name", "max load", "warranty terms") is a document_question — the user is naming a \
+field they want looked up in their files.
+2. If the message plausibly needs the user's documents at all, choose \
+document_question. Answering a document question without the documents is the worst \
+outcome; an unnecessary search is merely wasteful.
 Reply with the label only."""
 
 

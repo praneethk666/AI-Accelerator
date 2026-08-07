@@ -30,6 +30,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from backend.agent.intent_classifier import classify_intent
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
 from backend.core.llm_client import get_llm, get_llm_for, clean_message_content, resolve_model_provider
@@ -396,6 +397,23 @@ GREETING_SYSTEM_PROMPT = (
     "You are a polite AI assistant for an enterprise document search system. "
     "Reply naturally, warmly, and concisely (in 1 short sentence) to the user's greeting. "
     "Briefly offer to help them search their ingested documents."
+)
+
+# Appended to SYSTEM_PROMPT when the intent classifier says this turn does NOT need
+# the corpus (follow_up / general). Without it the ABSOLUTE MANDATE above still
+# orders the model to search every time, and relaxing tool_choice alone has no
+# visible effect. Placed last so it wins on recency, and it only PERMITS a direct
+# answer — the model may still search if it turns out it needs to.
+DIRECT_ANSWER_OVERRIDE = (
+    "\n\n## THIS TURN: DIRECT ANSWER PERMITTED (overrides the ABSOLUTE MANDATE above)\n"
+    "This message was classified as NOT needing the document corpus — it is either "
+    "chit-chat/general knowledge, or a follow-up answerable from the conversation above.\n"
+    "For THIS turn only you may answer directly, without calling a tool.\n"
+    "- Follow-up: answer from the conversation above; do not re-search for something "
+    "already retrieved.\n"
+    "- General knowledge/reasoning: answer from your own knowledge, concisely.\n"
+    "If answering actually requires the user's documents, call search_documents as "
+    "normal — this permits a direct answer, it does not forbid searching."
 )
 
 
@@ -1639,7 +1657,10 @@ def run_agent(
     approved_calls: list[dict] | None = None,
     session_id: str = "",
     active_document_id: str | None = None,
+    intent_llm=None,
 ) -> dict:
+    """`intent_llm` overrides the model used for intent classification (tests inject
+    a scripted one). None -> built from config["query"]["agent"]["intent"]."""
     registry = registry if registry is not None else build_agent_registry()
     agent_cfg = (config.get("query") or {}).get("agent") or {}
     max_iterations = agent_cfg.get("max_iterations", 5)
@@ -1694,9 +1715,26 @@ def run_agent(
         }
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
-    is_question = not _is_greeting(message)
+
+    # What does this turn actually need? The label decides ONE thing: whether turn 0
+    # forces tool_choice="required". Replaces the old `not _is_greeting(message)`,
+    # which forced a search for every non-greeting — including "what is 2+2?" and
+    # "summarise that". Fails open to tools-required, so a classifier outage just
+    # restores the previous behaviour. Pure greetings already returned via the
+    # fast-path above and never reach here.
+    intent_result = classify_intent(
+        message,
+        conversation_history=conversation_history,
+        config=config,
+        agent_cfg=agent_cfg,
+        llm=intent_llm,
+    )
+    is_question = intent_result.requires_tools
 
     system_prompt_text = SYSTEM_PROMPT
+    if not is_question:
+        # Relax the ALWAYS-SEARCH mandate for this turn only (see the constant).
+        system_prompt_text += DIRECT_ANSWER_OVERRIDE
     if is_ambiguous_trigger:
         system_prompt_text += (
             "\n\n## AMBIGUITY DISAMBIGUATION MANDATE\n"
@@ -1975,5 +2013,8 @@ def run_agent(
         "trace_id": trace_info["trace_id"],
         "guard_risk_score": final_state.get("guard_risk_score", 0),
         "guard_policy": final_state.get("guard_policy", "allow"),
+        # why this turn did/didn't search — surfaced for debugging + backtesting
+        "intent": intent_result.intent,
+        "intent_fallback": intent_result.fallback,
     }
 

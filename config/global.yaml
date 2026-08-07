@@ -249,6 +249,15 @@ query:
     extra_body: {}
     write_tools:
     - ingest_document
+    # Intent classification: one cheap LLM call per turn labels what the message
+    # needs (document_question | action | follow_up | general). Only the first two
+    # force a tool call on turn 0 — the rest let the model answer directly from
+    # its own knowledge or the conversation. Any failure falls back to
+    # document_question (always search), i.e. the pre-classifier behaviour.
+    # Unset keys inherit the agent block above; point `model` at something cheap.
+    intent:
+      enabled: true
+      max_tokens: 12          # a label is a few tokens; keeps the call cheap
 document_types:
 - invoice
 - purchase_order

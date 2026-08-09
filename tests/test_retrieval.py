@@ -263,6 +263,29 @@ def test_hyde_top_n_passed_to_vector_store():
     assert kwargs["top_k"] == 2
 
 
+# ── enriched (alias for hybrid_rerank) ───────────────────────────────────────
+
+def test_enriched_behaves_same_as_hybrid_rerank():
+    state_enriched = sample_query_state()
+    state_rerank   = sample_query_state()
+    chunks         = chunk_dicts()
+
+    def run_with_method(state, method):
+        config = make_config(method=method, top_n=3)
+        with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
+             patch("backend.retrieval.retrieval.VectorStore.search", return_value=chunks), \
+             patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=chunks), \
+             patch("backend.retrieval.retrieval.get_reranker") as mock_reranker:
+            mock_embedder.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+            mock_reranker.return_value.predict.return_value = [0.9, 0.5, 0.3]
+            return RetrievalTool().run(state, config)
+
+    result_enriched = run_with_method(state_enriched, "enriched")
+    result_rerank   = run_with_method(state_rerank,   "hybrid_rerank")
+
+    assert ([c["chunk_id"] for c in result_enriched["retrieved_chunks"]]
+         == [c["chunk_id"] for c in result_rerank  ["retrieved_chunks"]])
+
 
 # ── unknown method ────────────────────────────────────────────────────────────
 
@@ -560,6 +583,10 @@ def test_multiple_sub_questions_each_trigger_retrieval():
     """One retrieval call per sub_question — 2 questions = 2 VectorStore calls."""
     state = sample_query_state()
     state["sub_questions"] = ["question one", "question two"]
+    # Isolate from the raw-query safety net (run() always appends state["query"]
+    # as an extra search variant unless it's already among sub_questions) so this
+    # test measures exactly the 2 sub_questions it sets, not a 3rd implicit one.
+    state["query"] = "question one"
     config = make_config(method="naive")
 
     with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
@@ -575,6 +602,10 @@ def test_multiple_sub_questions_partial_failure_continues():
     """First sub_question fails, second succeeds — output has second question's chunks."""
     state = sample_query_state()
     state["sub_questions"] = ["bad question", "good question"]
+    # Isolate from the raw-query safety net (run() always appends state["query"]
+    # as an extra search variant unless it's already among sub_questions) so the
+    # side_effect list below lines up 1:1 with the 2 sub_questions under test.
+    state["query"] = "bad question"
     config = make_config(method="naive")
 
     with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
@@ -614,3 +645,115 @@ def test_rrf_fuse_top_k_larger_than_results_returns_all():
     chunks = chunk_dicts()   # 3 chunks
     fused  = _rrf_fuse(chunks, [], w_dense=0.6, w_sparse=0.4, top_k=10, k=60)
     assert len(fused) == 3   # only 3 available, not 10
+
+
+# ── Fallback page-expansion ────────────────────────────────────────────────────
+
+def make_config_with_fallback(threshold: float = -1.0, enabled: bool = True):
+    """Config that activates fallback expansion at the given threshold."""
+    return {
+        "llm": {"model": "gpt-4", "provider": "openai"},
+        "embeddings": {"dense_query_prefix": DENSE_QUERY_PREFIX},
+        "query": {
+            "retrieval": {
+                "method":              "hybrid_rerank",
+                "top_n":               3,
+                "candidate_k":         6,
+                "rerank_top_k":        3,
+                "dense_weight":        0.6,
+                "sparse_weight":       0.4,
+                "fallback_enabled":    enabled,
+                "fallback_threshold":  threshold,
+                "fallback_top_k":      1,
+            }
+        },
+    }
+
+
+def _low_score_chunk(chunk_id: str = "c1", page: int = 7, score: float = -5.0):
+    """A chunk with a very low reranker score simulating a poor match."""
+    return {
+        "chunk_id":    chunk_id,
+        "document_id": "doc-fixture-001",
+        "text":        "sparse parts table row",
+        "_score":      score,
+        "token_count": 10,
+        "tags":        {},
+        "table_data":  None,
+        "image_path":  None,
+        "source_ref":  {"filename": "manual.pdf", "page": page},
+        "vector":      [],
+        "sparse_vector": {},
+    }
+
+
+def test_fallback_triggers_when_best_score_below_threshold():
+    """When all chunk scores are below fallback_threshold, _expand_chunks_to_pages is called."""
+    state  = sample_query_state()
+    config = make_config_with_fallback(threshold=-1.0, enabled=True)
+
+    low_chunk = _low_score_chunk(score=-3.0)
+    expanded_chunk = dict(low_chunk)
+    expanded_chunk["text"] = "FULL PAGE TEXT from document_blocks"
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_emb, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=[low_chunk]), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=[low_chunk]), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker, \
+         patch("backend.retrieval.retrieval._expand_chunks_to_pages",
+               return_value=[expanded_chunk]) as mock_expand:
+
+        mock_emb.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        mock_reranker.return_value.predict.return_value = [-3.0]
+
+        result = RetrievalTool().run(state, config)
+
+    # Expansion was triggered
+    mock_expand.assert_called_once()
+    # The expanded (full-page) text is what the LLM receives
+    assert result["retrieved_chunks"][0]["text"] == "FULL PAGE TEXT from document_blocks"
+
+
+def test_fallback_does_not_trigger_when_score_above_threshold():
+    """Normal high-confidence searches must NOT trigger the fallback path."""
+    state  = sample_query_state()
+    config = make_config_with_fallback(threshold=-1.0, enabled=True)
+
+    high_chunk = _low_score_chunk(score=3.5)   # well above threshold
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_emb, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=[high_chunk]), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=[high_chunk]), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker, \
+         patch("backend.retrieval.retrieval._expand_chunks_to_pages") as mock_expand:
+
+        mock_emb.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        mock_reranker.return_value.predict.return_value = [3.5]
+
+        result = RetrievalTool().run(state, config)
+
+    # Expansion must NOT have been called for a high-confidence result
+    mock_expand.assert_not_called()
+    # The original chunk text is returned unchanged
+    assert result["retrieved_chunks"][0]["text"] == high_chunk["text"]
+
+
+def test_fallback_disabled_via_config():
+    """When fallback_enabled=False the expansion path is never entered."""
+    state  = sample_query_state()
+    config = make_config_with_fallback(threshold=-1.0, enabled=False)
+
+    low_chunk = _low_score_chunk(score=-5.0)
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_emb, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=[low_chunk]), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=[low_chunk]), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker, \
+         patch("backend.retrieval.retrieval._expand_chunks_to_pages") as mock_expand:
+
+        mock_emb.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        mock_reranker.return_value.predict.return_value = [-5.0]
+
+        RetrievalTool().run(state, config)
+
+    mock_expand.assert_not_called()

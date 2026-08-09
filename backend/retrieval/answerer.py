@@ -46,12 +46,8 @@ _ANSWER_SYSTEM = (
     "Rules:\n"
     "- Answer using ONLY the provided context passages. Never use outside knowledge "
     "or guess.\n"
-    "- Cite every fact inline as [filename, p.N], using the passage you drew it from; "
-    "if several support it, cite the most specific.\n"
-    "- If MULTIPLE context passages each contain distinct relevant information (e.g. "
-    "companion pages, a table split across passages, related steps on different pages), "
-    "use and cite ALL of them — do not stop at the first passage that partially answers "
-    "the question and ignore the rest.\n"
+    "- Cite every fact inline using ONLY the block index number provided in the context, e.g. [1] or [3]. "
+    "Do NOT cite the filename or page directly in the text.\n"
     "- Copy exact values VERBATIM — part numbers, model names, measurements, torque "
     "specs, fault codes. Never paraphrase or round a number.\n"
     "- Do NOT add your own derivations, reformulations, or 'equivalent forms' of formulas "
@@ -64,9 +60,16 @@ _ANSWER_SYSTEM = (
     "the technical content, systems, components, parameters, or procedures visible in the "
     "context passages. Cite every claim with its page/section. Do NOT refuse simply because "
     "a formal introduction section is absent.\n"
-    "- If the answer is not in the context, reply EXACTLY: "
+    "- If the exact answer is not in the context, provide any closely related partial "
+    "information you CAN find in the context passages and cite it — then clearly state "
+    "which specific part of the question could not be confirmed from the documents. "
+    "Only if the context contains absolutely nothing relevant at all should you say: "
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler.\n"
+    "- If MULTIPLE context passages each contain distinct relevant information (e.g. "
+    "companion pages, a table split across passages, related steps on different pages), "
+    "use and cite ALL of them — do not stop at the first passage that partially answers "
+    "the question and ignore the rest.\n"
     "- For mathematical formulas, use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never use single brackets '[ ... ]' for math blocks."
 )
 
@@ -76,8 +79,7 @@ _ANSWER_SYSTEM = (
 _REFUSAL_MARKERS = (
     "could not find this in the provided",
     "no relevant passages found",
-    "not in the provided documents",
-    "don't have information",
+    "nothing relevant",
 )
 
 
@@ -96,21 +98,31 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     answer_lower = answer.lower()
 
     # 1. Parse bracketed index citations, e.g. [1], [2, p.3], [1-3]
-    cited_indices = set()
-    brackets = re.findall(r'\[([^\]]+)\]', answer)
-    for content in brackets:
+    # Keep track of the earliest position each index is cited
+    cited_index_positions = {}  # idx -> first_mention_pos
+    
+    for m in re.finditer(r'\[([^\]]+)\]', answer):
+        pos = m.start()
+        content = m.group(1)
+        # Strip out page references (like p.1, pg 2, page 3) so they aren't parsed as index numbers
+        clean_content = re.sub(r'\b(?:p|pg|page)\.?\s*\d+', '', content, flags=re.IGNORECASE)
+        
         # Check for ranges first, e.g. 1-3
-        for start, end in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', content):
+        for start, end in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', clean_content):
             try:
                 s, e = int(start), int(end)
                 if s <= e and e - s < 50:
-                    cited_indices.update(range(s, e + 1))
+                    for i in range(s, e + 1):
+                        if i not in cited_index_positions:
+                            cited_index_positions[i] = pos
             except ValueError:
                 pass
         # Individual index numbers
-        for num_str in re.findall(r'\b\d+\b', content):
+        for num_str in re.findall(r'\b\d+\b', clean_content):
             try:
-                cited_indices.add(int(num_str))
+                i = int(num_str)
+                if i not in cited_index_positions:
+                    cited_index_positions[i] = pos
             except ValueError:
                 pass
 
@@ -145,17 +157,24 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     }
 
     # 2. Filter citations
-    filtered = []
+    filtered_with_pos = []
+    
+    # If the LLM successfully used bracketed index citations, we should be strict
+    # and ONLY use bracket citations to avoid fuzzy-matching explosions (where just
+    # mentioning a filename pulls in all retrieved chunks from that file).
+    has_bracket_citations = len(cited_index_positions) > 0
     
     for idx, cit in enumerate(citations, start=1):
         is_cited = False
+        first_mention_pos = 10 ** 9
         
         # Check A: Cited by index [i]
-        if idx in cited_indices:
+        if idx in cited_index_positions:
             is_cited = True
+            first_mention_pos = min(first_mention_pos, cited_index_positions[idx])
             
-        else:
-            # Check B: Cited by name and optionally page/slide/sheet
+        elif not has_bracket_citations:
+            # Check B: Cited by name and optionally page/slide/sheet (Fallback only)
             fname = cit.get("filename") or ""
             if fname:
                 fname_clean = fname.lower()
@@ -204,6 +223,7 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                                         p_int = int(float(page_val))
                                         if p_int in nums:
                                             matches_any_page_spec = True
+                                            first_mention_pos = min(first_mention_pos, m.start())
                                             break
                                     except (ValueError, TypeError):
                                         pass
@@ -211,6 +231,7 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                                 # Check sheet match
                                 if sheet_val and str(sheet_val).lower() in context:
                                     matches_any_page_spec = True
+                                    first_mention_pos = min(first_mention_pos, m.start())
                                     break
                                     
                         if has_specific_citation:
@@ -219,13 +240,18 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
                         else:
                             # General mention without specific page references -> count as cited
                             is_cited = True
+                            first_mention_pos = min(first_mention_pos, matches[0].start())
                             
         if is_cited:
-            filtered.append(cit)
+            filtered_with_pos.append((first_mention_pos, cit))
             
     # 3. Fallback: if parsing failed to extract any valid citation matches, 
     # keep all retrieved chunks to ensure the sources list is not empty.
-    return filtered if filtered else citations
+    if filtered_with_pos:
+        # Sort by vector search score (highest first) so the primary relevant document opens first
+        filtered_with_pos.sort(key=lambda x: x[1].get("score", 0.0), reverse=True)
+        return [x[1] for x in filtered_with_pos]
+    return citations
 
 
 # Same threshold enrich_chunks uses to decide a chunk is too short for LLM
@@ -376,6 +402,218 @@ def _expand_thin_chunks(chunks: list[dict], max_pages: int = 5) -> list[dict]:
     return out
 
 
+class AnswererTool:
+    """
+    Implements the Tool Protocol (backend/core/tool.py).
+
+    State contract:
+        READS  query             str         ← raw user question
+               retrieved_chunks list[Chunk] ← from RetrievalTool
+               session_id       str         ← conversation session
+    WRITES answer            str
+               citations        list
+        ERRORS errors            list
+    """
+
+    name: str = "answerer"
+
+    def run(self, state: PipelineState, config: dict) -> PipelineState:
+        query:   str         = state["query"]
+        standalone_query: str = state.get("standalone_query") or query
+        chunks:  list[Chunk] = state["retrieved_chunks"] or []
+        session_id: str      = state["session_id"]
+        turn:    int         = len(state["conversation_history"] or []) + 1
+
+        if not chunks:
+            answer_text = "No relevant passages found in the provided documents."
+            state["answer"]    = answer_text
+            state["citations"] = []
+            _log(session_id, turn, query, answer_text, config)
+            return state
+
+        chunks = _expand_thin_chunks(chunks)
+
+        try:
+            # Enforce the configured context budget so a burst of large bge-m3 chunks
+            # (up to max_sub_questions x rerank_top_k) can't blow up cost/context on the
+            # paid model. Approx 4 chars/token; 0/unset => no cap. Chunks arrive best-first.
+            max_ctx_tokens = int((config.get("query") or {}).get("max_context_tokens") or 0)
+            if not max_ctx_tokens:
+                max_ctx_tokens = int((config.get("guardrails") or {}).get("token_budget", {}).get("max_context_tokens") or 20000)
+            context_blocks = []
+            used_tokens = 0
+            for i, chunk in enumerate(chunks, start=1):
+                ref   = chunk.get("source_ref") or {}
+                label = _locator(ref)
+                summary = (chunk.get("tags") or {}).get("summary")
+                header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
+                chunk_text = chunk.get("text") or ""
+                if chunk.get("redacted"):
+                    # Real finding, 3-Aug: a CAD sheet's own parts table had its
+                    # values blanked out ("***") in the source file. Told to the
+                    # model explicitly so it says so plainly instead of either
+                    # hallucinating a plausible-looking value or just parroting
+                    # the literal asterisks back with no explanation.
+                    reason = chunk.get("redaction_reason") or "This content is redacted in the source."
+                    chunk_text = f"[REDACTED IN SOURCE: {reason}]\n{chunk_text}"
+                block = f"{header}\n{chunk_text}"
+
+                block_tokens = len(block) // 4
+                if max_ctx_tokens and used_tokens + block_tokens > max_ctx_tokens:
+                    # Truncate first block to fit budget if it is already too large on its own
+                    if not context_blocks:
+                        allowed_chars = max(0, max_ctx_tokens * 4 - len(header) - 50)
+                        truncated_text = chunk_text[:allowed_chars]
+                        block = f"{header}\n{truncated_text}\n... [truncated to fit token budget]"
+                        context_blocks.append(block)
+                        used_tokens += max_ctx_tokens
+                    break
+                context_blocks.append(block)
+                used_tokens += block_tokens
+
+            user_msg = (
+                "Context:\n\n"
+                + "\n\n".join(context_blocks)
+                + f"\n\nQuestion: {standalone_query}"
+            )
+
+            # answering is reasoning-heavy. Resolution: query.answerer.model ->
+            # llm.answer_model -> global llm.model.
+            answerer_cfg  = config.get("query", {}).get("answerer") or {}
+            model_name, provider_name = resolve_model_provider(
+                config, answerer_cfg, default_model=config["llm"].get("answer_model")
+            )
+            llm = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
+
+            # Image-grounded answering (28-Jul): only target citations that
+            # actually survived the context-budget cut above, not the full
+            # pre-truncation `chunks` list.
+            context_chunks = chunks[: len(context_blocks)]
+            image_cfg = answerer_cfg.get("image_ground") or {}
+            grounding_images: list[dict] = []
+            if image_cfg.get("enabled"):
+                targets = _select_grounding_targets(
+                    context_chunks, int(image_cfg.get("top_k") or 1))
+                grounding_images = _load_grounding_images(targets)
+
+            # Audit-log the plain TEXT prompt (not the multimodal content list
+            # below, which would dump base64 image bytes into llm_calls.prompt).
+            prompt_messages = [
+                {"role": "system", "content": _ANSWER_SYSTEM},
+                {"role": "user",   "content": user_msg},
+            ]
+            content = _build_user_content(user_msg, grounding_images)
+            messages = [
+                {"role": "system", "content": _ANSWER_SYSTEM},
+                {"role": "user",   "content": content},
+            ]
+            try:
+                response = llm.invoke(messages)
+            except Exception:
+                if not grounding_images:
+                    raise
+                # The provider/model may reject the multimodal content shape
+                # (e.g. a non-vision-capable model swapped in) -- fail open by
+                # retrying once as plain text rather than losing the answer.
+                logger.warning("image-ground: multimodal answer call failed, "
+                                "retrying text-only", exc_info=True)
+                response = llm.invoke(prompt_messages)
+            usage.record_from_message("answer", response, prompt=prompt_messages, model=model_name, provider=provider_name)
+            answer_text = clean_message_content(response.content).strip()
+
+            # ── Refusal-triggered retry (page-expansion) ──────────────────────
+            # If the LLM says it couldn't find the answer, the retrieved chunks
+            # were likely fragmented (e.g. a section header on one page, its table
+            # on another). Expand EVERY retrieved chunk to its full page and retry
+            # once — this is a last-resort pass to give the LLM more context.
+            retrieval_fb_cfg = config.get("query", {}).get("retrieval") or {}
+            if _looks_like_refusal(answer_text) and retrieval_fb_cfg.get("fallback_enabled", False):
+                logger.info(
+                    "AnswererTool: LLM returned refusal — triggering page-expansion retry for %d chunks",
+                    len(chunks),
+                )
+                # Force-expand ALL chunks to full page, not just thin ones.
+                expanded_chunks = _expand_all_chunks_to_pages(chunks)
+                if expanded_chunks:
+                    retry_context_blocks = []
+                    retry_used = 0
+                    for i, chunk in enumerate(expanded_chunks, start=1):
+                        ref   = chunk.get("source_ref") or {}
+                        label = _locator(ref)
+                        chunk_text = chunk.get("text") or ""
+                        block = f"[{i}] ({label})\n{chunk_text}"
+                        block_tokens = len(block) // 4
+                        if max_ctx_tokens and retry_used + block_tokens > max_ctx_tokens:
+                            break
+                        retry_context_blocks.append(block)
+                        retry_used += block_tokens
+
+                    if retry_context_blocks:
+                        retry_msg = (
+                            "Context:\n\n"
+                            + "\n\n".join(retry_context_blocks)
+                            + f"\n\nQuestion: {standalone_query}"
+                        )
+                        retry_response = llm.invoke([
+                            {"role": "system", "content": _ANSWER_SYSTEM},
+                            {"role": "user",   "content": retry_msg},
+                        ])
+                        usage.record_from_message("answer_retry", retry_response, model=model_name, provider=provider_name)
+                        retry_text = clean_message_content(retry_response.content).strip()
+                        if not _looks_like_refusal(retry_text):
+                            logger.info("AnswererTool: page-expansion retry succeeded.")
+                            answer_text = retry_text
+                            chunks = expanded_chunks
+                        else:
+                            logger.info("AnswererTool: page-expansion retry also returned refusal.")
+
+            # Build citations — image_path and table_data are top-level chunk fields.
+            # source_ref varies by file type (page for PDF, sheet for Excel, slide
+            # for PPT), so read every locator field with .get and never assume page.
+            citations = []
+            for chunk in chunks:
+                ref = chunk.get("source_ref") or {}
+                tags = chunk.get("tags") or {}
+                citations.append({
+                    "filename":    _clean_filename(ref.get("filename") or "") or ref.get("filename"),
+                    "page":        ref.get("page"),
+                    "document_id": chunk.get("document_id"),
+                    "score":       chunk.get("_score"),
+                    "sheet":       ref.get("sheet"),
+                    "slide":       ref.get("slide"),
+                    "snippet":     (chunk.get("text") or ""),
+                    "summary":     tags.get("summary"),
+                    "keywords":    tags.get("keywords"),
+                    "image_path":  chunk.get("image_path"),
+                    "table_data":  chunk.get("table_data"),
+                    "chunk_type":  tags.get("chunk_type"),
+                    "section":     tags.get("section") or ref.get("section"),
+                })
+
+            # Don't attach a source list to a 'not found' answer — it drew on nothing.
+            if _looks_like_refusal(answer_text):
+                citations = []
+            else:
+                citations = _filter_cited_citations(answer_text, citations)
+
+
+            state["answer"]    = answer_text
+            state["citations"] = citations
+
+            _log(session_id, turn, query, answer_text, config)
+
+        except Exception as exc:
+            logger.error("AnswererTool failed for query %r: %s", query[:60], exc)
+            errors: list = state["errors"] or []
+            errors.append({"tool": "answerer", "query": query, "error": str(exc)})
+            state["errors"]    = errors
+            state["answer"]    = "An error occurred while generating the answer."
+            state["citations"] = []
+            record_handled_error("answerer_failure", str(exc), **{"query": query[:100]})
+
+        return state
+
+
 def _select_grounding_targets(chunks: list[dict], top_k: int) -> list[dict]:
     """Top-ranked, DISTINCT-page PDF citations to attach a page IMAGE for —
     image-grounded answering (28-Jul): the answer LLM can visually cross-check
@@ -473,171 +711,6 @@ def _build_user_content(user_msg: str, images: list[dict]):
     return content
 
 
-class AnswererTool:
-    """
-    Implements the Tool Protocol (backend/core/tool.py).
-
-    State contract:
-        READS  query             str         ← raw user question
-               retrieved_chunks list[Chunk] ← from RetrievalTool
-               session_id       str         ← conversation session
-    WRITES answer            str
-               citations        list
-        ERRORS errors            list
-    """
-
-    name: str = "answerer"
-
-    def run(self, state: PipelineState, config: dict) -> PipelineState:
-        query:   str         = state["query"]
-        standalone_query: str = state.get("standalone_query") or query
-        chunks:  list[Chunk] = state["retrieved_chunks"] or []
-        session_id: str      = state["session_id"]
-        turn:    int         = len(state["conversation_history"] or []) + 1
-
-        if not chunks:
-            answer_text = "No relevant passages found in the provided documents."
-            state["answer"]    = answer_text
-            state["citations"] = []
-            _log(session_id, turn, query, answer_text, config)
-            return state
-
-        chunks = _expand_thin_chunks(chunks)
-
-        try:
-            # Enforce the configured context budget so a burst of large bge-m3 chunks
-            # (up to max_sub_questions x rerank_top_k) can't blow up cost/context on the
-            # paid model. Approx 4 chars/token; 0/unset => no cap. Chunks arrive best-first.
-            max_ctx_tokens = int((config.get("query") or {}).get("max_context_tokens") or 0)
-            if not max_ctx_tokens:
-                max_ctx_tokens = int((config.get("guardrails") or {}).get("token_budget", {}).get("max_context_tokens") or 20000)
-            context_blocks = []
-            used_tokens = 0
-            for i, chunk in enumerate(chunks, start=1):
-                ref   = chunk.get("source_ref") or {}
-                label = _locator(ref)
-                summary = (chunk.get("tags") or {}).get("summary")
-                header = f"[{i}] ({label})" + (f" — {summary}" if summary else "")
-                chunk_text = chunk.get("text") or ""
-                if chunk.get("redacted"):
-                    # Real finding, 3-Aug: a CAD sheet's own parts table had its
-                    # values blanked out ("***") in the source file. Told to the
-                    # model explicitly so it says so plainly instead of either
-                    # hallucinating a plausible-looking value or just parroting
-                    # the literal asterisks back with no explanation.
-                    reason = chunk.get("redaction_reason") or "This content is redacted in the source."
-                    chunk_text = f"[REDACTED IN SOURCE: {reason}]\n{chunk_text}"
-                block = f"{header}\n{chunk_text}"
-                
-                block_tokens = len(block) // 4
-                if max_ctx_tokens and used_tokens + block_tokens > max_ctx_tokens:
-                    # Truncate first block to fit budget if it is already too large on its own
-                    if not context_blocks:
-                        allowed_chars = max(0, max_ctx_tokens * 4 - len(header) - 50)
-                        truncated_text = chunk_text[:allowed_chars]
-                        block = f"{header}\n{truncated_text}\n... [truncated to fit token budget]"
-                        context_blocks.append(block)
-                        used_tokens += max_ctx_tokens
-                    break
-                context_blocks.append(block)
-                used_tokens += block_tokens
-
-            user_msg = (
-                "Context:\n\n"
-                + "\n\n".join(context_blocks)
-                + f"\n\nQuestion: {standalone_query}"
-            )
-
-            # answering is reasoning-heavy. Resolution: query.answerer.model ->
-            # llm.answer_model -> global llm.model.
-            answerer_cfg  = config.get("query", {}).get("answerer") or {}
-            model_name, provider_name = resolve_model_provider(
-                config, answerer_cfg, default_model=config["llm"].get("answer_model")
-            )
-            llm = get_llm_for(config, answerer_cfg, default_model=config["llm"].get("answer_model"))
-
-            # Image-grounded answering (28-Jul): only target citations that
-            # actually survived the context-budget cut above, not the full
-            # pre-truncation `chunks` list.
-            context_chunks = chunks[: len(context_blocks)]
-            image_cfg = answerer_cfg.get("image_ground") or {}
-            grounding_images: list[dict] = []
-            if image_cfg.get("enabled"):
-                targets = _select_grounding_targets(
-                    context_chunks, int(image_cfg.get("top_k") or 1))
-                grounding_images = _load_grounding_images(targets)
-
-            # Audit-log the plain TEXT prompt (not the multimodal content list
-            # below, which would dump base64 image bytes into llm_calls.prompt).
-            prompt_messages = [
-                {"role": "system", "content": _ANSWER_SYSTEM},
-                {"role": "user",   "content": user_msg},
-            ]
-            content = _build_user_content(user_msg, grounding_images)
-            messages = [
-                {"role": "system", "content": _ANSWER_SYSTEM},
-                {"role": "user",   "content": content},
-            ]
-            try:
-                response = llm.invoke(messages)
-            except Exception:
-                if not grounding_images:
-                    raise
-                # The provider/model may reject the multimodal content shape
-                # (e.g. a non-vision-capable model swapped in) -- fail open by
-                # retrying once as plain text rather than losing the answer.
-                logger.warning("image-ground: multimodal answer call failed, "
-                                "retrying text-only", exc_info=True)
-                response = llm.invoke(prompt_messages)
-            usage.record_from_message("answer", response, prompt=prompt_messages, model=model_name, provider=provider_name)
-            answer_text = clean_message_content(response.content).strip()
-
-            # Build citations — image_path and table_data are top-level chunk fields.
-            # source_ref varies by file type (page for PDF, sheet for Excel, slide
-            # for PPT), so read every locator field with .get and never assume page.
-            citations = []
-            for chunk in chunks:
-                ref = chunk.get("source_ref") or {}
-                tags = chunk.get("tags") or {}
-                citations.append({
-                    "filename":    _clean_filename(ref.get("filename") or "") or ref.get("filename"),
-                    "page":        ref.get("page"),
-                    "document_id": chunk.get("document_id"),
-                    "score":       chunk.get("_score"),
-                    "sheet":       ref.get("sheet"),
-                    "slide":       ref.get("slide"),
-                    "snippet":     (chunk.get("text") or ""),
-                    "summary":     tags.get("summary"),
-                    "keywords":    tags.get("keywords"),
-                    "image_path":  chunk.get("image_path"),
-                    "table_data":  chunk.get("table_data"),
-                    "chunk_type":  tags.get("chunk_type"),
-                    "section":     tags.get("section") or ref.get("section"),
-                })
-
-            # Don't attach a source list to a 'not found' answer — it drew on nothing.
-            if _looks_like_refusal(answer_text):
-                citations = []
-            else:
-                citations = _filter_cited_citations(answer_text, citations)
-
-            state["answer"]    = answer_text
-            state["citations"] = citations
-
-            _log(session_id, turn, query, answer_text, config)
-
-        except Exception as exc:
-            logger.error("AnswererTool failed for query %r: %s", query[:60], exc)
-            errors: list = state["errors"] or []
-            errors.append({"tool": "answerer", "query": query, "error": str(exc)})
-            state["errors"]    = errors
-            state["answer"]    = "An error occurred while generating the answer."
-            state["citations"] = []
-            record_handled_error("answerer_failure", str(exc), **{"query": query[:100]})
-
-        return state
-
-
 _UUID_PREFIX_RE = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_',
     re.IGNORECASE,
@@ -676,3 +749,90 @@ def _log(
         PGStore.log_conversation(config, session_id, turn, question, answer)
     except Exception as exc:
         logger.warning("Failed to log conversation to Postgres: %s", exc)
+
+
+def _expand_all_chunks_to_pages(chunks: list[dict], max_pages: int = 10) -> list[dict]:
+    """Force-expand every retrieved chunk to its full page content from document_blocks.
+
+    Unlike _expand_thin_chunks (which only expands thin/fragmented chunks), this
+    helper ALWAYS expands — used as the last-resort retry when the LLM already
+    returned a refusal on the original chunks. The goal is to give the LLM the
+    widest possible context for one more attempt.
+
+    Skips Excel sheets (token bloat risk), deduplicates by (document_id, page),
+    and caps DB fetches at max_pages to bound latency.
+    """
+    from backend.storage.postgres_store import PostgresStore
+
+    seen: set[tuple] = set()
+    to_expand: list[tuple] = []
+    for c in chunks:
+        ref = c.get("source_ref") or {}
+        filename = ref.get("filename") or ""
+        if filename.lower().endswith((".xlsx", ".xls", ".xlsm")) or ref.get("sheet") is not None:
+            continue
+        doc_id = c.get("document_id")
+        page_val = ref.get("page") or ref.get("slide")
+        if not doc_id or page_val is None:
+            continue
+        key = (str(doc_id), page_val)
+        if key not in seen and len(seen) < max_pages:
+            seen.add(key)
+            to_expand.append((key, c))
+
+    if not to_expand:
+        return []
+
+    store = None
+    cache: dict[tuple, str] = {}
+    try:
+        store = PostgresStore()
+        for (doc_id, page_val), _ in to_expand:
+            try:
+                blocks = store.get_blocks(doc_id)
+            except Exception:
+                logger.exception(
+                    "_expand_all_chunks_to_pages: get_blocks failed doc=%s page=%s",
+                    doc_id, page_val,
+                )
+                continue
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_val or
+                    b["source_ref"].get("slide") == page_val
+                )
+            ]
+            parts = []
+            for b in page_blocks:
+                t = (b.get("text") or "").strip()
+                if t:
+                    parts.append(t)
+                td = b.get("table_data")
+                if td and td.get("rows"):
+                    headers = td.get("headers") or []
+                    rows_str = "\n".join(
+                        " | ".join(str(v) for v in row) for row in td["rows"]
+                    )
+                    parts.append(
+                        f"Columns: {' | '.join(str(h) for h in headers)}\n{rows_str}"
+                    )
+            if parts:
+                cache[(doc_id, page_val)] = "\n\n".join(parts)
+    finally:
+        if store is not None:
+            store.close()
+
+    if not cache:
+        return []
+
+    out = []
+    for key, seed_chunk in to_expand:
+        if key in cache:
+            c = dict(seed_chunk)
+            c["text"] = cache[key]
+            out.append(c)
+    logger.info(
+        "_expand_all_chunks_to_pages: expanded %d pages for retry", len(out)
+    )
+    return out

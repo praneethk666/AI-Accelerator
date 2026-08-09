@@ -9,8 +9,8 @@ RetrievalTool — implements the Tool Protocol from backend/core/tool.py.
     WRITES state["retrieved_chunks"] list[Chunk] — flat, deduped, best-first
     ERRORS state["errors"]           list        — append only, never raise
 
-Four methods (config["query"]["retrieval"]["method"]):
-  naive | hybrid | hybrid_rerank | hyde
+Five methods (config["query"]["retrieval"]["method"]):
+  naive | hybrid | hybrid_rerank | hyde | enriched
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from backend.core.tool import PipelineState
 from backend.core.schemas import Chunk
 from backend.core.models import get_dense_query_prefix, get_dense_model, get_reranker
 from backend.core import usage
-from backend.core.llm_client import get_llm, resolve_model_provider, clean_message_content
+from backend.core.llm_client import get_llm, clean_message_content
 from backend.retrieval.vector_store import VectorStore
 from backend.retrieval.keyword_index import KeywordIndex
 
@@ -54,6 +54,24 @@ class RetrievalTool:
                 logger.warning("RetrievalTool: no sub_questions or query in state — skipping")
                 state["retrieved_chunks"] = []
                 return state
+
+        # Safety net: always search the raw, unmodified user query too, so a
+        # query_planner mis-rewrite (e.g. acronym hallucination) can never fully
+        # starve retrieval of the literal terms the user actually typed.
+        # Case-insensitive dedup avoids a redundant search when the planner's
+        # rewrite already matches the raw query modulo case. Bounded to a sane
+        # max length so a pathological/garbage query can't blow up the fan-out.
+        raw_query = (state.get("query") or "").strip()
+        _MAX_RAW_QUERY_CHARS = 500
+        if raw_query and len(raw_query) <= _MAX_RAW_QUERY_CHARS:
+            existing_lower = {q.strip().lower() for q in sub_questions}
+            if raw_query.lower() not in existing_lower:
+                sub_questions = sub_questions + [raw_query]
+                logger.info(
+                    "RetrievalTool: added raw query as safety-net search variant "
+                    "(planner sub_questions did not include it verbatim): %r",
+                    raw_query[:80],
+                )
 
         retrieval_cfg = config["query"]["retrieval"]
         # HARD filter = explicit document_id scope (a choice the user/agent made — respect it).
@@ -104,6 +122,33 @@ class RetrievalTool:
                 errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
                 state["errors"] = errors
 
+        # ── Fallback: Context Expansion (page-level) ──────────────────────────
+        # If all retrieved chunks score below `fallback_threshold`, it means the
+        # query terms exist in the document but are spread across different chunks
+        # (e.g. "WORKHEAD" in one chunk, spare-parts table in another). Instead of
+        # sending the LLM low-confidence fragments, we expand each partial hit to
+        # its full page content from document_blocks and inject those as context.
+        fb_cfg = retrieval_cfg
+        if fb_cfg.get("fallback_enabled", False) and all_chunks:
+            best_score = max(
+                (float(c.get("_score") or 0) for c in all_chunks),
+                default=0.0,
+            )
+            fb_threshold = float(fb_cfg.get("fallback_threshold", -1.0))
+            if best_score < fb_threshold:
+                logger.info(
+                    "RetrievalTool: best score %.3f < threshold %.3f — triggering page-expansion fallback",
+                    best_score, fb_threshold,
+                )
+                fb_top_k = int(fb_cfg.get("fallback_top_k", 2))
+                expanded = _expand_chunks_to_pages(all_chunks[:fb_top_k])
+                if expanded:
+                    # Prepend expanded page-chunks; keep original chunks after for
+                    # any non-expanded context that still contributes.
+                    expanded_ids = {c["chunk_id"] for c in expanded}
+                    remaining = [c for c in all_chunks if c["chunk_id"] not in expanded_ids]
+                    all_chunks = expanded + remaining
+
         # Checkpoint 4: Token Budget Manager (greedy context window selection)
         tb_cfg = config.get("guardrails", {}).get("token_budget", {})
         if tb_cfg.get("enabled", True):
@@ -116,6 +161,7 @@ class RetrievalTool:
         else:
             state["retrieved_chunks"] = all_chunks
         return state
+
 
 
 # ── dispatcher ────────────────────────────────────────────────────────────────
@@ -138,10 +184,12 @@ def _retrieve_one(
             chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
         elif method == "hyde":
             chunks = _hyde(query, retrieval_cfg, full_config, filters)
+        elif method == "enriched":
+            chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
         else:
             raise ValueError(
                 f"Unknown method: {method!r}. "
-                "Valid: naive | hybrid | hybrid_rerank | hyde"
+                "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
             )
     except Exception as exc:
         logger.warning(
@@ -268,8 +316,7 @@ def _hyde(query, cfg, full_config, filters):
         "Reply with ONLY the paragraph.\n\nQuestion: " + query
     )
     response = llm.invoke(hyde_prompt)
-    model_name, provider_name = resolve_model_provider(full_config)
-    usage.record_from_message("hyde", response, prompt=hyde_prompt, model=model_name, provider=provider_name)
+    usage.record_from_message("hyde", response, prompt=hyde_prompt, model=full_config["llm"]["model"], provider=full_config["llm"]["provider"])
     hyp      = clean_message_content(response.content)
     embedder = get_dense_model(full_config)
     hyp_emb  = _embed_query(embedder, hyp, full_config)
@@ -297,3 +344,92 @@ def _rrf_fuse(dense_hits, sparse_hits, w_dense, w_sparse, top_k, k):
         c["_score"] = scores[cid]
         result.append(c)
     return result
+
+
+# ── Fallback helper ───────────────────────────────────────────────────────────
+
+def _expand_chunks_to_pages(chunks: list[Chunk]) -> list[Chunk]:
+    """Page-expansion fallback: replace each chunk with the full text of its page.
+
+    Uses the same document_blocks store as answerer._expand_thin_chunks and
+    get_page_context.GetPageContextTool — reading order raw extraction, not
+    chunked text.  Returns a new list of synthetic page-chunks that inherit
+    all metadata (document_id, source_ref, chunk_id) from the seed chunk but
+    have their `text` replaced with the full reconstructed page text.
+    Skips chunks with no source_ref page/slide; skips Excel sheets to avoid
+    token bloat (same guard as answerer._expand_thin_chunks).
+    """
+    from backend.storage.postgres_store import PostgresStore
+
+    # Deduplicate by (document_id, page) so two chunks on the same page
+    # only trigger one DB fetch.
+    seen_pages: set[tuple] = set()
+    to_expand: list[tuple[tuple, Chunk]] = []
+    for chunk in chunks:
+        ref = chunk.get("source_ref") or {}
+        # Skip Excel sheets (token bloat risk)
+        filename = ref.get("filename") or ""
+        if filename.lower().endswith((".xlsx", ".xls", ".xlsm")) or ref.get("sheet") is not None:
+            continue
+        doc_id = chunk.get("document_id")
+        page_val = ref.get("page") or ref.get("slide")
+        if not doc_id or page_val is None:
+            continue
+        key = (str(doc_id), page_val)
+        if key not in seen_pages:
+            seen_pages.add(key)
+            to_expand.append((key, chunk))
+
+    if not to_expand:
+        return []
+
+    store = None
+    result: list[Chunk] = []
+    try:
+        store = PostgresStore()
+        for (doc_id, page_val), seed_chunk in to_expand:
+            try:
+                blocks = store.get_blocks(doc_id)
+            except Exception:
+                logger.exception(
+                    "_expand_chunks_to_pages: get_blocks failed (doc %s, page %s)",
+                    doc_id, page_val,
+                )
+                continue
+            page_blocks = [
+                b for b in blocks
+                if isinstance(b.get("source_ref"), dict) and (
+                    b["source_ref"].get("page") == page_val or
+                    b["source_ref"].get("slide") == page_val
+                )
+            ]
+            # Build text from both prose and table_data rows (same as answerer)
+            parts = []
+            for b in page_blocks:
+                t = (b.get("text") or "").strip()
+                if t:
+                    parts.append(t)
+                td = b.get("table_data")
+                if td and td.get("rows"):
+                    headers = td.get("headers") or []
+                    rows_str = "\n".join(
+                        " | ".join(str(v) for v in row) for row in td["rows"]
+                    )
+                    parts.append(
+                        f"Columns: {' | '.join(str(h) for h in headers)}\n{rows_str}"
+                    )
+            if not parts:
+                continue
+            # Build synthetic expanded chunk from seed metadata
+            expanded = dict(seed_chunk)
+            expanded["text"] = "\n\n".join(parts)
+            logger.info(
+                "_expand_chunks_to_pages: expanded doc=%s page=%s (%d chars)",
+                doc_id, page_val, len(expanded["text"]),
+            )
+            result.append(expanded)
+    finally:
+        if store is not None:
+            store.close()
+
+    return result

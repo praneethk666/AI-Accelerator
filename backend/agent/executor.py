@@ -109,7 +109,7 @@ SYSTEM_PROMPT = (
     "- search_documents(query, document_scope?): Search ingested docs. "
     "Pass the user's question as `query`. Pass `document_scope` (array of doc ids or filenames) "
     "ONLY when the user explicitly quotes a real filename or document_id that you have seen in a "
-    "list_documents result — NEVER invent, guess, or make up a filename.\n"
+    "list_documents result — NEVER invent, guess, infer, or make up a filename. If the user does not explicitly specify a file, leave document_scope null.\n"
     "- get_page_context(document_id, page): Fetch a document PAGE's full raw content, "
     "bypassing chunking entirely. Chunking sometimes fragments a page badly (e.g. a "
     "label/code split from the table that explains it) — if a search_documents result "
@@ -126,7 +126,7 @@ SYSTEM_PROMPT = (
     "something visual. Ask a specific question, not a generic 'describe this page'.\n"
     "- list_documents(): List all ingested documents (id, filename, type, status). "
     "Call this ONLY when the user explicitly asks 'what files exist?', 'show loaded documents', or 'list files'. "
-    "NEVER call list_documents for content questions or short phrases like 'model name' — use search_documents instead.\n"
+    "NEVER call list_documents for content questions or short phrases like 'part no list' or 'model name' — use search_documents instead.\n"
     "- ingest_document(file_path): Ingest a new file the user provides a path for. "
     "Only call this when the user explicitly attaches a file or provides a local path to import a new file.\n"
     "- sql_read(query): Read-only SQL against the database. Use only when asked.\n"
@@ -135,31 +135,34 @@ SYSTEM_PROMPT = (
     "filtering, aggregation, comparison, or any data lookup/manipulation on Excel sheets. You MUST follow these rules:\n"
     "      1. Assign the final output to `result` (e.g., `result = ...`). Do NOT use return statements.\n"
     "      2. NEVER use `import` statements or restricted builtins like `dir()`, `globals()`, `locals()`, `hasattr()`, `setattr()`, `getattr()`, `eval()`, `exec()` — they are blocked by the secure sandbox. Pandas (pd), Numpy (np), sqlite3, math, datetime, re, and json are pre-imported and available.\n"
-    "      3. To list all sheets, set sheet_name='all' and use `list(dfs.keys())`.\n"
-    "      4. To inspect columns/rows of sheet 'Vendor A', use `dfs['Vendor A'].columns.tolist()` or `dfs['Vendor A'].iloc[:5]`.\n"
-    "      5. Work step-by-step: first list the sheet names, then inspect columns/rows of relevant sheets to find headers, then perform the final calculation.\n"
+    "      3. NEVER call `pd.read_excel()`, `pd.read_csv()`, or any file-reading function inside the `code` block. The file is already loaded for you. Use `df` (the active sheet) or `dfs` (dict of all sheets) directly — they are injected into your namespace before your code runs.\n"
+    "      4. To list all sheets, set sheet_name='all' and use `result = list(dfs.keys())`.\n"
+    "      5. To inspect columns/rows of sheet 'Vendor A', use `dfs['Vendor A'].columns.tolist()` or `dfs['Vendor A'].iloc[:5]`.\n"
+    "      6. Work step-by-step: first list the sheet names, then inspect columns/rows of relevant sheets to find headers, then perform the final calculation.\n"
     "- request_clarification(question, options?): Ask the USER to choose when their "
     "request is ambiguous (e.g. several documents match). Prefer this over guessing.\n\n"
 
     "## WHEN NOT TO SEARCH\n"
     "Skip search_documents ONLY for:\n"
     "1. Pure greetings/sign-off (hello, thanks, bye) — reply naturally in plain text.\n"
-    "2. Requests to list documents — call list_documents instead.\n"
+    "2. Requests to list ALL ingested/uploaded files — call list_documents instead. Do NOT call this just because the user uses the word 'list' (e.g. 'parts list').\n"
     "3. Requests to ingest a new file — call ingest_document instead.\n"
     "4. Questions requiring calculation, filtering, comparisons, sorting, aggregation, data lookup, or "
     "looking up text notes/inclusions/exclusions/metadata on Excel files (e.g. 'sum column X', "
     "'which company has highest revenue', 'is scaffolding included', 'list exclusions') — call excel_tool instead. "
     "It runs real Pandas code on the actual data and is far more accurate and token-efficient than searching chunked text.\n"
-    "   CRITICAL: Bypassing excel_tool for Excel files and calling search_documents is STRICTLY PROHIBITED. RAG/Search "
-    "retrieves massive amounts of raw text/tables, which causes extreme context window bloat (up to 500,000+ tokens) and poor "
-    "computational accuracy. First resolve the Excel file name using list_documents/sql_read if needed, then run your "
-    "computational/filtering code entirely inside excel_tool.\n\n"
+    "   CRITICAL: If the user mentions 'data sheets', 'spreadsheet', 'excel', or asks a question that clearly targets tabular data, "
+    "you MUST use `excel_tool`. However, for general 'parts list' queries without explicit mention of Excel, ALWAYS prioritize `search_documents` first. RAG/Search retrieves raw text chunks which causes "
+    "poor computational accuracy and UI citation issues for math, but is best for general lookup. First resolve the Excel file name using list_documents/sql_read if needed, then "
+    "run your computational/filtering code entirely inside excel_tool.\n"
+    "   UI BEHAVIOR WARNING: If you can answer a question fully using `excel_tool`, DO NOT redundantly call `search_documents` "
+    "to look for text matches. The UI will prioritize and show PDF text citations over Excel data. Rely purely on `excel_tool` for Excel data.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
     "(e.g., 'major-08.pptx'), you MUST restrict your search strictly to that document "
     "by passing its filename or UUID in the `document_scope` parameter of `search_documents`. "
-    "Never search the entire corpus when a specific file is targeted.\n\n"
+    "Never search the entire corpus when a specific file is targeted. Conversely, if no explicit file is named, YOU MUST NEVER supply a document_scope.\n\n"
 
     "## AFTER AN INGEST\n"
     "When the user attaches a file: ingest it first. Then if they ask a question "
@@ -183,16 +186,19 @@ SYSTEM_PROMPT = (
     "## MULTI-STEP\n"
     "- You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
     "then search_documents scoped to it; several searches for a multi-part question; "
-    "or search_documents -> get_page_context -> view_page_image, escalating only as "
-    "far as each step actually requires. Work step by step. Just don't repeat the "
-    "SAME call with the same arguments.\n"
-    "- CRITICAL FALLBACK: If search_documents returns 'I could not find this in the provided documents.' "
-    "or yields no results, and the user's question asks for specific tabular data (such as a part "
-    "description, quantity, price, serial number, code, drawing number, or status) that could reside in a spreadsheet:\n"
-    "  1. Call list_documents() to see the list of all ingested files.\n"
-    "  2. For any Excel/CSV spreadsheet files found (e.g. ending in .xlsx, .xls, .csv), use the excel_tool to "
-    "inspect or query their sheets directly.\n"
-    "  3. Do NOT immediately return the 'I could not find this' message. Check the spreadsheets first!\n\n"
+    "or search_documents followed by get_page_context on a fragmented result. "
+    "Work step by step.\n"
+    "- STRICT NO-REPEAT RULE: If a tool call (same tool name + same arguments) has already been made "
+    "in this turn and returned a result, you MUST NOT call it again with the same arguments. "
+    "If you are stuck, stop and give the best answer you have with what was found so far.\n"
+    "- CRITICAL FALLBACK (If search_documents returns 'I could not find this...'):\n"
+    "  A. If the question is PROCEDURAL (how-to, steps, replacing, installing, operating, safety):\n"
+    "     - Try ONE broader search_documents with simpler keywords (e.g. 'workpiece holder' instead of 'replace workpiece holder cylinder grinder').\n"
+    "     - NEVER use excel_tool for procedural/how-to questions. If it still fails, state plainly that it is not in the documents.\n"
+    "  B. If the question asks for specific TABULAR DATA (part numbers, drawing numbers, quantities, prices, serials):\n"
+    "     - Call list_documents() to see all ingested files.\n"
+    "     - For any .xlsx/.xls/.csv files found, use excel_tool to query them.\n"
+    "     - Do NOT immediately return a refusal — check the spreadsheets first!\n\n"
 
     "## COMPLETION\n"
 
@@ -433,8 +439,7 @@ def _is_pure_fast_greeting(text: str) -> bool:
 
 _GENERIC_DOC_TERMS = {
     # Document-related terms
-    "manual", "document", "file", "pdf", "guide", "book", "report", "specification",
-    "specs", "explain", "about", "this", "that", "the", "what", "is", "for", "in",
+    "document", "file", "pdf", "explain", "about", "this", "that", "the", "what", "is", "for", "in",
     "and", "or", "its", "our",
     # Common English stop words that appear in any document's page1 text
     "can", "you", "are", "was", "has", "had", "have", "been", "will", "not",
@@ -737,10 +742,25 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         clarification: dict | None = None
         new_evidences: list[dict] = []
         step_traces: list[dict] = []
+        seen_calls: set[str] = set()
 
         for call in getattr(last, "tool_calls", None) or []:
             t0 = time.time()
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
+
+            call_key = f"{name}::{json.dumps(args, sort_keys=True)}"
+            if call_key in seen_calls:
+                dur_ms = round((time.time() - t0) * 1000, 2)
+                tool_messages.append(ToolMessage(
+                    content=json.dumps({"error": "Duplicate call detected — this exact tool call was already made in this turn. Use the previous result and stop retrying."}, default=str),
+                    tool_call_id=call_id, name=name,
+                ))
+                step_traces.append({
+                    "step": f"Tool: {name}", "type": "tool_execution",
+                    "tool_name": name, "args": args, "duration_ms": dur_ms, "status": "duplicate_skipped"
+                })
+                continue
+            seen_calls.add(call_key)
 
             if name in clarify_tools:
                 if clarification is None:
@@ -923,7 +943,8 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                     "not in the provided documents",
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
-                if search_answer and not is_refusal:
+                is_error = search_answer.lower().startswith("error:")
+                if search_answer and not is_refusal and not is_error:
                     # Inject a synthetic AIMessage so output_guard_node can find it
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
@@ -1204,9 +1225,19 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
         pending: list[dict] = []
         clarification: dict | None = None
         new_evidences: list[dict] = []
+        seen_calls: set[str] = set()
 
         for call in getattr(last, "tool_calls", None) or []:
             name, args, call_id = call["name"], call.get("args") or {}, call["id"]
+
+            call_key = f"{name}::{json.dumps(args, sort_keys=True)}"
+            if call_key in seen_calls:
+                tool_messages.append(ToolMessage(
+                    content=json.dumps({"error": "Duplicate call detected — this exact tool call was already made in this turn. Use the previous result and stop retrying."}, default=str),
+                    tool_call_id=call_id, name=name,
+                ))
+                continue
+            seen_calls.add(call_key)
 
             if name in clarify_tools:
                 if clarification is None:
@@ -1356,7 +1387,8 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                     "not in the provided documents",
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
-                if search_answer and not is_refusal:
+                is_error = search_answer.lower().startswith("error:")
+                if search_answer and not is_refusal and not is_error:
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
             except Exception:
@@ -1701,14 +1733,7 @@ def run_agent(
     is_question = not _is_greeting(message)
 
     system_prompt_text = SYSTEM_PROMPT
-    if resolved_scope:
-        system_prompt_text += (
-            f"\n\n## ACTIVE DOCUMENT SCOPE RULES\n"
-            f"- Resolved Active Document: '{active_fname}' (Scope: {resolved_scope!r}).\n"
-            f"- For any question, 'this manual', 'this file', 'this document', or follow-up in this session, "
-            f"you MUST restrict your search_documents tool call by passing document_scope={resolved_scope!r}.\n"
-        )
-    elif is_ambiguous_trigger:
+    if is_ambiguous_trigger:
         system_prompt_text += (
             "\n\n## AMBIGUITY DISAMBIGUATION MANDATE\n"
             "- The user asks an ambiguous question ('this manual', 'what is this about') but NO document is currently "
@@ -1764,7 +1789,7 @@ def run_agent(
                 "decision": "Direct Dynamic Greeting"
             })
 
-        token_usage = sink.totals()
+        token_usage = sink.totals(config=config)
         calls_log = sink.get_calls_log()
         execution_trace = list(_trace_sink)
         total_turn_sec = round(time.time() - turn_t0, 2)
@@ -1824,7 +1849,7 @@ def run_agent(
             "search_shortcircuit": False,
         })
 
-    token_usage = sink.totals()
+    token_usage = sink.totals(config=config)
     calls_log = sink.get_calls_log()
     execution_trace = list(_trace_sink)
     total_turn_sec = round(time.time() - turn_t0, 2)
@@ -1920,10 +1945,11 @@ def run_agent(
                             search_answers.append(ans)
 
         unique_answers = list(set(search_answers))
-        if len(unique_answers) == 1 and not has_other_tools:
-            answer = unique_answers[0]
+        if unique_answers:
+            # Rescue the most recent unique search answer even if other tools were called
+            answer = unique_answers[-1]
             logger.info("Recovered answer from prior tool result (fast-path fallback)")
-        # else: len > 1 -> fall through to slow-path LLM synthesis below
+        # else: no search answers -> fall through to slow-path LLM synthesis below
 
         # Slow path: ask the LLM to synthesize from history without tools.
         if not answer.strip():

@@ -899,6 +899,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     pic_jobs: list[tuple] = []
     dfigs: dict = defaultdict(list)
     dtables: dict = defaultdict(list)
+    header_footer_cache: dict = {}
 
     from backend.core.tool import check_cancelled
     mode = (dcfg.get("mode") or "local").lower()
@@ -1372,8 +1373,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
             defer_reason = None
         defer = defer_ok and defer_reason is not None
         return idx, _figure_block(pdf_path, document_id, page_no, filename, bb,
-                                  page_text.get(page_no, []), config, cap_info=cap_info,
-                                  other_figure_bboxes=others, defer=defer,
+                                  page_text.get(page_no, []), config, header_footer_cache,
+                                  cap_info=cap_info, other_figure_bboxes=others, defer=defer,
                                   defer_reason=defer_reason)
 
     if workers > 1 and len(pic_jobs) > 1:
@@ -1466,7 +1467,7 @@ def _merge_small_repeated_icons(blocks: list[dict], icon_pt: float = 40.0, min_g
 
 
 def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config,
-                  cap_info: dict | None = None, other_figure_bboxes: list | None = None,
+                  hf_cache=None, cap_info: dict | None = None, other_figure_bboxes: list | None = None,
                   defer: bool = False, defer_reason: str | None = None):
     """Crop a Docling-located figure, run the SEMANTIC GATE (classify + caption), and
     return the image_caption block — or None if the gate says it's page furniture
@@ -1629,17 +1630,52 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
     # Gate FIRST (before writing the crop to disk) so dropped furniture leaves no file.
     logger.info("👁️ [Vision API] Page %s: Captioning figure crop (bbox: %s) via Vision model...",
                 page_no, [round(float(x), 1) for x in bbox] if bbox else [])
+
+    page_height = 842.0
+    try:
+        if "page_rect" in locals():
+            page_height = page_rect.height
+    except Exception:
+        pass
+
+    is_header = bbox[1] < page_height * 0.1
+    is_footer = bbox[3] > page_height * 0.9
+
+    cache_key = None
+    if hf_cache is not None and (is_header or is_footer):
+        w = round(bbox[2] - bbox[0])
+        h = round(bbox[3] - bbox[1])
+        pos = "header" if is_header else "footer"
+        cache_key = (pos, w, h)
+        if cache_key in hf_cache:
+            res = hf_cache[cache_key]
+            logger.info("Skipped because of same logo repe (Page %s, %s, %sx%s)", page_no, pos, w, h)
+            # UNCONDITIONAL SKIP: If an image has the exact same footprint in the header/footer,
+            # we substitute it as text to prevent duplicate API calls and duplicate PNGs,
+            # regardless of whether the Vision model hallucinated it as a diagram on Page 1.
+            b["type"] = "text"
+            b["text"] = res.get("caption") or f"[{res.get('kind', 'logo')}]"
+            return b
+            
     try:
         from backend.extraction.vision_ocr import classify_caption_crop
         res = classify_caption_crop(png, " ".join(page_lines)[:1000], config,
                                     known_caption=known_caption)
+        if cache_key is not None:
+            hf_cache[cache_key] = res
     except Exception as e:
         logger.warning("docling: caption failed (page %s): %s", page_no, e)
         res = {"keep": True, "kind": "unknown", "caption": known_caption or "[figure]"}
         b["metadata"]["pending_vision"] = True
+
     if not res.get("keep"):
         logger.info("🗑️ [Semantic Gate] Page %s: Filtered non-informative element (kind: %s)",
                     page_no, res.get("kind", "unknown"))
+        if cache_key is not None:
+            # Save the description in place as requested, instead of dropping completely.
+            b["type"] = "text"
+            b["text"] = res.get("caption") or f"[{res.get('kind', 'logo')}]"
+            return b
         return None  # logo/banner/text/decoration/blank — not a real figure
 
     cap_snippet = (res.get("caption") or "[figure]").strip().replace("\n", " ")

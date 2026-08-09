@@ -206,6 +206,8 @@ const Tooltip = ({ children, content }) => {
   );
 };
 
+const USD_TO_INR = 95.20;
+
 const ChatPage = () => {
   const [searchParams] = useSearchParams();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -214,6 +216,7 @@ const ChatPage = () => {
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState([]);
+  const [currency, setCurrency] = useState('USD');
   const [input, setInput] = useState('');
   const [loadingSessions, setLoadingSessions] = useState({});
   const loading = !!loadingSessions[sessionId];
@@ -1492,7 +1495,9 @@ const ChatPage = () => {
                 onViewPages={(pages) => setPageViewer({ pages, activeIdx: 0 })}
                 onIngestApprove={handleIngestApprove}
                 onIngestCancel={handleIngestCancel}
-                allFiles={allFiles} />
+                allFiles={allFiles}
+                currency={currency}
+                setCurrency={setCurrency} />
             ))}
 
             {messages.length > 0 && messages[messages.length - 1].role === 'user' && (
@@ -2066,14 +2071,13 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       ) : (
         <div
           ref={containerRef}
-          className="flex-1 overflow-auto bg-[#f4ede4]/60 p-6 flex justify-center items-start"
+          className={`flex-1 overflow-auto bg-[#f4ede4]/60 p-6 flex items-start ${scale <= 1 ? 'justify-center' : 'justify-start'}`}
         >
           {imageUrl && (
             <div
+              className="flex-shrink-0"
               style={{
                 width: `${Math.round(scale * 100)}%`,
-                marginLeft: scale <= 1 ? 'auto' : '0',
-                marginRight: scale <= 1 ? 'auto' : '0',
                 transition: 'width 150ms ease-out',
                 position: 'relative',
               }}
@@ -2396,7 +2400,7 @@ const CustomCodeBlock = ({ language, value }) => {
   );
 };
 
-const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages, onIngestApprove, onIngestCancel, allFiles }) => {
+const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages, onIngestApprove, onIngestCancel, allFiles, currency, setCurrency }) => {
   const isUser = msg.role === 'user';
   const sources = !isUser ? parseSources(msg.toolCalls, allFiles) : [];
   const rawListed = !isUser ? parseListedDocuments(msg.toolCalls) : {
@@ -2779,6 +2783,16 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                       <CircleStackIcon className="h-3.5 w-3.5" />
                       Tokens: {msg.tokenUsage.total_tokens}
                     </span>
+                    {msg.tokenUsage.total_cost_usd !== undefined && (
+                      <button
+                        onClick={() => setCurrency(currency === 'USD' ? 'INR' : 'USD')}
+                        className="btn-primary-pill !py-0.5 !px-2 !text-[10px] ml-auto font-bold inline-flex items-center gap-1"
+                      >
+                        {currency === 'USD'
+                          ? `Cost: $${msg.tokenUsage.total_cost_usd.toFixed(4)}`
+                          : `Cost: ₹${(msg.tokenUsage.total_cost_usd * USD_TO_INR).toFixed(2)}`}
+                      </button>
+                    )}
                     <span>Input: {msg.tokenUsage.input_tokens}</span>
                     <span>Output: {msg.tokenUsage.output_tokens}</span>
                     {msg.tokenUsage.reasoning_tokens > 0 && (

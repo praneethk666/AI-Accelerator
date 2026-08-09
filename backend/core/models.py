@@ -166,6 +166,16 @@ class JinaEmbeddingsAPIClient:
             response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
             res_json = response.json()
 
+            if "usage" in res_json:
+                try:
+                    from backend.core.usage import record
+                    usage = res_json["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    if prompt_tokens > 0:
+                        record("embedding", input_tokens=prompt_tokens, output_tokens=0, model=self.model_name, provider="jina")
+                except Exception:
+                    pass
+
             # Ensure correct ordering based on response indices
             sorted_data = sorted(res_json["data"], key=lambda x: x["index"])
             all_embeddings.extend([item["embedding"] for item in sorted_data])
@@ -222,6 +232,16 @@ class OpenAIEmbeddingsAPIClient:
 
             response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
             res_json = response.json()
+
+            if "usage" in res_json:
+                try:
+                    from backend.core.usage import record
+                    usage = res_json["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    if prompt_tokens > 0:
+                        record("embedding", input_tokens=prompt_tokens, output_tokens=0, model=self.model_name, provider="openai")
+                except Exception:
+                    pass
 
             # Ensure correct ordering based on response indices
             sorted_data = sorted(res_json["data"], key=lambda x: x["index"])

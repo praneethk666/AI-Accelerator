@@ -44,6 +44,7 @@ class _Sink:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.by_kind: dict[str, dict] = {}
+        self.by_model: dict[str, dict] = {}
         self._context_tokens = 0  # largest single call's input_tokens this run
         self._calls_log: list[dict] = []  # raw prompt/response audit trail, this run
 
@@ -65,6 +66,13 @@ class _Sink:
             ctx = int(context_tokens if context_tokens is not None else it)
             if ctx > self._context_tokens:
                 self._context_tokens = ctx
+                
+            if model:
+                m = self.by_model.setdefault(model, {
+                    "input_tokens": 0, "output_tokens": 0
+                })
+                m["input_tokens"] += it
+                m["output_tokens"] += ot
 
             # Audit log: only recorded when the caller passes prompt/raw_response —
             # optional, since not every record() call site has been wired up to
@@ -80,12 +88,41 @@ class _Sink:
         with self._lock:
             return list(self._calls_log)
 
-    def totals(self) -> dict:
+    def totals(self, config=None) -> dict:
         with self._lock:
             ti = sum(v["input_tokens"] for v in self.by_kind.values())
             to = sum(v["output_tokens"] for v in self.by_kind.values())
             tr = sum(v["reasoning_tokens"] for v in self.by_kind.values())
             calls = sum(v["calls"] for v in self.by_kind.values())
+            
+            total_cost = 0.0
+            model_costs = {}
+            cfg_dict = config.raw if hasattr(config, "raw") else config
+            
+            # Populate model_costs with tokens first (so they appear even if cost is 0)
+            for model, usage in self.by_model.items():
+                model_costs[model] = {
+                    "input_tokens": usage["input_tokens"],
+                    "output_tokens": usage["output_tokens"],
+                    "input_cost": 0.0,
+                    "output_cost": 0.0,
+                    "total_cost": 0.0,
+                }
+            
+            if isinstance(cfg_dict, dict) and "models_cost" in cfg_dict:
+                costs = cfg_dict["models_cost"]
+                for model, usage in self.by_model.items():
+                    if model in costs:
+                        c = costs[model]
+                        it_cost = (usage["input_tokens"] / 1_000_000.0) * c.get("input", 0.0)
+                        ot_cost = (usage["output_tokens"] / 1_000_000.0) * c.get("output", 0.0)
+                        cost = it_cost + ot_cost
+                        total_cost += cost
+                        
+                        model_costs[model]["input_cost"] = it_cost
+                        model_costs[model]["output_cost"] = ot_cost
+                        model_costs[model]["total_cost"] = cost
+
             return {
                 "calls": calls,
                 "input_tokens": ti,
@@ -93,7 +130,9 @@ class _Sink:
                 "reasoning_tokens": tr,
                 "total_tokens": ti + to,
                 "context_tokens": self._context_tokens,
+                "total_cost_usd": total_cost,
                 "by_kind": {k: dict(v) for k, v in self.by_kind.items()},
+                "by_model": model_costs,
             }
 
 

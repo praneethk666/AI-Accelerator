@@ -97,6 +97,18 @@ def _make_node(tool: Tool, raw_config: dict):
                         if corpus_root and "${" not in str(corpus_root):
                             from backend.categorize.folder_router import tag_blocks_with_folder_info
                             tag_blocks_with_folder_info(result["blocks"], state.get("file_path") or "", corpus_root)
+                        # Navigable chapter/section outline (backend/pipeline/
+                        # outline_builder.py) -- unconditional, cheap, no LLM call,
+                        # fails inert (writes nothing) on a document with no real
+                        # bookmarks/numbered headings, e.g. a CAD sheet. Best-effort,
+                        # same as the other tagging calls above -- never blocks a
+                        # successful ingest.
+                        try:
+                            from backend.pipeline.outline_builder import build_outline, write_document_outline
+                            outline = build_outline(state.get("file_path"), result["blocks"])
+                            write_document_outline(state.get("document_id"), outline)
+                        except Exception:
+                            logger.exception("outline build failed for %s", state.get("document_id"))
                         from backend.storage.postgres_store import PostgresStore
                         pg = PostgresStore()
                         try:

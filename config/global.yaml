@@ -565,6 +565,15 @@ query:
     # conclude the equipment isn't in the corpus at all).
     equipment_browse:
       enabled: false
+    # browse_document_outline agent tool (backend/retrieval/browse_document_outline.py)
+    # -- ADDED 10-Aug, structure-aware section navigation (see plan doc for the
+    # PageIndex-style research basis). The underlying document_outline table is
+    # ALWAYS built at ingest time (cheap, no LLM call, no gate) -- only this
+    # tool's exposure to the agent is gated, so turning it on needs no
+    # re-ingestion. Off by default until a live pass confirms outlines are
+    # actually being built usefully for this deployment's real documents.
+    document_outline:
+      enabled: false
 document_types:
   - invoice
   - purchase_order

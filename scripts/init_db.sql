@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS document_pages (
     PRIMARY KEY (document_id, page)
 );
 
+-- Navigable chapter/section outline (backend/pipeline/outline_builder.py), from
+-- either real PDF bookmarks or a detected numbered-heading stack -- lets the
+-- agent locate an exact section by structure instead of trusting semantic
+-- search among several similarly-worded procedures. Not every document has one
+-- (a CAD sheet, a short flat document) -- that's a normal, valid, empty state.
+CREATE TABLE IF NOT EXISTS document_outline (
+    id           BIGSERIAL PRIMARY KEY,
+    document_id  UUID REFERENCES documents(document_id) ON DELETE CASCADE,
+    node_id      TEXT NOT NULL,
+    parent_id    TEXT,
+    title        TEXT,
+    level        INTEGER,
+    page_start   INTEGER,
+    page_end     INTEGER,
+    source       TEXT,        -- pdf_bookmark | heading_detect
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (document_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_outline_doc ON document_outline (document_id, parent_id);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id            BIGSERIAL PRIMARY KEY,
     session_id    TEXT NOT NULL,

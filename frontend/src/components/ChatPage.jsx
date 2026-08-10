@@ -666,7 +666,7 @@ const ChatPage = () => {
 
     const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
     try {
-      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal, activeDocId);
+      const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal, activeDocId, messageId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -815,7 +815,7 @@ const ChatPage = () => {
 
     try {
       const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
-      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal, activeDocId);
+      const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal, activeDocId, messageId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -1081,7 +1081,7 @@ const ChatPage = () => {
 
     try {
       const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
-      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal, activeDocId);
+      const res = await sendAgentChat(lastUserMsg.content, reqSession, false, null, controller.signal, activeDocId, messageId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -1163,8 +1163,12 @@ const ChatPage = () => {
     const reqSession = sessionId;
     setSessionLoading(reqSession, true);
 
-    // Re-use the existing messageId or generate one if not present
+    // Re-use the existing messageId for LOCAL React state tracking only (which
+    // bubble to update in place). This network call is functionally a NEW
+    // request — approved_writes flips true and carries different args — so it
+    // needs its own fresh idempotency key.
     const messageId = msg.messageId || (crypto.randomUUID ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const requestId = crypto.randomUUID ? crypto.randomUUID() : `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     // Reset this message state to prepare for response
     setMessages((prev) =>
@@ -1187,7 +1191,7 @@ const ChatPage = () => {
 
     try {
       const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
-      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal, activeDocId);
+      const res = await sendAgentChat(msg.originalText, reqSession, true, msg.pending || [], controller.signal, activeDocId, requestId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);
         loadSessions();
@@ -1629,10 +1633,25 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const fileType = active?.fileType;
   const isPaginated = fileType === 'pdf' || fileType === 'ppt';
 
+  const normalizeSheetName = (s) => (s || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const cosmeticCleanSheetLabel = (s) => (s || '').replace(/\?{2,}/g, '…').trim();
+
   const getBadgeLabel = (p) => {
     if (p.fileType === 'pdf') return `P.${p.page}`;
     if (p.fileType === 'ppt') return `Slide ${p.page}`;
-    if (p.fileType === 'excel') return p.sheet ? `Sheet: ${p.sheet}` : 'Excel';
+    if (p.fileType === 'excel') {
+      if (!p.sheet) return 'Excel';
+      if (workbook && p.document_id === active?.document_id) {
+        if (p.sheet_index != null && p.sheet_index >= 0 && p.sheet_index < workbook.SheetNames.length) {
+          return `Sheet: ${workbook.SheetNames[p.sheet_index]}`;
+        }
+        if (workbook.SheetNames.includes(p.sheet)) return `Sheet: ${p.sheet}`;
+        const wantedNorm = normalizeSheetName(p.sheet);
+        const candidates = workbook.SheetNames.filter((s) => normalizeSheetName(s) === wantedNorm);
+        if (candidates.length === 1) return `Sheet: ${candidates[0]}`;
+      }
+      return `Sheet: ${cosmeticCleanSheetLabel(p.sheet)}`;
+    }
     if (p.fileType === 'docx') return 'Word';
     if (p.fileType === 'image') return 'Image';
     return 'Doc';
@@ -1664,6 +1683,7 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
   const [excelLoading, setExcelLoading] = useState(false);
   const [excelError, setExcelError] = useState(false);
   const [activeSheet, setActiveSheet] = useState(null);
+  const [citedSheet, setCitedSheet] = useState(null);
 
   // PDF/PPT: when active page changes from parent, sync currentPage and reset scale
   useEffect(() => {
@@ -1844,17 +1864,45 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
       .finally(() => setExcelLoading(false));
   }, [fileType, active?.document_id]);
 
-  // Excel: pick the sheet this citation points at (falls back to the first
-  // sheet if the citation didn't carry one, or named a sheet that's since
-  // been renamed/removed).
+  // Excel: pick the sheet this citation points at.
   useEffect(() => {
-    if (fileType !== 'excel' || !workbook) return;
+    if (fileType !== 'excel') {
+      setActiveSheet(null);
+      setCitedSheet(null);
+      return;
+    }
+    if (!workbook) return;
     const wanted = active?.sheet;
-    const match = wanted && workbook.SheetNames.includes(wanted)
-      ? wanted
-      : workbook.SheetNames[0];
-    setActiveSheet(match);
-  }, [fileType, workbook, activeIdx, active?.sheet]);
+    const wantedIdx = active?.sheet_index;
+    let match = null;
+
+    if (wantedIdx != null && wantedIdx >= 0 && wantedIdx < workbook.SheetNames.length) {
+      match = workbook.SheetNames[wantedIdx];
+    } else if (wanted) {
+      if (workbook.SheetNames.includes(wanted)) {
+        match = wanted;
+      } else {
+        const normalize = (s) => (s || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const wantedNorm = normalize(wanted);
+        if (wantedNorm) {
+          const candidates = workbook.SheetNames.filter((s) => normalize(s) === wantedNorm);
+          if (candidates.length === 1) {
+            match = candidates[0];
+          } else if (candidates.length > 1) {
+            console.warn(
+              `Excel sheet match ambiguous for citation "${wanted}" — ` +
+              `${candidates.length} sheets share the normalized name. Defaulting to first sheet.`,
+              candidates
+            );
+          }
+        }
+      }
+    }
+
+    const finalMatch = match || workbook.SheetNames[0];
+    setActiveSheet(finalMatch);
+    setCitedSheet(finalMatch);
+  }, [fileType, workbook, activeIdx, active?.sheet, active?.sheet_index]);
 
   // Trap Ctrl + MouseWheel / trackpad pinch zooms on the pdf/ppt/image canvas
   // to zoom the document internally and prevent the browser from zooming the
@@ -1896,8 +1944,9 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
     setScale((prev) => (prev > 1.1 ? 1 : 1.8));
   };
 
-  const imageUrl = (isPaginated && active?.document_id)
-    ? `${API_BASE_URL}/files/${active.document_id}/pages/${currentPage}/image`
+  const parsedPage = parseInt(currentPage, 10);
+  const imageUrl = (isPaginated && active?.document_id && !isNaN(parsedPage))
+    ? `${API_BASE_URL}/files/${active.document_id}/pages/${parsedPage}/image`
     : (fileType === 'image' && active?.document_id)
       ? `${API_BASE_URL}/files/${active.document_id}/original`
       : null;
@@ -2039,35 +2088,67 @@ const PageViewerPanel = ({ viewer, onClose, onPageChange, sidebarOpen }) => {
           )}
         </div>
       ) : fileType === 'excel' ? (
-        <div className="flex-1 overflow-auto bg-white p-6">
-          {excelLoading && (
-            <div className="flex flex-col items-center justify-center text-[#696969] text-xs py-24 gap-2">
-              <ArrowPathIcon className="h-6 w-6 animate-spin text-[#4a154b]" />
-              <span className="font-bold">Parsing spreadsheet…</span>
+        <>
+          <div className="flex-1 overflow-auto bg-white p-6">
+            {excelLoading && (
+              <div className="flex flex-col items-center justify-center text-[#696969] text-xs py-24 gap-2">
+                <ArrowPathIcon className="h-6 w-6 animate-spin text-[#4a154b]" />
+                <span className="font-bold">Parsing spreadsheet…</span>
+              </div>
+            )}
+            {excelError && (
+              <div className="flex flex-col items-center justify-center py-24 text-[#696969] text-xs text-center gap-2">
+                <DocumentIcon className="h-8 w-8 text-[#4a154b] opacity-40" />
+                <span>Could not parse this spreadsheet.</span>
+              </div>
+            )}
+            {sheetRows && (
+              <table className="w-full text-xs border-collapse">
+                <tbody>
+                  {sheetRows.map((row, r) => (
+                    <tr key={r} className={r === 0 ? 'bg-[#f9f0ff] font-bold text-[#4a154b]' : 'odd:bg-[#f4ede4]/30'}>
+                      {row.map((cell, c) => (
+                        <td key={c} className="border border-[#e6e6e6] px-3 py-1.5 text-[#1d1d1d] whitespace-nowrap">
+                          {String(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Excel-native sheet tab bar */}
+          {workbook && workbook.SheetNames.length > 0 && (
+            <div className="flex-shrink-0 flex items-end gap-0.5 px-2 pt-1.5 bg-[#f4ede4]/60 border-t border-[#e6e6e6] overflow-x-auto">
+              {workbook.SheetNames.map((name) => {
+                const isActive = name === activeSheet;
+                const isCited = name === citedSheet;
+                return (
+                  <button
+                    key={name}
+                    onClick={() => setActiveSheet(name)}
+                    title={name}
+                    className={`flex-shrink-0 flex items-center gap-1.5 max-w-[160px] px-3.5 py-1.5 text-[11px] font-bold rounded-t-lg border border-b-0 transition-all ${
+                      isActive
+                        ? 'bg-white text-[#1d1d1d] border-[#e6e6e6] shadow-[0_-1px_4px_rgba(0,0,0,0.04)] relative z-10 -mb-px border-b-2 border-b-[#1a7a3c]'
+                        : 'bg-[#f4ede4]/40 text-[#696969] border-transparent hover:bg-white/60 hover:text-[#1d1d1d]'
+                    }`}
+                  >
+                    {isCited && (
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-[#4a154b] flex-shrink-0"
+                        title="Sheet referenced in this answer"
+                      />
+                    )}
+                    <span className="truncate">{name}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
-          {excelError && (
-            <div className="flex flex-col items-center justify-center py-24 text-[#696969] text-xs text-center gap-2">
-              <DocumentIcon className="h-8 w-8 text-[#4a154b] opacity-40" />
-              <span>Could not parse this spreadsheet.</span>
-            </div>
-          )}
-          {sheetRows && (
-            <table className="w-full text-xs border-collapse">
-              <tbody>
-                {sheetRows.map((row, r) => (
-                  <tr key={r} className={r === 0 ? 'bg-[#f9f0ff] font-bold text-[#4a154b]' : 'odd:bg-[#f4ede4]/30'}>
-                    {row.map((cell, c) => (
-                      <td key={c} className="border border-[#e6e6e6] px-3 py-1.5 text-[#1d1d1d] whitespace-nowrap">
-                        {String(cell)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        </>
       ) : (
         <div
           ref={containerRef}

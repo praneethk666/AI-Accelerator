@@ -116,7 +116,7 @@ class QdrantStore:
                 )
             ],
         )
-    def write_chunks(self, chunks: list[dict], batch_size: int = 100) -> None:
+    def write_chunks(self, chunks: list[dict], batch_size: int = 25) -> None:
         """Upsert multiple chunks in bulk (batch optimization)."""
         if not chunks:
             return

@@ -2,6 +2,22 @@
 
 Deterministic Active Context State Manager for RAG sessions.
 
+STATUS (as of guided-procedure design review): this module is not currently
+imported or called anywhere in executor.py — verified by repo-wide grep. It
+tracks a DIFFERENT kind of session context than guided-procedure state (RAG
+system component follow-ups, e.g. "what's the reranker model?" -> "and its
+speed?" — not manual/step tracking), so it is explicitly OUT OF SCOPE for the
+guided-procedure feature and should not be reused or extended for it; its
+3-turn/15-minute hybrid expiration model is also the wrong shape for a
+step-by-step procedure a technician may pause on for much longer.
+
+KNOWN BUG (separate from the above, tracked independently): update_context_from_metadata()
+reads chunk.get("content") / chunk.get("metadata"), but the actual Chunk schema
+(schemas.py) uses chunk["text"] / chunk["tags"] / chunk["source_ref"] throughout
+the rest of the pipeline. If this module is ever wired in, that line will
+silently no-op (always operating on "" + "{}") rather than error. Whoever
+revives this module should fix that first.
+
 Manages structured active entities across chat turns with:
 1. Explicit entity detection & override.
 2. Hybrid expiration (3 turns OR 15 minutes of inactivity).

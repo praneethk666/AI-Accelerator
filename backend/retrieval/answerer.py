@@ -66,7 +66,10 @@ _ANSWER_SYSTEM = (
     "Only if the context contains absolutely nothing relevant at all should you say: "
     "'I could not find this in the provided documents.'\n"
     "- Be direct: lead with the answer, don't restate the question, no filler.\n"
-    "- For mathematical formulas, use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never use single brackets '[ ... ]' for math blocks."
+    "- Do NOT output or repeat the user's question string in your response. Start your answer immediately.\n"
+    "- For multi-part queries (e.g. asking about multiple items, terminals, or steps), synthesize a SINGLE unified answer with clean Markdown headers or bullet points. Never duplicate sections or restate answers multiple times.\n"
+    "- For mathematical formulas, use standard Markdown LaTeX syntax: '$$formula$$' for block/display equations and '$formula$' for inline equations. Never use single brackets '[ ... ]' for math blocks.\n"
+    "- For Excel spreadsheets containing bilingual headers (e.g. '品名 / Description(Part Name)'), always provide the English column header meaning (e.g. 'PIECE MODEL') alongside or instead of the raw Japanese text (e.g. 'ピース, モデル') if applicable so the answer is in English."
 )
 
 
@@ -244,8 +247,9 @@ def _filter_cited_citations(answer: str, citations: list[dict]) -> list[dict]:
     # 3. Fallback: if parsing failed to extract any valid citation matches, 
     # keep all retrieved chunks to ensure the sources list is not empty.
     if filtered_with_pos:
-        # Sort by vector search score (highest first) so the primary relevant document opens first
-        filtered_with_pos.sort(key=lambda x: x[1].get("score", 0.0), reverse=True)
+        # Sort primarily by first mention position in the answer text (so the primary page cited at [1] / step 1 comes first)
+        # and secondarily by vector search score (highest score first for ties).
+        filtered_with_pos.sort(key=lambda x: (x[0], -float(x[1].get("score") or 0.0)))
         return [x[1] for x in filtered_with_pos]
     return citations
 
@@ -462,7 +466,7 @@ class AnswererTool:
             user_msg = (
                 "Context:\n\n"
                 + "\n\n".join(context_blocks)
-                + f"\n\nQuestion: {standalone_query}"
+                + f"\n\n<question>\n{standalone_query}\n</question>"
             )
 
             # answering is reasoning-heavy. Resolution: query.answerer.model ->
@@ -485,7 +489,8 @@ class AnswererTool:
             # on another). Expand EVERY retrieved chunk to its full page and retry
             # once — this is a last-resort pass to give the LLM more context.
             retrieval_fb_cfg = config.get("query", {}).get("retrieval") or {}
-            if _looks_like_refusal(answer_text) and retrieval_fb_cfg.get("fallback_enabled", False):
+            best_score = max((float(c.get("_score") or 0.0) for c in chunks), default=0.0)
+            if _looks_like_refusal(answer_text) and retrieval_fb_cfg.get("fallback_enabled", False) and best_score >= retrieval_fb_cfg.get("fallback_score_threshold", 0.30):
                 logger.info(
                     "AnswererTool: LLM returned refusal — triggering page-expansion retry for %d chunks",
                     len(chunks),
@@ -510,7 +515,7 @@ class AnswererTool:
                         retry_msg = (
                             "Context:\n\n"
                             + "\n\n".join(retry_context_blocks)
-                            + f"\n\nQuestion: {standalone_query}"
+                            + f"\n\n<question>\n{standalone_query}\n</question>"
                         )
                         retry_response = llm.invoke([
                             {"role": "system", "content": _ANSWER_SYSTEM},
@@ -538,6 +543,7 @@ class AnswererTool:
                     "document_id": chunk.get("document_id"),
                     "score":       chunk.get("_score"),
                     "sheet":       ref.get("sheet"),
+                    "sheet_index": ref.get("sheet_index"),
                     "slide":       ref.get("slide"),
                     "snippet":     (chunk.get("text") or ""),
                     "summary":     tags.get("summary"),

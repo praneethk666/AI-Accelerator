@@ -133,6 +133,66 @@ def test_slide_sheet_expansion():
     assert out[0]["text"] == "sheet intro"
 
 
+def test_refusal_retry_score_threshold_guard():
+    from backend.retrieval.answerer import AnswererTool
+
+    tool = AnswererTool()
+
+    # Case 1: best_score (0.02) < fallback_score_threshold (0.05) -> Retry SHOULD NOT be called
+    state = {
+        "query": "What is the warranty period?",
+        "standalone_query": "What is the warranty period?",
+        "retrieved_chunks": [
+            {
+                "chunk_id": "c1",
+                "document_id": "doc-1",
+                "text": "Irrelevant chunk text " * 20,
+                "token_count": 200,
+                "_score": 0.02,
+                "tags": {"summary": "summary text"},
+                "source_ref": {"page": 1, "filename": "doc.pdf"},
+            }
+        ],
+        "session_id": "",
+        "conversation_history": [],
+        "errors": [],
+    }
+    config = {
+        "llm": {"answer_model": "test"},
+        "query": {
+            "retrieval": {
+                "fallback_enabled": True,
+                "fallback_score_threshold": 0.05,
+            }
+        }
+    }
+
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = MagicMock(content="I could not find this in the provided documents.")
+
+    with patch("backend.retrieval.answerer.get_llm_for", return_value=mock_llm), \
+         patch("backend.retrieval.answerer.resolve_model_provider", return_value=("test", "test")), \
+         patch("backend.retrieval.answerer._expand_thin_chunks", side_effect=lambda c: c), \
+         patch("backend.retrieval.answerer._expand_all_chunks_to_pages") as mock_expand:
+
+        out_state = tool.run(state, config)
+        assert mock_llm.invoke.call_count == 1  # Only initial LLM call, NO retry call
+        mock_expand.assert_not_called()
+
+    # Case 2: best_score (0.08) >= fallback_score_threshold (0.05) -> Retry SHOULD be called
+    state["retrieved_chunks"][0]["_score"] = 0.08
+    mock_llm.reset_mock()
+
+    with patch("backend.retrieval.answerer.get_llm_for", return_value=mock_llm), \
+         patch("backend.retrieval.answerer.resolve_model_provider", return_value=("test", "test")), \
+         patch("backend.retrieval.answerer._expand_thin_chunks", side_effect=lambda c: c), \
+         patch("backend.retrieval.answerer._expand_all_chunks_to_pages", return_value=[]) as mock_expand:
+
+        out_state = tool.run(state, config)
+        assert mock_llm.invoke.call_count == 1  # Initial call occurred
+        mock_expand.assert_called_once()
+
+
 if __name__ == "__main__":
     test_chunk_without_summary_is_thin()
     test_chunk_with_summary_and_enough_tokens_is_not_thin()
@@ -143,4 +203,6 @@ if __name__ == "__main__":
     test_document_id_as_uuid_object_still_expands()
     test_multiple_thin_chunks_on_same_page_share_one_fetch()
     test_slide_sheet_expansion()
+    test_refusal_retry_score_threshold_guard()
     print("answerer expansion tests passed")
+

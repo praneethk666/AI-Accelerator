@@ -1350,6 +1350,49 @@ def _history_to_messages(history: list[dict]) -> list:
     return msgs
 
 
+def _turn_left_procedure_scope(tool_calls: list[dict], active_document_id: str | None) -> bool:
+    """Deterministic Trigger #4 signal: did this turn's tool activity leave the
+    active guided procedure's document, or was it consistent with staying on it
+    (troubleshooting sub-question, step re-fetch, or no search at all)?
+
+    Rule (conservative — default to KEEPING state unless we have positive
+    evidence of a topic change, since wrongly clearing mid-procedure is worse
+    than wrongly keeping it one extra turn):
+      - No tool calls this turn at all           -> NOT a scope change (keep).
+      - Every search_documents call this turn is
+        scoped (document_scope) to exactly the
+        active_document_id                        -> NOT a scope change (keep).
+      - Any search_documents call is unscoped
+        (whole-corpus) or scoped to a DIFFERENT
+        document_id                                -> IS a scope change (clear).
+      - Any non-search tool call targeting a
+        different document (e.g. excel_tool on an
+        unrelated file, get_page_context on a
+        different document_id)                     -> IS a scope change (clear).
+    """
+    if not active_document_id:
+        return False  # nothing active to invalidate
+    if not tool_calls:
+        return False  # pure conversational/troubleshooting reply from existing context — keep
+
+    for call in tool_calls:
+        name = call.get("name")
+        args = call.get("args") or {}
+
+        if name == "search_documents":
+            scope = args.get("document_scope")
+            if not scope:
+                return True  # whole-corpus search = user is asking something broader than this procedure
+            scope_ids = scope if isinstance(scope, list) else [scope]
+            if active_document_id not in scope_ids:
+                return True  # scoped to a different document entirely
+
+        elif name in ("excel_tool", "get_page_context"):
+            call_doc_id = args.get("document_id") or args.get("filename_or_id")
+            if call_doc_id and str(call_doc_id) != str(active_document_id):
+                return True
+
+    return False  # every tool call this turn was consistent with the active document
 
 
 @app.post("/agent/chat")
@@ -1362,6 +1405,13 @@ def agent_chat(req: AgentChatRequest, response: Response):
     """
     from backend.storage.conversation_store import get_conversation_store
 
+    store = get_conversation_store()
+    if req.message_id:
+        cached = store.get_turn_by_message_id(req.message_id)
+        if cached is not None:
+            logger.info("agent_chat: message_id %s already processed — returning cached result", req.message_id)
+            return cached
+
     # 1. Token Quota Check (Reserve budget)
     quota = get_enforcer(_config)
     reserve = get_reserve_tokens(_config)
@@ -1373,7 +1423,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
     if history is None:
         try:
             history = _history_to_messages(
-                get_conversation_store().load_history(req.session_id, n=max_history * 2)
+                store.load_history(req.session_id, n=max_history * 2)
             )
         except Exception:
             logger.debug("agent chat history load failed", exc_info=True)
@@ -1400,14 +1450,13 @@ def agent_chat(req: AgentChatRequest, response: Response):
     _display_message = _re.sub(r"^Please ingest this file\.\s*", "", _display_message, flags=_re.IGNORECASE)
     _display_message = _display_message.strip() or req.message
     try:
-        store = get_conversation_store()
         # Guard against duplicate user messages: if the most recent turn in this session
         # is already a user message with the same text, don't save again.  This prevents
         # the double-bubble when the user navigates away and the ChatPage reloads, which
         # can cause the same /agent/chat to be re-submitted.
         recent = store.load_history(req.session_id, n=1)
         if not (recent and recent[-1].get("role") == "user" and recent[-1].get("content") == _display_message):
-            store.save_turn(req.session_id, "user", _display_message)
+            store.save_turn(req.session_id, "user", _display_message, metadata={"message_id": req.message_id} if req.message_id else None)
     except Exception:
         logger.debug("agent user chat history save failed", exc_info=True)
 
@@ -1430,16 +1479,30 @@ def agent_chat(req: AgentChatRequest, response: Response):
         {"name": c["name"], "args": c["args"], "result": c.get("result")}
         for c in result.get("tool_calls", [])
     ]
+
+    # Trigger #4: clear stale guided_procedure state if this turn's tool
+    # activity left the active procedure's document scope. Runs regardless of
+    # result["status"] (done/needs_clarification/needs_approval) — a brand-new
+    # procedure request can trigger request_clarification mid-turn, and the
+    # OLD procedure's state should still be cleared in that case.
+    active_proc = store.get_guided_procedure(req.session_id)
+    if active_proc and _turn_left_procedure_scope(tool_calls, active_proc.get("document_id")):
+        logger.info(
+            "guided_procedure: session %s left document %s scope this turn — clearing stale state",
+            req.session_id, active_proc.get("document_id"),
+        )
+        store.set_guided_procedure(req.session_id, None)
+
     exec_trace = result.get("execution_trace") or []
 
     if result["status"] == "done":
         _agent_sessions[req.session_id] = _qa_only(result["messages"])[-max_history:]
         try:
-            store = get_conversation_store()
             store.save_turn(
                 req.session_id, "assistant", result.get("answer") or "",
                 metadata={
                     "status": "done",
+                    "message_id": req.message_id,
                     "tool_calls": tool_calls,
                     "llm_calls": result.get("llm_calls"),
                     "execution_trace": exec_trace,
@@ -1455,12 +1518,12 @@ def agent_chat(req: AgentChatRequest, response: Response):
         _agent_sessions[req.session_id] = _qa_only(result["messages"])[-max_history:]
 
         try:
-            store = get_conversation_store()
             store.save_turn(
                 req.session_id, "assistant",
                 result.get("question") or result.get("answer") or "",
                 metadata={
                     "status": "needs_clarification",
+                    "message_id": req.message_id,
                     "question": result.get("question"),
                     "options": result.get("options") or [],
                     "tool_calls": tool_calls,
@@ -1474,12 +1537,12 @@ def agent_chat(req: AgentChatRequest, response: Response):
             logger.debug("agent chat clarification save failed", exc_info=True)
     elif result["status"] == "needs_approval":
         try:
-            store = get_conversation_store()
             store.save_turn(
                 req.session_id, "assistant",
                 result.get("answer") or "",
                 metadata={
                     "status": "needs_approval",
+                    "message_id": req.message_id,
                     "pending": result.get("pending") or [],
                     "tool_calls": tool_calls,
                     "llm_calls": result.get("llm_calls") or [],

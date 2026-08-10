@@ -28,6 +28,8 @@ def build_agent_registry() -> dict[str, AgentTool]:
     these to the LLM and dispatches calls by name."""
     from backend.agent.clarify_tool import RequestClarificationTool
     from backend.connectors.sql_read import SQLReadTool
+    from backend.extraction.excel.boq_enricher import BOQPriceEnricherTool
+    from backend.extraction.excel.duckdb_tool import DuckDBExcelTool
     from backend.extraction.excel.excel_tool import ExcelTool
     from backend.pipeline.ingest import IngestDocumentTool
     from backend.retrieval.get_page_context import GetPageContextTool
@@ -42,5 +44,7 @@ def build_agent_registry() -> dict[str, AgentTool]:
         SQLReadTool(),
         RequestClarificationTool(),
         ExcelTool(),
+        DuckDBExcelTool(),
+        BOQPriceEnricherTool(),
     ]
     return {t.name: t for t in tools}

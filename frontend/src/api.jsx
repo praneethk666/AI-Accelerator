@@ -99,13 +99,14 @@ export const getProgress = async (fileId) => {
  * @param {boolean} approvedWrites
  * @returns {Promise} { status, answer, pending, tool_calls }
  */
-export const sendAgentChat = async (message, sessionId, approvedWrites = false, approvedCalls = null, signal = null, activeDocumentId = null) => {
+export const sendAgentChat = async (message, sessionId, approvedWrites = false, approvedCalls = null, signal = null, activeDocumentId = null, messageId = null) => {
   return API.post('/agent/chat', {
     message,
     session_id: sessionId,
     approved_writes: approvedWrites,
     approved_calls: approvedCalls,
     active_document_id: activeDocumentId,
+    message_id: messageId,
   }, { timeout: AGENT_TIMEOUT_MS, signal });
 };
 

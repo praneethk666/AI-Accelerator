@@ -45,6 +45,7 @@ def test_search_documents_wraps_run_query_and_formats_sources():
         doc_type=None,
         industry=None,
         conversation_history=None,
+        raw_user_prompt=None,
     )
     assert result == {
         "answer": "The M6 bolt torque is 12 Nm.",
@@ -57,6 +58,7 @@ def test_search_documents_wraps_run_query_and_formats_sources():
                 "page": 1,
                 "score": None,
                 "sheet": None,
+                "sheet_index": None,
                 "slide": None,
                 "summary": "Torque specification for the M6 assembly bolt.",
                 "snippet": "The assembly requires an M6 bolt torqued to 12 Nm.",

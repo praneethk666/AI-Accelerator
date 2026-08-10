@@ -440,9 +440,12 @@ class ExcelTool:
         "sum, or query columns in an Excel sheet.\n"
         "RULES:\n"
         "1. Assign your final answer to a variable named `result`.\n"
-        "2. The active sheet is loaded as `df`.\n"
-        "3. A dict of sheet DataFrames is available as `dfs` (only when sheet_name='all').\n"
-        "4. Pre-imported: pd, np, sqlite3, math, datetime, re, json. No other imports."
+        "2. `df` represents ALL sheets in the workbook combined into a single DataFrame (with a `_sheet_name` column). If a specific sheet was requested, `df` represents that single sheet.\n"
+        "3. A dict of individual sheet DataFrames is available as `dfs`. \n"
+        "   CRITICAL WARNING: If you need to calculate a SUM, COUNT, TOTAL, or any aggregation across an entire workbook, DO NOT use Pandas code. You MUST use the `duckdb_sql_query` tool instead! It is much safer for aggregations.\n"
+        "4. Pre-imported: pd, np, sqlite3, math, datetime, re, json. No other imports.\n"
+        "5. FLEXIBLE TEXT SEARCH RULE: Engineering Excel sheets use reversed word order or commas (e.g. 'CENTER,DEAD' for 'dead center', 'NOZZLE, COOLANT' for 'coolant nozzle'). NEVER filter text using strict single phrases like `.str.contains('dead center')`. Always match key words independently (e.g. `df[df['Description'].astype(str).str.contains('dead', case=False, na=False) & df['Description'].astype(str).str.contains('center', case=False, na=False)]`) or use regex `(?i)(?=.*dead)(?=.*center)`.\n"
+        "6. TYPO NORMALIZATION FOR PART/DRAWING NUMBERS: If the user provides an alphanumeric drawing number or part code (e.g. 'KE--MC000954-G'), ALWAYS clean up multiple hyphens BEFORE filtering Pandas strings. Write defensive code: `clean_q = re.sub(r'-+', '-', 'KE--MC000954-G')` and then use `clean_q` in your `.str.contains()` filter."
     )
     input_schema = {
         "type": "object",
@@ -453,7 +456,7 @@ class ExcelTool:
             },
             "code": {
                 "type": "string",
-                "description": "Python code to execute. Must assign final answer to `result`.",
+                "description": "Python code to execute. Must assign final answer to `result`. When searching text columns for part names, match key terms independently. When searching for part/drawing numbers, ALWAYS use `re.sub(r'-+', '-', query)` to fix double-hyphen typos before calling `.str.contains(query, regex=False)`.",
             },
             "sheet_name": {
                 "type": "string",
@@ -485,9 +488,20 @@ class ExcelTool:
                 dataframes["df"] = sheets[sheet_name]
                 dataframes["dfs"] = {sheet_name: sheets[sheet_name]}
             else:
-                first = list(sheets.keys())[0]
-                dataframes["df"] = sheets[first]
                 dataframes["dfs"] = sheets
+                if len(sheets) == 1:
+                    first = list(sheets.keys())[0]
+                    dataframes["df"] = sheets[first]
+                else:
+                    combined_list = []
+                    for s_name, s_df in sheets.items():
+                        if isinstance(s_df, pd.DataFrame) and not s_df.empty:
+                            combined_list.append(s_df.assign(_sheet_name=s_name))
+                    if combined_list:
+                        dataframes["df"] = pd.concat(combined_list, ignore_index=True)
+                    else:
+                        first = list(sheets.keys())[0]
+                        dataframes["df"] = sheets[first]
 
             outcome = run_code(code, dataframes)
 

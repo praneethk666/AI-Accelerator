@@ -47,6 +47,18 @@ from backend.guardrails.retrieval_guard import scan_tool_output_async
 
 logger = logging.getLogger(__name__)
 
+def extract_warning_chunks(retrieved_chunks: list[dict]) -> list[dict]:
+    """Filter retrieved chunks down to only those tagged as safety warnings at
+    ingestion time (see chunk_tool.py's _try_extract_warning_chunk, which sets
+    tags={"chunk_type": "warning", "severity": ...}). Used to ground guided-
+    procedure safety text in the actual source document instead of letting the
+    LLM author its own — matches the real Chunk schema (chunk["tags"],
+    chunk["text"]), not a hypothetical one."""
+    return [
+        c for c in (retrieved_chunks or [])
+        if (c.get("tags") or {}).get("chunk_type") == "warning"
+    ]
+
 def add_evidences(left: list[dict] | None, right: list[dict] | None) -> list[dict]:
     """LangGraph reducer to accumulate guard evidences across nodes."""
     return (left or []) + (right or [])
@@ -91,6 +103,7 @@ class AgentState(TypedDict):
     # short-circuit flag: set True by tools_node when search_documents returned a
     # complete answer so route_after_tools skips the redundant agent Turn 2 LLM call
     search_shortcircuit: bool
+    refused_once: bool
 
 
 SYSTEM_PROMPT = (
@@ -132,6 +145,7 @@ SYSTEM_PROMPT = (
     "      4. To list all sheets, set sheet_name='all' and use `result = list(dfs.keys())`.\n"
     "      5. To inspect columns/rows of sheet 'Vendor A', use `dfs['Vendor A'].columns.tolist()` or `dfs['Vendor A'].iloc[:5]`.\n"
     "      6. Work step-by-step: first list the sheet names, then inspect columns/rows of relevant sheets to find headers, then perform the final calculation.\n"
+    "      7. FLEXIBLE WORD-ORDER TEXT SEARCHING: In engineering Excel sheets, part names often use reversed word order or commas (e.g. 'CENTER,DEAD' for 'dead center', 'NOZZLE, COOLANT' for 'coolant nozzle'). When filtering text columns with Pandas, NEVER use strict single-phrase `.str.contains('dead center')`. Always match all key terms independently (e.g. `df[df['Description'].astype(str).str.contains('dead', case=False, na=False) & df['Description'].astype(str).str.contains('center', case=False, na=False)]`) or use regex `(?i)(?=.*dead)(?=.*center)` so that reversed names like 'CENTER,DEAD' match perfectly.\n"
     "- request_clarification(question, options?): Ask the USER to choose when their "
     "request is ambiguous (e.g. several documents match). Prefer this over guessing.\n\n"
 
@@ -144,12 +158,19 @@ SYSTEM_PROMPT = (
     "looking up text notes/inclusions/exclusions/metadata on Excel files (e.g. 'sum column X', "
     "'which company has highest revenue', 'is scaffolding included', 'list exclusions') — call excel_tool instead. "
     "It runs real Pandas code on the actual data and is far more accurate and token-efficient than searching chunked text.\n"
-    "   CRITICAL: If the user mentions 'data sheets', 'spreadsheet', 'excel', or asks a question that clearly targets tabular data, "
-    "you MUST use `excel_tool`. However, for general 'parts list' queries without explicit mention of Excel, ALWAYS prioritize `search_documents` first. RAG/Search retrieves raw text chunks which causes "
-    "poor computational accuracy and UI citation issues for math, but is best for general lookup. First resolve the Excel file name using list_documents/sql_read if needed, then "
-    "run your computational/filtering code entirely inside excel_tool.\n"
-    "   UI BEHAVIOR WARNING: If you can answer a question fully using `excel_tool`, DO NOT redundantly call `search_documents` "
-    "to look for text matches. The UI will prioritize and show PDF text citations over Excel data. Rely purely on `excel_tool` for Excel data.\n\n"
+    "   CRITICAL: If the user mentions 'data sheets', 'spreadsheet', 'excel', '.xlsx', 'parts list', 'parts table', 'BOM', or asks a question that clearly targets tabular data or part numbers, "
+    "you MUST use `excel_tool` (or call `list_documents()` first if the exact spreadsheet filename is unknown) and you MUST NOT reliance solely on chunked text search.\n"
+    "   If the explicit spreadsheet filename is unknown, you must call `list_documents()` FIRST to find the filename, then call `excel_tool()`.\n"
+    "   DUAL-TOOL STRATEGY (use whenever the answer MIGHT come from Excel): "
+    "If a question could plausibly be answered from either a document (PDF/manual) OR a spreadsheet (BOM, purchasing list, parts table), "
+    "HOWEVER, you CANNOT call `excel_tool` until you know the exact filename. Do NOT guess or invent filenames like 'MISUMI_parts_list.xlsx'. "
+    "Step 1: Call `search_documents` first (which now auto-injects raw Excel rows). "
+    "Step 2: If the `search_documents` results show that the data comes from an Excel file (.xlsx) but you need to run calculations or get cleaner data, "
+    "use the real filename returned in the search citations to call `excel_tool` in your next turn. "
+    "Step 3: Synthesize the best and most complete answer from both tools. "
+    "When in doubt, use both. Let the data — not a hard-coded rule — decide the answer.\n"
+    "   UI BEHAVIOR WARNING: When both tools are called, present the answer using the source that contains more detail. "
+    "If `excel_tool` returned structured data and `search_documents` returned only vague chunks, prefer the Excel result and say so.\n\n"
 
     "## FILENAME RESTRICTIONS\n"
     "If the user query or conversation history mentions a specific file name "
@@ -168,9 +189,9 @@ SYSTEM_PROMPT = (
 
     "## MULTI-STEP\n"
     "- You MAY chain tools when a task needs it — e.g. list_documents to find a file, "
-    "then search_documents scoped to it; several searches for a multi-part question; "
-    "or search_documents followed by get_page_context on a fragmented result. "
+    "then search_documents scoped to it, or search_documents followed by get_page_context on a fragmented result. "
     "Work step by step.\n"
+    "- CRITICAL SINGLE TOOL CALL RULE: For document searches, ALWAYS pass the user's FULL raw question as a SINGLE call to `search_documents`. NEVER split a user question into multiple parallel `search_documents` calls for different sub-topics, part numbers, or terminal numbers (e.g. 'terminal 2' and 'terminal 12'). `search_documents` automatically handles multi-question decomposition and parallel retrieval internally.\n"
     "- STRICT NO-REPEAT RULE: If a tool call (same tool name + same arguments) has already been made "
     "in this turn and returned a result, you MUST NOT call it again with the same arguments. "
     "If you are stuck, stop and give the best answer you have with what was found so far.\n"
@@ -534,11 +555,14 @@ def _resolve_turn_document_scope(
         return stored_doc_id, doc_id_to_name[stored_doc_id], False
 
     # Tier 5: Ambiguity Trigger (Deictic references without active context)
-    has_deictic = any(
-        term in msg_lower for term in ("this manual", "this document", "this file", "this pdf", "what is this about")
-    )
-    if has_deictic and len(docs) > 1 and not matched_doc_ids:
-        return None, None, True
+    agent_cfg = (config.get("query") or {}).get("agent") or {}
+    allow_clarification = agent_cfg.get("allow_clarification", False)
+    if allow_clarification:
+        has_deictic = any(
+            term in msg_lower for term in ("this manual", "this document", "this file", "this pdf", "what is this about")
+        )
+        if has_deictic and len(docs) > 1 and not matched_doc_ids:
+            return None, None, True
 
     return None, None, False
 
@@ -546,9 +570,9 @@ def _resolve_turn_document_scope(
 def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
                   clarify_tools: set[str], max_iterations: int, is_question: bool,
                   config: dict, agent_cfg: dict, session_id: str = ""):
-    llm_auto = llm.bind_tools(tool_schemas)
+    llm_auto = llm.bind_tools(tool_schemas, parallel_tool_calls=False)
     try:
-        llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
+        llm_required = llm.bind_tools(tool_schemas, tool_choice="required", parallel_tool_calls=False)
     except Exception:
         llm_required = llm_auto
 
@@ -839,6 +863,14 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 })
                 continue
 
+            if name == "search_documents":
+                if session_id:
+                    args["session_id"] = session_id
+                for msg in reversed(state["messages"]):
+                    if isinstance(msg, HumanMessage):
+                        args["raw_user_prompt"] = msg.content
+                        break
+
             tool = registry.get(name)
             with traced_tool(f"tool:{name}", input=args) as span:
                 if tool is None:
@@ -909,6 +941,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         # ONLY tool called this turn and it returned a complete non-refusal answer.
         # Saves ~6-7s and ~4000 tokens per standard question. ---
         shortcircuit = False
+        is_refusal = False
         all_calls = getattr(last, "tool_calls", None) or []
         if (
             len(all_calls) == 1
@@ -927,7 +960,8 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
                 is_error = search_answer.lower().startswith("error:")
-                if search_answer and not is_refusal and not is_error:
+                is_directive = "[system directive" in search_answer.lower()
+                if search_answer and not is_error and not is_directive and (not is_refusal or state.get("refused_once")):
                     # Inject a synthetic AIMessage so output_guard_node can find it
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
@@ -948,6 +982,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
             "clarification": clarification,
             "guard_evidences": new_evidences,
             "search_shortcircuit": shortcircuit,
+            "refused_once": state.get("refused_once") or is_refusal,
         }
 
 
@@ -1090,9 +1125,9 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
                         clarify_tools: set[str], max_iterations: int, is_question: bool,
                         config: dict, agent_cfg: dict, session_id: str = ""):
-    llm_auto = llm.bind_tools(tool_schemas)
+    llm_auto = llm.bind_tools(tool_schemas, parallel_tool_calls=False)
     try:
-        llm_required = llm.bind_tools(tool_schemas, tool_choice="required")
+        llm_required = llm.bind_tools(tool_schemas, tool_choice="required", parallel_tool_calls=False)
     except Exception:
         llm_required = llm_auto
 
@@ -1308,8 +1343,13 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                 else:
                     try:
                         import asyncio
-                        if name == "search_documents" and session_id:
-                            args["session_id"] = session_id
+                        if name == "search_documents":
+                            if session_id:
+                                args["session_id"] = session_id
+                            for msg in reversed(state["messages"]):
+                                if isinstance(msg, HumanMessage):
+                                    args["raw_user_prompt"] = msg.content
+                                    break
                         result = await asyncio.to_thread(tool.run, **args)
                         if isinstance(result, dict) and result.get("ambiguity", {}).get("is_ambiguous"):
                             opts = result["ambiguity"].get("options") or []
@@ -1353,6 +1393,7 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
 
         # Search short-circuit (async path — same logic as sync _build_graph)
         shortcircuit = False
+        is_refusal = False
         all_calls = getattr(last, "tool_calls", None) or []
         if (
             len(all_calls) == 1
@@ -1371,7 +1412,7 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                 )
                 is_refusal = any(h in search_answer.lower() for h in _REFUSAL_HINTS)
                 is_error = search_answer.lower().startswith("error:")
-                if search_answer and not is_refusal and not is_error:
+                if search_answer and not is_error and (not is_refusal or state.get("refused_once")):
                     tool_messages.append(AIMessage(content=search_answer))
                     shortcircuit = True
             except Exception:
@@ -1383,6 +1424,7 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
             "clarification": clarification,
             "guard_evidences": new_evidences,
             "search_shortcircuit": shortcircuit,
+            "refused_once": state.get("refused_once") or is_refusal,
         }
 
     async def output_guard_node(state: AgentState) -> dict:
@@ -1811,6 +1853,7 @@ def run_agent(
             "guard_risk_score": 0,
             "guard_policy": "allow",
             "search_shortcircuit": False,
+            "refused_once": False,
         })
 
     token_usage = sink.totals(config=config)

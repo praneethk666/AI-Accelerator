@@ -32,6 +32,10 @@ class ConversationStore(Protocol):
         """Append one turn to the conversation history."""
         ...
 
+    def get_turn_by_message_id(self, message_id: str) -> dict | None:
+        """Look up a previously-processed assistant turn by message_id."""
+        ...
+
     def update_turn_by_message_id(self, message_id: str, content: str, metadata: dict) -> None:
         """Update a specific conversation turn by its message_id in metadata."""
         ...
@@ -223,6 +227,33 @@ class PostgresConversationStore:
             )
         finally:
             pg.close()
+
+    def get_turn_by_message_id(self, message_id: str) -> dict | None:
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT content, metadata FROM conversations "
+                "WHERE metadata->>'message_id' = %s AND role = 'assistant'",
+                (message_id,),
+            ).fetchone()
+        finally:
+            pg.close()
+        if not row:
+            return None
+        content, metadata = row
+        metadata = metadata or {}
+        return {
+            "status": metadata.get("status", "done"),
+            "answer": content,
+            "pending": metadata.get("pending"),
+            "question": metadata.get("question"),
+            "options": metadata.get("options"),
+            "tool_calls": metadata.get("tool_calls") or [],
+            "llm_calls": metadata.get("llm_calls") or [],
+            "execution_trace": metadata.get("execution_trace") or [],
+            "token_usage": metadata.get("token_usage"),
+            "trace_id": metadata.get("trace_id"),
+        }
 
     def update_session(self, session_id: str, *,
                        title: str | None = None,

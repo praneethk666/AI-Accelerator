@@ -16,17 +16,103 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
-from backend.core.tool import PipelineState
-from backend.core.schemas import Chunk
-from backend.core.models import get_dense_query_prefix, get_dense_model, get_reranker
 from backend.core import usage
-from backend.core.llm_client import get_llm, clean_message_content
-from backend.retrieval.vector_store import VectorStore
+from backend.core.llm_client import clean_message_content, get_llm
+from backend.core.models import get_dense_model, get_dense_query_prefix, get_reranker
+from backend.core.schemas import Chunk
+from backend.core.tool import PipelineState
 from backend.retrieval.keyword_index import KeywordIndex
+from backend.retrieval.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+def _harvest_subquery_worker(
+    query: str,
+    retrieval_cfg: dict,
+    full_config: dict,
+    hard_filters: dict,
+    soft_filters: dict,
+    is_rerank_method: bool,
+) -> dict:
+    """Worker task executed in ThreadPoolExecutor for a single sub-question.
+
+    Operates strictly on local variables and returns harvested chunks and optional error dict
+    to the main thread to ensure thread safety.
+    """
+    start = time.perf_counter()
+    try:
+        if is_rerank_method:
+            candidate_k = retrieval_cfg.get("candidate_k", 80)
+            chunks = _hybrid(
+                query, retrieval_cfg, full_config,
+                filters={**hard_filters, **soft_filters} or None,
+                fuse_top_k=candidate_k,
+            )
+            if soft_filters and not chunks:
+                logger.info(
+                    "RetrievalTool worker: soft filter %s returned 0 for %r — retrying without it",
+                    soft_filters, query[:50],
+                )
+                chunks = _hybrid(
+                    query, retrieval_cfg, full_config,
+                    filters=(hard_filters or None),
+                    fuse_top_k=candidate_k,
+                )
+        else:
+            result = _retrieve_one(
+                query=query,
+                retrieval_cfg=retrieval_cfg,
+                full_config=full_config,
+                filters={**hard_filters, **soft_filters} or None,
+            )
+            if soft_filters and not result["chunks"]:
+                logger.info(
+                    "RetrievalTool worker: soft filter %s returned 0 for %r — retrying without it",
+                    soft_filters, query[:50],
+                )
+                result = _retrieve_one(
+                    query=query, retrieval_cfg=retrieval_cfg, full_config=full_config,
+                    filters=(hard_filters or None),
+                )
+            chunks = result["chunks"]
+
+        # Filter out Excel chunks from standard Vector/BM25 results if doing a global search
+        if not hard_filters.get("document_id"):
+            filtered_chunks = []
+            for c in chunks:
+                sr = c.get("source_ref")
+                filename = ""
+                if sr:
+                    if hasattr(sr, "get"):
+                        filename = sr.get("filename", "")
+                    elif hasattr(sr, "filename"):
+                        filename = getattr(sr, "filename", "")
+                if not (isinstance(filename, str) and filename.lower().endswith((".xlsx", ".xls", ".csv"))):
+                    filtered_chunks.append(c)
+            chunks = filtered_chunks
+
+        latency = round((time.perf_counter() - start) * 1000, 2)
+        logger.debug(
+            "RetrievalTool worker harvested q=%r n=%d %.1fms",
+            query[:60], len(chunks), latency,
+        )
+        return {
+            "query": query,
+            "chunks": chunks,
+            "latency_ms": latency,
+            "error": None,
+        }
+    except Exception as exc:
+        latency = round((time.perf_counter() - start) * 1000, 2)
+        logger.error("RetrievalTool worker failed for %r after %.1fms: %s", query[:60], latency, exc)
+        return {
+            "query": query,
+            "chunks": [],
+            "latency_ms": latency,
+            "error": {"tool": "retrieval", "query": query, "error": str(exc)},
+        }
 
 
 class RetrievalTool:
@@ -61,7 +147,7 @@ class RetrievalTool:
         # Case-insensitive dedup avoids a redundant search when the planner's
         # rewrite already matches the raw query modulo case. Bounded to a sane
         # max length so a pathological/garbage query can't blow up the fan-out.
-        raw_query = (state.get("query") or "").strip()
+        raw_query = (state.get("raw_user_prompt") or state.get("query") or "").strip()
         _MAX_RAW_QUERY_CHARS = 500
         if raw_query and len(raw_query) <= _MAX_RAW_QUERY_CHARS:
             existing_lower = {q.strip().lower() for q in sub_questions}
@@ -73,7 +159,15 @@ class RetrievalTool:
                     raw_query[:80],
                 )
 
-        retrieval_cfg = config["query"]["retrieval"]
+        retrieval_cfg = dict(config["query"]["retrieval"])
+        
+        # Apply doc_type specific overrides from global.yaml (e.g. spreadsheet -> hybrid_local_rerank)
+        doc_type = state.get("doc_type")
+        overrides = retrieval_cfg.get("doc_type_overrides", {})
+        if doc_type and doc_type in overrides:
+            retrieval_cfg["method"] = overrides[doc_type]
+            logger.info("RetrievalTool: overriding method to %s for doc_type %s", overrides[doc_type], doc_type)
+
         # HARD filter = explicit document_id scope (a choice the user/agent made — respect it).
         # SOFT filter = doc_type / industry (a hint the agent inferred). Both are ANDed by the
         # store, but the soft filter must never HIDE the answer: if it yields zero chunks we
@@ -85,42 +179,90 @@ class RetrievalTool:
         if state.get("industry"):
             soft_filters["industry"] = state["industry"]
 
-        all_chunks: list[Chunk] = []
-        seen_ids:   set[str]   = set()
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        for query in sub_questions:
-            try:
-                result = _retrieve_one(
+        method = retrieval_cfg.get("method", "hybrid_rerank")
+        is_rerank_method = method in ("hybrid_rerank", "enriched")
+
+        max_workers = max(1, min(len(sub_questions), int(retrieval_cfg.get("max_workers", 4))))
+        results_by_index: list[dict | None] = [None] * len(sub_questions)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(
+                    _harvest_subquery_worker,
                     query=query,
                     retrieval_cfg=retrieval_cfg,
                     full_config=config,
-                    filters={**hard_filters, **soft_filters} or None,
-                )
-                if soft_filters and not result["chunks"]:
-                    logger.info(
-                        "RetrievalTool: soft filter %s returned 0 for %r — retrying without it",
-                        soft_filters, query[:50],
-                    )
-                    result = _retrieve_one(
-                        query=query, retrieval_cfg=retrieval_cfg, full_config=config,
-                        filters=(hard_filters or None),
-                    )
-                logger.debug(
-                    "RetrievalTool q=%r method=%s n=%d %.1fms",
-                    query[:60], result["method"],
-                    len(result["chunks"]), result["latency_ms"],
-                )
-                for chunk in result["chunks"]:
-                    cid = chunk["chunk_id"]
-                    if cid not in seen_ids:
-                        seen_ids.add(cid)
-                        all_chunks.append(chunk)
+                    hard_filters=hard_filters,
+                    soft_filters=soft_filters,
+                    is_rerank_method=is_rerank_method,
+                ): idx
+                for idx, query in enumerate(sub_questions)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results_by_index[idx] = future.result()
+                except Exception as exc:
+                    query = sub_questions[idx]
+                    logger.error("Unhandled harvest worker failure for %r: %s", query[:60], exc)
+                    results_by_index[idx] = {
+                        "query": query,
+                        "chunks": [],
+                        "latency_ms": 0.0,
+                        "error": {"tool": "retrieval", "query": query, "error": str(exc)},
+                    }
 
-            except Exception as exc:
-                logger.error("RetrievalTool failed for %r: %s", query[:60], exc)
-                errors: list = state["errors"] or []
-                errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
-                state["errors"] = errors
+        # ── Main-thread safe state merging (zero race conditions) ──
+        all_chunks: list[Chunk] = []
+        seen_ids:   set[str]   = set()
+        errors_to_append: list[dict] = []
+
+        for res in results_by_index:
+            if not res:
+                continue
+            if res.get("error"):
+                errors_to_append.append(res["error"])
+
+            for chunk in res.get("chunks") or []:
+                cid = chunk["chunk_id"]
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    all_chunks.append(chunk)
+
+        if errors_to_append:
+            existing_errors: list = state.get("errors") or []
+            existing_errors.extend(errors_to_append)
+            state["errors"] = existing_errors
+
+        # ── Batch Reranking (executed ONCE after all sub-questions are harvested) ──
+        if is_rerank_method and all_chunks:
+            standalone_query = (
+                state.get("standalone_query")
+                or state.get("query")
+                or state.get("raw_user_prompt")
+                or (sub_questions[0] if sub_questions else "")
+            )
+            all_chunks = _rerank_candidates(standalone_query, all_chunks, retrieval_cfg, config)
+
+        # ── Excel Keyword Injection ────────────────────────────────────────────
+        # Vector/BM25 search often misses Excel rows because part numbers and
+        # supplier names are not in the enrichment keywords. Do a direct Postgres
+        # ILIKE scan on all Excel chunks for any significant word in the query
+        # and prepend matching chunks so the LLM always sees them.
+        raw_q_for_excel = state.get("standalone_query") or state.get("query") or ""
+        excel_chunks = _excel_keyword_inject(raw_q_for_excel, doc_scope, config)
+        if excel_chunks:
+            logger.info(
+                "RetrievalTool: Excel keyword injection found %d matching chunks for query %r",
+                len(excel_chunks), raw_q_for_excel[:80],
+            )
+            for chunk in excel_chunks:
+                cid = chunk["chunk_id"]
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    all_chunks.insert(0, chunk)  # prepend so LLM sees them first
 
         # ── Fallback: Context Expansion (page-level) ──────────────────────────
         # If all retrieved chunks score below `fallback_threshold`, it means the
@@ -154,7 +296,7 @@ class RetrievalTool:
         if tb_cfg.get("enabled", True):
             from backend.guardrails.token_budget import TokenBudgetManager
             tb_mgr = TokenBudgetManager.from_config(config)
-            selected_chunks, total_tokens, dropped_count = tb_mgr.select_chunks(
+            selected_chunks, _total_tokens, _dropped_count = tb_mgr.select_chunks(
                 all_chunks, budget_tokens=tb_cfg.get("max_context_tokens", 8000)
             )
             state["retrieved_chunks"] = selected_chunks
@@ -164,13 +306,130 @@ class RetrievalTool:
 
 
 
+# ── Excel Keyword Injection helper ────────────────────────────────────────────
+
+_EXCEL_STOP_WORDS = {
+    "what", "which", "where", "when", "who", "how", "are", "is", "the",
+    "a", "an", "of", "for", "in", "by", "to", "do", "and", "or", "not",
+    "all", "any", "give", "show", "list", "tell", "me", "about", "from",
+    "that", "this", "with", "has", "have", "be", "been", "was", "were",
+    "parts", "part", "items", "item", "name", "names", "provided", "supply",
+    "supplied", "make", "made", "number", "numbers", "components", "component",
+}
+
+
+def _excel_keyword_inject(
+    query: str,
+    doc_scope: list[str],
+    config: dict,
+    max_chunks: int = 200,
+) -> list[dict]:
+    """Direct PostgreSQL ILIKE scan on Excel chunks for any significant word in query.
+
+    Extracts words >= 3 chars (excluding stop-words) from the query and fetches
+    all Excel (.xlsx/.xls/.csv) chunks whose text matches ANY of those words.
+    Returns them as Chunk-compatible dicts to be merged into retrieved_chunks.
+    Silently returns [] on any error so it never breaks the normal pipeline.
+    """
+    import re
+    # Normalize double/triple hyphens to single hyphens
+    normalized_query = re.sub(r"-+", "-", query)
+    
+    words = re.findall(r"[A-Za-z0-9][\w\-\.]*", normalized_query)
+    
+    # Extract base alphanumeric tokens for hyphenated codes (e.g. MC000954 from KE-MC000954-G)
+    expanded_words = []
+    for w in words:
+        expanded_words.append(w)
+        if '-' in w:
+            parts = w.split('-')
+            # Add significant sub-parts (e.g. MC000954)
+            expanded_words.extend([p for p in parts if len(p) >= 3])
+
+    keywords = []
+    for w in expanded_words:
+        if len(w) >= 3 and w.lower() not in _EXCEL_STOP_WORDS and w not in keywords:
+            keywords.append(w)
+
+    if not keywords:
+        return []
+
+    try:
+        import psycopg
+
+        from backend.core.config import get_db_url
+
+        dsn = get_db_url(config) if config else None
+        if not dsn:
+            import os
+            dsn = os.getenv("POSTGRES_URL", "")
+        if not dsn:
+            return []
+
+        # Build OR conditions checking both c.text AND c.table_data
+        conditions = " OR ".join(["(c.text ILIKE %s OR c.table_data::text ILIKE %s)"] * len(keywords))
+        params: list = []
+        for kw in keywords:
+            params.extend([f"%{kw}%", f"%{kw}%"])
+
+        # Optionally scope to explicit document_ids
+        scope_clause = ""
+        if doc_scope:
+            placeholders = ", ".join(["%s"] * len(doc_scope))
+            scope_clause = f"AND c.document_id::text IN ({placeholders})"
+            params.extend(doc_scope)
+
+        sql = f"""
+            SELECT
+                c.chunk_id::text,
+                c.document_id::text,
+                c.text,
+                c.token_count,
+                c.tags,
+                c.source_ref,
+                c.table_data,
+                c.image_path
+            FROM chunks c
+            JOIN documents d ON d.document_id = c.document_id
+            WHERE d.filename ~* '\\.(xlsx|xls|csv)$'
+            AND ({conditions})
+            {scope_clause}
+            LIMIT %s
+        """
+        params.append(max_chunks)
+
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        chunks = []
+        for row in rows:
+            chunks.append({
+                "chunk_id":    row[0],
+                "document_id": row[1],
+                "text":        row[2] or "",
+                "token_count": row[3],
+                "tags":        row[4] or {},
+                "source_ref":  row[5] or {},
+                "table_data":  row[6],
+                "image_path":  row[7],
+                "_score":      0.0,   # no vector score — injected, not ranked
+                "_excel_injected": True,
+            })
+        return chunks
+
+    except Exception as exc:
+        logger.warning("_excel_keyword_inject failed (non-fatal): %s", exc)
+        return []
+
+
 # ── dispatcher ────────────────────────────────────────────────────────────────
 
 def _retrieve_one(
     query: str,
     retrieval_cfg: dict,
     full_config: dict,
-    filters: Optional[dict],
+    filters: dict | None,
 ) -> dict:
     method = retrieval_cfg["method"]
     start  = time.perf_counter()
@@ -182,6 +441,9 @@ def _retrieve_one(
             chunks = _hybrid(query, retrieval_cfg, full_config, filters)
         elif method == "hybrid_rerank":
             chunks = _hybrid_rerank(query, retrieval_cfg, full_config, filters)
+        elif method == "hybrid_local_rerank":
+            from backend.retrieval.hybrid_search import _hybrid_local_rerank
+            chunks = _hybrid_local_rerank(query, retrieval_cfg, full_config, filters)
         elif method == "hyde":
             chunks = _hyde(query, retrieval_cfg, full_config, filters)
         elif method == "enriched":
@@ -189,7 +451,7 @@ def _retrieve_one(
         else:
             raise ValueError(
                 f"Unknown method: {method!r}. "
-                "Valid: naive | hybrid | hybrid_rerank | hyde | enriched"
+                "Valid: naive | hybrid | hybrid_rerank | hybrid_local_rerank | hyde | enriched"
             )
     except Exception as exc:
         logger.warning(
@@ -247,29 +509,29 @@ def _hybrid(query, cfg, full_config, filters, fuse_top_k=None):
                      top_k=top_k, k=candidate_k)
 
 
-def _hybrid_rerank(query, cfg, full_config, filters):
-    candidate_k  = cfg["candidate_k"]
-    rerank_top_k = cfg["rerank_top_k"]
-    # Fuse the FULL candidate_k pool (not top_n) so the reranker actually sees the
-    # wide pool it was configured for. Previously _hybrid returned top_n=20 and the
-    # [:candidate_k] slice was a no-op, so a right-doc chunk ranked 21-80 by RRF was
-    # dropped BEFORE the cross-encoder could rescore it — the many-docs failure mode.
-    candidates   = _hybrid(query, cfg, full_config, filters, fuse_top_k=candidate_k)
+def _rerank_candidates(query: str, candidates: list[dict], cfg: dict, full_config: dict) -> list[dict]:
+    """Batch rerank candidate chunks against `query` using the configured reranker.
+
+    Enforces degradation limits (max pairs, max tokens) and falls back to RRF candidate
+    order if the reranker fails.
+    """
     if not candidates:
         return []
+
+    rerank_top_k = cfg.get("rerank_top_k", cfg.get("top_n", 5))
 
     # Enforce degradation guardrails: reranker_max_pairs and reranker_max_tokens_per_pair
     g_cfg = full_config.get("guardrails", {})
     deg_cfg = g_cfg.get("degradation", {})
-    
+
     max_pairs = deg_cfg.get("reranker_max_pairs")
     if max_pairs is not None:
         candidates = candidates[:max_pairs]
-        
+
     max_tokens = deg_cfg.get("reranker_max_tokens_per_pair")
     pairs = []
     for c in candidates:
-        text = c["text"] or ""
+        text = c.get("text") or ""
         if max_tokens is not None:
             # 1 token is roughly 4 characters
             char_limit = max_tokens * 4
@@ -305,6 +567,11 @@ def _hybrid_rerank(query, cfg, full_config, filters):
         )
         fallback_limit = cfg.get("top_n", 20)
         return candidates[:fallback_limit]
+
+
+def _hybrid_rerank(query, cfg, full_config, filters):
+    candidate_k = cfg.get("candidate_k", 80)
+    return _hybrid(query, cfg, full_config, filters, fuse_top_k=candidate_k)
 
 
 

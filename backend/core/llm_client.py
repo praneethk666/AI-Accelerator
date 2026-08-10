@@ -36,10 +36,12 @@ per-call wiring needed here.
 """
 from __future__ import annotations
 
-import os
+import logging
 import random
 
 from langchain_core.language_models import BaseChatModel
+
+logger = logging.getLogger(__name__)
 
 
 def get_llm(config: dict, max_tokens: int | None = None,
@@ -61,12 +63,18 @@ def get_llm(config: dict, max_tokens: int | None = None,
     model = model or llm_cfg["model"]
     api_key = _clean(llm_cfg.get("api_key"))
     temperature = llm_cfg.get("temperature")
+    frequency_penalty = llm_cfg.get("frequency_penalty")
+    presence_penalty = llm_cfg.get("presence_penalty")
     if max_tokens is None:
         max_tokens = llm_cfg.get("max_tokens")
 
     common = {}
     if temperature is not None:
         common["temperature"] = temperature
+    if frequency_penalty is not None:
+        common["frequency_penalty"] = frequency_penalty
+    if presence_penalty is not None:
+        common["presence_penalty"] = presence_penalty
 
     if provider == "groq":
         from langchain_groq import ChatGroq
@@ -108,20 +116,14 @@ def get_llm(config: dict, max_tokens: int | None = None,
         # native OpenAI or ANY OpenAI-compatible endpoint (base_url).
         from langchain_openai import ChatOpenAI
         kw = dict(common)
+        if llm_cfg.get("top_p") is not None:
+            kw["top_p"] = llm_cfg["top_p"]
         if llm_cfg.get("base_url"):
             kw["base_url"] = llm_cfg["base_url"]
         if max_tokens:
             kw["max_tokens"] = max_tokens
-        # Passthrough for provider-specific request fields that aren't part of the
-        # OpenAI schema (e.g. GLM's `thinking: {type: disabled}` — GLM has a reasoning
-        # mode ON by default that otherwise burns the whole max_tokens budget on hidden
-        # reasoning tokens and returns EMPTY content; validated live against z.ai).
-        # Belongs in config, not hardcoded here, since it's specific to whichever
-        # OpenAI-compatible provider is configured.
         if llm_cfg.get("extra_body"):
             kw["extra_body"] = llm_cfg["extra_body"]
-        if llm_cfg.get("top_p") is not None:
-            kw["top_p"] = llm_cfg["top_p"]
         if "streaming" in llm_cfg:
             kw["streaming"] = llm_cfg["streaming"]
         elif "stream" in llm_cfg:
@@ -133,10 +135,11 @@ def get_llm(config: dict, max_tokens: int | None = None,
         # GUARANTEED to return valid JSON matching our invoice field structure.
         schema = llm_cfg.get("json_schema")
         if schema and not llm_cfg.get("base_url"):
-            try:
-                llm = llm.with_structured_output(schema, method="json_schema")
-            except Exception:
-                pass  # schema binding not available on this langchain version — ignore
+            if hasattr(llm, "with_structured_output"):
+                try:
+                    llm = llm.with_structured_output(schema, method="json_schema")
+                except Exception as exc:
+                    logger.warning("Failed to bind structured output schema: %s", exc)
         return llm
 
     if provider == "anthropic":
@@ -185,7 +188,7 @@ def get_llm_for(config: dict, section: dict | None = None, *,
     if chosen_model:
         llm_cfg["model"] = chosen_model
     for k in ("provider", "api_key", "base_url", "temperature", "extra_body",
-              "thinking_budget", "thinking_level"):
+              "thinking_budget", "thinking_level", "frequency_penalty", "presence_penalty"):
         if section.get(k) is not None:
             llm_cfg[k] = section[k]
 

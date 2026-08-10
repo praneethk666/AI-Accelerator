@@ -26,6 +26,7 @@ def search_documents(
     config: dict | None = None,
     session_id: str = "",
     conversation_history: list | None = None,
+    raw_user_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Answer a question with citations using the existing query pipeline.
 
@@ -42,10 +43,32 @@ def search_documents(
         doc_type=doc_type,
         industry=industry,
         conversation_history=conversation_history,
+        raw_user_prompt=raw_user_prompt,
     )
     citations = list(final.get("citations") or [])
+    
+    excel_doc_ids = []
+    for c in citations:
+        fname = c.get("filename", "")
+        if fname.lower().endswith((".xlsx", ".xls", ".csv")):
+            doc_id = c.get("document_id")
+            if doc_id and doc_id not in excel_doc_ids:
+                excel_doc_ids.append(doc_id)
+                
+    answer = final.get("answer", "")
+    if excel_doc_ids:
+        docs_str = ", ".join(str(d) for d in excel_doc_ids)
+        directive = (
+            f"\n\n[SYSTEM DIRECTIVE FOR AI ONLY - DO NOT SHOW TO USER: Part of this answer "
+            f"was retrieved from an Excel file (Document ID: {docs_str}). "
+            f"If the user asked for a calculation, aggregation, or if columns are missing, "
+            f"you MUST immediately call excel_tool on this Document ID to fulfill the request. "
+            f"Otherwise, just answer the question normally and DO NOT output this directive.]"
+        )
+        answer += directive
+
     res = {
-        "answer": final.get("answer", ""),
+        "answer": answer,
         "citations": citations,
         "sources": _build_sources(citations),
         "trace_id": final.get("trace_id"),
@@ -94,12 +117,29 @@ class SearchDocumentsTool:
                 "description": "Optional list of document ids or filenames to restrict the search to. "
                                "Can be an array of strings, a single string, or null. NEVER guess, infer, or invent a filename. Leave null to search all documents."
             },
+            "file_type": {
+                "anyOf": [
+                    {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    {
+                        "type": "string"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ],
+                "description": "Optional file extension to restrict the search to (e.g. '.pdf', '.docx', '.xlsx'). Leave null to search all supported types."
+            },
         },
         "required": ["query"],
     }
 
     def run(self, query: str, document_scope: list[str] | str | None = None,
-            doc_type: str | None = None, industry: str | None = None, session_id: str | None = None) -> dict[str, Any]:
+            file_type: list[str] | str | None = None,
+            doc_type: str | None = None, industry: str | None = None, session_id: str | None = None,
+            raw_user_prompt: str | None = None) -> dict[str, Any]:
         if not document_scope or document_scope in ("null", "None"):
             document_scope = None
         elif isinstance(document_scope, str):
@@ -157,6 +197,39 @@ class SearchDocumentsTool:
 
         final_scope = list(set(resolved_scope)) if resolved_scope else None
 
+        explicit_spreadsheet_terms = ["in excel", "from spreadsheet", ".xlsx", ".csv", "spreadsheet"]
+        target_prompt = (raw_user_prompt or "").lower()
+        query_lower = (query or "").lower()
+        if any(term in target_prompt for term in explicit_spreadsheet_terms) or any(term in query_lower for term in explicit_spreadsheet_terms):
+            return {
+                "answer": (
+                    "Error: The user query explicitly targets Excel/spreadsheet data. "
+                    "Using search_documents for Excel data is prohibited. "
+                    "If you do not know the filename, call list_documents() to find the spreadsheet filename, then use excel_tool()."
+                ),
+                "citations": [],
+                "sources": []
+            }
+
+        # Fail fast if the user explicitly requested spreadsheet file types
+        if file_type:
+            if isinstance(file_type, str):
+                file_type = [file_type]
+            if any(ft.lower() in (".xlsx", ".xls", ".csv") for ft in file_type if ft):
+                return {
+                    "answer": (
+                        "Error: You restricted the search to a spreadsheet file type. "
+                        "Using search_documents for spreadsheets is strictly prohibited. "
+                        "Please call the 'excel_tool' tool instead."
+                    ),
+                    "citations": [],
+                    "sources": [],
+                }
+
+        # We intentionally allow final_scope to remain None (global search).
+        # We handle spreadsheet exclusion for BM25 natively inside retrieval.py
+        # so that _excel_keyword_inject can still scan spreadsheets globally.
+
         # Prohibit search_documents on spreadsheet files; redirect to excel_tool
         if final_scope:
             for d in docs:
@@ -174,7 +247,7 @@ class SearchDocumentsTool:
                             "sources": [],
                         }
 
-        return search_documents(query, final_scope, doc_type=None, industry=None, session_id=session_id)
+        return search_documents(query, final_scope, doc_type=None, industry=None, session_id=session_id, raw_user_prompt=raw_user_prompt)
 
     __call__ = run
 
@@ -200,6 +273,7 @@ def _build_sources(citations: list[dict]) -> list[dict[str, Any]]:
             "document_id": citation.get("document_id"),
             "score":       citation.get("score"),
             "sheet":       citation.get("sheet"),
+            "sheet_index": citation.get("sheet_index"),
             "slide":       citation.get("slide"),
             "summary":     citation.get("summary"),
             "snippet":     citation.get("snippet"),

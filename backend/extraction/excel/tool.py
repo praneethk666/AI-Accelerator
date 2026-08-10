@@ -184,7 +184,7 @@ class ExcelExtractorTool:
             return blocks
 
         # ── 1. Table blocks ────────────────────────────────────────────
-        for sheet_name, df in wb.items():
+        for sheet_index, (sheet_name, df) in enumerate(wb.items()):
             try:
                 df = df.dropna(how="all").dropna(axis=1, how="all")
                 if df.empty:
@@ -214,6 +214,7 @@ class ExcelExtractorTool:
                     source_ref=SourceRef(
                         filename=filename,
                         sheet=str(sheet_name),
+                        sheet_index=sheet_index,
                     ),
                     confidence=cfg.get("extraction_confidence", 1.0),
                     language=self._detect_language(md_text, cfg.get("default_language", "en")),
@@ -256,7 +257,7 @@ class ExcelExtractorTool:
         out_dir = os.path.join("uploads", "images", doc_id)
         os.makedirs(out_dir, exist_ok=True)
 
-        for sheet in wb.worksheets:
+        for sheet_index, sheet in enumerate(wb.worksheets):
             for image in getattr(sheet, "_images", []):
                 try:
                     block_id   = str(uuid.uuid4())
@@ -282,6 +283,7 @@ class ExcelExtractorTool:
                         source_ref=SourceRef(
                             filename=filename,
                             sheet=sheet.title,
+                            sheet_index=sheet_index,
                         ),
                         confidence=cfg.get("extraction_confidence", 1.0),
                         language=cfg.get("default_language", "en"),
@@ -314,7 +316,7 @@ class ExcelExtractorTool:
         except Exception:
             return blocks
 
-        for sheet in wb.worksheets:
+        for sheet_index, sheet in enumerate(wb.worksheets):
             for row in sheet.iter_rows():
                 for cell in row:
                     if cell.data_type != "f" or cell.value is None:
@@ -332,6 +334,7 @@ class ExcelExtractorTool:
                             source_ref=SourceRef(
                                 filename=filename,
                                 sheet=sheet.title,
+                                sheet_index=sheet_index,
                             ),
                             confidence=cfg.get("extraction_confidence", 1.0),
                             language=cfg.get("default_language", "en"),
@@ -364,7 +367,7 @@ class ExcelExtractorTool:
         except Exception:
             return blocks
 
-        for sheet in wb.worksheets:
+        for sheet_index, sheet in enumerate(wb.worksheets):
             for pivot in getattr(sheet, "_pivots", []):
                 try:
                     pivot_name   = getattr(pivot, "name", "unnamed_pivot")
@@ -406,6 +409,7 @@ class ExcelExtractorTool:
                         source_ref=SourceRef(
                             filename=filename,
                             sheet=sheet.title,
+                            sheet_index=sheet_index,
                         ),
                         confidence=cfg.get("extraction_confidence", 1.0),
                         language=cfg.get("default_language", "en"),

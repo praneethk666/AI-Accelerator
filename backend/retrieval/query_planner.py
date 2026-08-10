@@ -67,14 +67,27 @@ class QueryPlannerTool:
             subs = [s.strip() for s in (plan.get("sub_questions") or []) if s and s.strip()]
 
             # Backstop: don't rely solely on the LLM obeying the "always include
-            # verbatim" instruction. If it dropped the raw query anyway, add it
-            # back deterministically (case-insensitive check) so this guarantee
-            # holds even on an off-spec model response.
+            # verbatim" instruction. Slice to max_subs FIRST (LLM output only),
+            # then append the guaranteed backstops AFTER the slice so they are
+            # never cut off by the quota.
+            subs = subs[:max_subs]
             if query and query.lower() not in {s.lower() for s in subs}:
                 subs.append(query)
 
+            # Raw-prompt backstop: the Agent LLM often strips important context words
+            # (e.g. "in excel", "from pdf") when it constructs the `query` arg for
+            # search_documents. `raw_user_prompt` preserves exactly what the user typed
+            # in the frontend. Always append it as a search sub-question when it differs
+            # from the already-included query, so those stripped words are never lost.
+            raw_prompt = (state.get("raw_user_prompt") or "").strip()
+            if raw_prompt and raw_prompt.lower() not in {s.lower() for s in subs}:
+                subs.append(raw_prompt)
+                logger.info(
+                    "🔍 [Query Planner] Appended raw_user_prompt as sub-question: %r", raw_prompt[:80]
+                )
+
             state["standalone_query"] = standalone
-            state["sub_questions"] = subs[:max_subs] or [standalone]
+            state["sub_questions"] = subs or [standalone]
             
             logger.info("🔍 [Query Planner] Original Query: %r", query)
             logger.info("🔍 [Query Planner] Rewritten Query: %r", state["standalone_query"])

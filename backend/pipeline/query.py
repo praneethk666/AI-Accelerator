@@ -36,6 +36,7 @@ def run_query(
     doc_type: str | None = None,
     industry: str | None = None,
     conversation_history: list | None = None,
+    raw_user_prompt: str | None = None,
 ) -> PipelineState:
     steps = config.get("query", {}).get("steps", DEFAULT_QUERY_STEPS)
     qconfig = PipelineConfig.from_dict({**config, "steps": steps, "route": "query"})
@@ -55,6 +56,7 @@ def run_query(
     # does state["sub_questions"] (not .get) can't KeyError on a fresh run.
     state: PipelineState = {
         "query": query,
+        "raw_user_prompt": raw_user_prompt,
         "session_id": session_id,
         "document_scope": document_scope or [],
         "doc_type": doc_type,

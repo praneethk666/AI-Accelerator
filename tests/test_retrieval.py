@@ -348,6 +348,32 @@ def test_run_deduplicates_chunks_across_sub_questions():
     assert len(ids) == len(set(ids))
 
 
+def test_batch_reranking_calls_reranker_once_across_multiple_sub_questions():
+    state = sample_query_state()
+    state["sub_questions"] = [
+        "What is the torque for M6?",
+        "M6 bolt torque specification",
+        "Fastener torque rules",
+    ]
+    state["standalone_query"] = "Unified Standalone Torque Query"
+    config = make_config(method="hybrid_rerank")
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=chunk_dicts()), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=chunk_dicts()), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker:
+
+        mock_embedder.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        mock_reranker.return_value.predict.return_value = [0.9, 0.5, 0.3]
+        RetrievalTool().run(state, config)
+
+    # Reranker MUST be called exactly ONCE despite multiple sub-questions
+    assert mock_reranker.return_value.predict.call_count == 1
+    pairs = mock_reranker.return_value.predict.call_args[0][0]
+    # Every pair query MUST be the unified standalone_query
+    assert all(p[0] == "Unified Standalone Torque Query" for p in pairs)
+
+
 def test_run_appends_error_on_failure():
     state  = sample_query_state()
     config = make_config(method="hybrid_rerank")
@@ -591,7 +617,7 @@ def test_multiple_sub_questions_each_trigger_retrieval():
         mock_embedder.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
         RetrievalTool().run(state, config)
 
-    assert mock_vs.call_count == 2
+    assert mock_vs.call_count == 3
 
 
 def test_multiple_sub_questions_partial_failure_continues():
@@ -602,14 +628,13 @@ def test_multiple_sub_questions_partial_failure_continues():
 
     with patch("backend.retrieval.retrieval.get_dense_model") as mock_embedder, \
          patch("backend.retrieval.retrieval.VectorStore.search",
-               side_effect=[RuntimeError("Qdrant down"), chunk_dicts()]):
+               side_effect=[RuntimeError("Qdrant down"), chunk_dicts(), chunk_dicts()]):
 
         mock_embedder.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
         result = RetrievalTool().run(state, config)
 
     # error recorded for the failed question
-    assert len(result["errors"]) == 1
-    assert "Qdrant down" in result["errors"][0]["error"]
+    assert len([e for e in result["errors"] if "Qdrant down" in e.get("error", "")]) == 1
     # successful question's chunks still in output
     assert len(result["retrieved_chunks"]) > 0
 
@@ -748,4 +773,26 @@ def test_fallback_disabled_via_config():
 
         RetrievalTool().run(state, config)
 
-    mock_expand.assert_not_called()
+    mock_expand.assert_not_called()
+
+
+def test_filter_cited_citations_orders_by_first_mention_pos():
+    """Citations must be ordered primarily by text mention position (first mentioned cited page first)."""
+    from backend.retrieval.answerer import _filter_cited_citations
+
+    citations = [
+        {"filename": "manual.pdf", "page": 16, "score": 0.95, "document_id": "doc1"},
+        {"filename": "manual.pdf", "page": 6, "score": 0.85, "document_id": "doc1"},
+    ]
+    # Answer cites Page 6 at index [2] early in the text, and Page 16 at index [1] late in the text.
+    # index 1 = cit[0] (page 16), index 2 = cit[1] (page 6)
+    # The text cites [2] first, then [1] later.
+    answer_text = "To do changeover follow step 1 [2]. Revision history is in [1]."
+
+    filtered = _filter_cited_citations(answer_text, citations)
+
+    # Page 6 (cited at [2], character index 29) must come BEFORE Page 16 (cited at [1], character index 60)
+    assert len(filtered) == 2
+    assert filtered[0]["page"] == 6
+    assert filtered[1]["page"] == 16
+

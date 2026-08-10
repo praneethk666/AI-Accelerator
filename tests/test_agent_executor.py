@@ -394,4 +394,134 @@ def test_ingest_document_already_ready_bypasses_approval(tmp_path):
     assert ingest.calls == []  # Not actually called since it was already ingested and ready
 
 
+# ── Guided procedure walkthrough wiring (ADDED 10-Aug) ────────────────────────
+# session_id injection into the sync tools_node (the one run_agent() actually
+# uses) for the new procedure tools, and _resolve_turn_procedure_state's
+# system-prompt injection when a walkthrough is already active for the session.
+
+class _FakeAdvanceProcedureTool:
+    name = "advance_procedure_step"
+    description = "Advance the active guided procedure walkthrough."
+    input_schema = {
+        "type": "object",
+        "properties": {"action": {"type": "string"}},
+        "required": ["action"],
+    }
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"step_id": "2", "step_text": "Press the MASTER ON button.", "has_next": True}
+
+
+def test_advance_procedure_step_gets_session_id_injected_by_sync_tools_node():
+    # Real gap found while planning this feature: the sync tools_node (the one
+    # run_agent() actually dispatches through) never injected session_id for ANY
+    # tool -- only the unused async builder did, and only for search_documents.
+    # The new procedure tools need session_id to read/write Postgres state, so
+    # this must actually reach tool.run() as a kwarg, not just be in scope.
+    tool = _FakeAdvanceProcedureTool()
+    llm = _ScriptedLLM([
+        _tool_call_message("advance_procedure_step", {"action": "next"}),
+        AIMessage(content="Now press the MASTER ON button."),
+    ])
+
+    result = run_agent(
+        "done",
+        config=_CONFIG,
+        registry={"advance_procedure_step": tool},
+        llm=llm,
+        session_id="session-abc",
+    )
+
+    assert result["status"] == "done"
+    assert tool.calls == [{"action": "next", "session_id": "session-abc"}]
+
+
+def test_advance_procedure_step_no_session_id_when_none_given():
+    # Without a real session_id, the injection must not fire at all (matches
+    # the existing `if name == ... and session_id:` guard already used for
+    # search_documents) -- a tool relying on session state should see it
+    # genuinely absent, not an empty string standing in for "no session".
+    tool = _FakeAdvanceProcedureTool()
+    llm = _ScriptedLLM([
+        _tool_call_message("advance_procedure_step", {"action": "next"}),
+        AIMessage(content="ok"),
+    ])
+    run_agent("done", config=_CONFIG, registry={"advance_procedure_step": tool}, llm=llm)
+    assert "session_id" not in tool.calls[0]
+
+
+def test_resolve_turn_procedure_state_none_when_disabled():
+    from backend.agent.executor import _resolve_turn_procedure_state
+    result = _resolve_turn_procedure_state("session-1", {"query": {"agent": {}}})
+    assert result is None
+
+
+def test_resolve_turn_procedure_state_none_when_no_session_id():
+    from backend.agent.executor import _resolve_turn_procedure_state
+    cfg = {"query": {"agent": {"procedure_walkthrough": {"enabled": True}}}}
+    assert _resolve_turn_procedure_state("", cfg) is None
+
+
+def test_resolve_turn_procedure_state_none_when_no_active_procedure():
+    from unittest.mock import MagicMock, patch
+    from backend.agent.executor import _resolve_turn_procedure_state
+    cfg = {"query": {"agent": {"procedure_walkthrough": {"enabled": True}}}}
+    store = MagicMock()
+    store.get_session_active_procedure.return_value = None
+    with patch("backend.storage.conversation_store.PostgresConversationStore", return_value=store):
+        assert _resolve_turn_procedure_state("session-1", cfg) is None
+
+
+def test_resolve_turn_procedure_state_returns_prompt_addition_when_active():
+    from unittest.mock import MagicMock, patch
+    from backend.agent.executor import _resolve_turn_procedure_state
+    cfg = {"query": {"agent": {"procedure_walkthrough": {"enabled": True}}}}
+    store = MagicMock()
+    store.get_session_active_procedure.return_value = {
+        "section_title": "1.1 Replacing the Workpiece Holder",
+        "current_step": "2", "status": "in_progress",
+        "steps": {"2": {"text": "Press the MASTER ON button.", "page": 5, "next": "3"}},
+    }
+    with patch("backend.storage.conversation_store.PostgresConversationStore", return_value=store):
+        result = _resolve_turn_procedure_state("session-1", cfg)
+    assert result is not None
+    assert "ACTIVE GUIDED PROCEDURE" in result
+    assert "Replacing the Workpiece Holder" in result
+    assert "Press the MASTER ON button." in result
+    assert "advance_procedure_step" in result
+
+
+def test_resolve_turn_procedure_state_fails_open_on_db_error():
+    from unittest.mock import patch
+    from backend.agent.executor import _resolve_turn_procedure_state
+    cfg = {"query": {"agent": {"procedure_walkthrough": {"enabled": True}}}}
+    with patch("backend.storage.conversation_store.PostgresConversationStore",
+              side_effect=RuntimeError("db down")):
+        result = _resolve_turn_procedure_state("session-1", cfg)
+    assert result is None  # no active procedure for THIS turn, not a crash
+
+
+def test_run_agent_injects_active_procedure_note_into_system_prompt():
+    from unittest.mock import MagicMock, patch
+    store = MagicMock()
+    store.get_session_active_procedure.return_value = {
+        "section_title": "1.1 Replacing the Workpiece Holder",
+        "current_step": "2", "status": "in_progress",
+        "steps": {"2": {"text": "Press the MASTER ON button.", "page": 5, "next": "3"}},
+    }
+    cfg = {"query": {"agent": {"max_iterations": 5, "write_tools": [],
+                                "procedure_walkthrough": {"enabled": True}}}}
+    llm = _ScriptedLLM([AIMessage(content="ok, moving on")])
+
+    with patch("backend.storage.conversation_store.PostgresConversationStore", return_value=store):
+        run_agent("done", config=cfg, registry={}, llm=llm, session_id="session-1")
+
+    system_msg = llm.invocations[0][0]
+    assert "ACTIVE GUIDED PROCEDURE" in system_msg.content
+
+
 

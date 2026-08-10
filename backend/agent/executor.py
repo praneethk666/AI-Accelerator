@@ -201,6 +201,20 @@ SYSTEM_PROMPT = (
     "     - For any .xlsx/.xls/.csv files found, use excel_tool to query them.\n"
     "     - Do NOT immediately return a refusal — check the spreadsheets first!\n\n"
 
+    "## GUIDED PROCEDURES\n"
+    "- When the user wants to actually PERFORM a numbered maintenance/checkup/changeover "
+    "procedure — not just read about it (\"walk me through it\", \"let's do the workpiece "
+    "holder replacement\", \"how do I do a coolant checkup\" said in a doing-it tone) — "
+    "locate the exact section first (browse_document_outline if the document has one, "
+    "otherwise search_documents), then call start_procedure_walkthrough with its "
+    "document_id and section_title/page. It presents ONE step at a time; do not dump the "
+    "whole procedure as a single answer once a walkthrough has started.\n"
+    "- If start_procedure_walkthrough returns an error (not every section is a numbered "
+    "step list), fall back to presenting that section as normal prose instead.\n"
+    "- While a walkthrough is active, an '## ACTIVE GUIDED PROCEDURE' note tells you the "
+    "current step — use advance_procedure_step, not search_documents, to respond to the "
+    "user's next reply about it.\n\n"
+
     "## COMPLETION\n"
 
     "For each user request:\n"
@@ -578,6 +592,42 @@ def _resolve_turn_document_scope(
     return None, None, False
 
 
+def _resolve_turn_procedure_state(session_id: str, config: dict) -> str | None:
+    """If a guided procedure walkthrough (backend/agent/procedure_tools.py) is
+    in progress for this session, returns a system-prompt addition naming the
+    current step and steering the agent toward advance_procedure_step for this
+    turn. None if no procedure is active, the feature is disabled, or on any DB
+    error -- fails open exactly like _resolve_turn_document_scope (log + treat
+    as "no active procedure" for THIS turn only; nothing is cleared, so it
+    resumes correctly once Postgres recovers)."""
+    from backend.agent.procedure_tools import _walkthrough_enabled
+    if not _walkthrough_enabled(config) or not session_id:
+        return None
+    try:
+        from backend.storage.conversation_store import PostgresConversationStore
+        procedure = PostgresConversationStore().get_session_active_procedure(session_id)
+    except Exception as exc:
+        logger.warning("_resolve_turn_procedure_state failed: %s", exc)
+        return None
+    if not procedure or procedure.get("status") != "in_progress":
+        return None
+
+    current = procedure.get("current_step")
+    step = (procedure.get("steps") or {}).get(current) or {}
+    return (
+        "\n\n## ACTIVE GUIDED PROCEDURE\n"
+        f"A guided walkthrough of \"{procedure.get('section_title')}\" is IN PROGRESS "
+        f"for this session, currently on step {current}: {step.get('text', '')!r}\n"
+        "The user's reply is almost certainly about THIS step -- call "
+        "advance_procedure_step with the action that matches their reply "
+        "('next' if they confirm it's done, 'repeat' if they need it re-explained, "
+        "'back' to return to the previous step, 'goto' with a step_id if a branch "
+        "condition in the current step applies to their situation, 'abort' if they "
+        "want to stop). Do NOT call start_procedure_walkthrough again while one is "
+        "already active."
+    )
+
+
 def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], write_tools: set[str],
                   clarify_tools: set[str], max_iterations: int, is_question: bool,
                   config: dict, agent_cfg: dict, session_id: str = ""):
@@ -880,6 +930,14 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                     result: Any = {"error": f"unknown tool {name!r}"}
                 else:
                     try:
+                        # Session-scoped state tools need session_id injected server-
+                        # side (never part of their own input_schema, so the LLM can't
+                        # set/spoof it) -- mirrors the async tools_node's existing
+                        # search_documents-only injection, extended here for the
+                        # guided-procedure tools' Postgres-backed state.
+                        if name in ("search_documents", "start_procedure_walkthrough",
+                                   "advance_procedure_step") and session_id:
+                            args["session_id"] = session_id
                         result = tool.run(**args)
                     except Exception as exc:
                         logger.warning("agent tool %s failed: %s", name, exc)
@@ -1343,7 +1401,8 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
                 else:
                     try:
                         import asyncio
-                        if name == "search_documents" and session_id:
+                        if name in ("search_documents", "start_procedure_walkthrough",
+                                   "advance_procedure_step") and session_id:
                             args["session_id"] = session_id
                         result = await asyncio.to_thread(tool.run, **args)
                         if isinstance(result, dict) and result.get("ambiguity", {}).get("is_ambiguous"):
@@ -1771,6 +1830,9 @@ def run_agent(
     if not is_question:
         # Relax the ALWAYS-SEARCH mandate for this turn only (see the constant).
         system_prompt_text += DIRECT_ANSWER_OVERRIDE
+    procedure_prompt_addition = _resolve_turn_procedure_state(session_id, config)
+    if procedure_prompt_addition:
+        system_prompt_text += procedure_prompt_addition
     if is_ambiguous_trigger:
         system_prompt_text += (
             "\n\n## AMBIGUITY DISAMBIGUATION MANDATE\n"

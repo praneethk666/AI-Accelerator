@@ -27,6 +27,7 @@ def build_agent_registry() -> dict[str, AgentTool]:
     """Every agent-callable tool, keyed by name. The agent-executor advertises
     these to the LLM and dispatches calls by name."""
     from backend.agent.clarify_tool import RequestClarificationTool
+    from backend.agent.procedure_tools import AdvanceProcedureStepTool, StartProcedureWalkthroughTool
     from backend.connectors.sql_read import SQLReadTool
     from backend.extraction.excel.excel_tool import ExcelTool
     from backend.pipeline.ingest import IngestDocumentTool
@@ -46,6 +47,8 @@ def build_agent_registry() -> dict[str, AgentTool]:
         FindRelatedDocumentsTool(),
         BrowseByEquipmentTool(),
         BrowseDocumentOutlineTool(),
+        StartProcedureWalkthroughTool(),
+        AdvanceProcedureStepTool(),
         ListDocumentsTool(),
         SQLReadTool(),
         RequestClarificationTool(),

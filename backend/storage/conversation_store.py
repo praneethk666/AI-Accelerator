@@ -158,6 +158,13 @@ class PostgresConversationStore:
                 pg.conn.execute(
                     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT"
                 )
+                # ADDED 10-Aug: guided procedure walkthrough state, same "restart-
+                # based executor, Postgres is the only thing that survives across
+                # turns" reasoning as active_document_id above -- see
+                # get/set_session_active_procedure.
+                pg.conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_procedure JSONB"
+                )
                 pg.conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at "
                     "ON sessions (pinned DESC, updated_at DESC)"
@@ -282,6 +289,44 @@ class PostgresConversationStore:
                 DO UPDATE SET active_document_id = EXCLUDED.active_document_id, updated_at = NOW()
                 """,
                 (session_id, doc_id),
+            )
+        finally:
+            pg.close()
+
+    def get_session_active_procedure(self, session_id: str) -> dict | None:
+        """Fetch the in-progress guided-procedure state (backend/agent/
+        procedure_tools.py) for a session, or None if no procedure is active.
+        Mirrors get_session_active_doc exactly -- Postgres is the only state that
+        survives across turns for this restart-based agent executor (every
+        run_agent() call builds a fresh graph; conversation_history alone can't
+        reliably carry "which step number are we on" for a long procedure)."""
+        if not session_id:
+            return None
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT active_procedure FROM sessions WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            pg.close()
+
+    def set_session_active_procedure(self, session_id: str, procedure: dict | None) -> None:
+        """Atomically UPSERT the active procedure state for a session. Pass None
+        to clear it (procedure completed or aborted)."""
+        if not session_id:
+            return
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, active_procedure, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET active_procedure = EXCLUDED.active_procedure, updated_at = NOW()
+                """,
+                (session_id, _Json(procedure) if procedure is not None else None),
             )
         finally:
             pg.close()

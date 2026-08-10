@@ -574,6 +574,20 @@ query:
     # actually being built usefully for this deployment's real documents.
     document_outline:
       enabled: false
+    # Guided, one-step-at-a-time procedure walkthroughs (backend/agent/
+    # procedure_tools.py + step_parser.py) -- ADDED 10-Aug. State persisted in
+    # Postgres (sessions.active_procedure), since this executor rebuilds its
+    # graph fresh every turn (see backend/agent/executor.py's own docstring on
+    # request_clarification's restart-based design) -- conversation_history text
+    # alone can't reliably carry "which step number are we on" for a long
+    # procedure. Off by default pending a live walkthrough test against a real
+    # manual. The agent chooses AdvanceProcedureStepTool's `action` itself from
+    # the user's reply -- no separate step-reply classifier, by explicit design
+    # choice (this system should be agentic: the tool-calling model's own
+    # judgment, not a rigid pre-classification pipeline in front of it).
+    procedure_walkthrough:
+      enabled: false
+      max_steps: 50   # sanity cap against a pathological over-split parse
 document_types:
   - invoice
   - purchase_order

@@ -101,6 +101,75 @@ def test_metadata_round_trips():
         _clear(sid)
 
 
+# ── session_active_procedure (guided procedure walkthrough state, ADDED 10-Aug) ──
+# Real live-DB round trip -- exercises the actual `ALTER TABLE sessions ADD COLUMN
+# IF NOT EXISTS active_procedure JSONB` migration against this project's real
+# cloud Postgres, not just a mock. Mirrors the get/set_session_active_doc pattern
+# these deliberately match.
+
+def test_get_active_procedure_none_when_never_set():
+    store, sid = _store()
+    try:
+        assert store.get_session_active_procedure(sid) is None
+    finally:
+        store.delete_session(sid)
+
+
+def test_set_and_get_active_procedure_round_trips_full_blob():
+    store, sid = _store()
+    procedure = {
+        "document_id": "doc-1", "filename": "changeover.pdf",
+        "section_title": "1.1 Replacing the Workpiece Holder", "page_range": [5, 5],
+        "steps": {
+            "1": {"text": "Place the switch to MANU.", "page": 5, "next": "2"},
+            "2": {"text": "Press the button.", "page": 5, "next": None},
+        },
+        "current_step": "1", "status": "in_progress", "started_at": "2026-08-10T00:00:00",
+    }
+    try:
+        store.set_session_active_procedure(sid, procedure)
+        assert store.get_session_active_procedure(sid) == procedure
+    finally:
+        store.delete_session(sid)
+
+
+def test_set_active_procedure_none_clears_it():
+    store, sid = _store()
+    try:
+        store.set_session_active_procedure(sid, {"document_id": "d", "current_step": "1"})
+        store.set_session_active_procedure(sid, None)
+        assert store.get_session_active_procedure(sid) is None
+    finally:
+        store.delete_session(sid)
+
+
+def test_active_procedure_updatable_across_calls_advancing_steps():
+    store, sid = _store()
+    try:
+        store.set_session_active_procedure(sid, {"document_id": "d", "current_step": "1"})
+        store.set_session_active_procedure(sid, {"document_id": "d", "current_step": "2"})
+        assert store.get_session_active_procedure(sid)["current_step"] == "2"
+    finally:
+        store.delete_session(sid)
+
+
+def test_active_procedure_isolated_per_session():
+    store, sid = _store()
+    store2, sid2 = _store()
+    try:
+        store.set_session_active_procedure(sid, {"document_id": "d1", "current_step": "1"})
+        assert store2.get_session_active_procedure(sid2) is None
+    finally:
+        store.delete_session(sid)
+        store2.delete_session(sid2)
+
+
+def test_missing_session_id_is_a_safe_noop_not_an_error():
+    store, _sid = _store()
+    store.set_session_active_procedure("", {"document_id": "d"})  # must not raise
+    assert store.get_session_active_procedure("") is None
+
+
 def test_list_sessions_orders_by_last_active_with_title():
     store, sid = _store()
     _, other = _store()

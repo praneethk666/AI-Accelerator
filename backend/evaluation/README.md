@@ -23,3 +23,26 @@ Queries a judge model using structural prompts:
 * **Faithfulness Prompt**: Asks the judge model to verify if every fact in the generated answer exists in the retrieved source text, identifying hallucinations.
 * **Relevance Prompt**: Rates if the generated response directly answers the query.
 * **Citation Grounding**: Validates that all inline brackets `[filename, p.N]` point to pages that actually contain the asserted facts.
+
+### 3. Intent Classification (`intent_eval.py` + `intent_dataset.py`)
+Scores the agent's intent classifier (`backend/agent/intent_classifier.py`), which decides
+whether a turn is forced to search the corpus (`document_question`, `action`) or may answer
+directly (`follow_up`, `general`). `intent_dataset.py` holds 75 labelled messages; every
+judgement call carries a `note` explaining the label.
+
+Three numbers, because they answer different questions:
+* **Label accuracy**: did it pick the exact intent? Used for prompt tuning.
+* **Routing accuracy**: did it pick the right *path*? Four labels collapse into two routes,
+  so a label can be wrong while agent behaviour stays correct.
+* **Grounding misses**: a message that needed the documents was allowed to answer without
+  them. Reported separately and expected to be **0** — this is the failure mode that yields
+  confident, unsourced answers, and it can regress while accuracy stays flat.
+
+```bash
+# uses config query.agent.intent by default; --provider/--model to override
+python -m backend.evaluation.intent_eval --provider groq --model llama-3.3-70b-versatile \
+    --delay 2.1 --json results.json
+```
+`--delay` paces requests for rate-limited free tiers. Exits non-zero if accuracy falls below
+95% or any grounding miss occurs, so it can gate a release. Needs a provider key and is run by
+hand; `tests/test_intent_dataset.py` validates the dataset and metric maths offline in CI.

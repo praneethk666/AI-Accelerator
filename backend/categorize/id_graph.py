@@ -30,6 +30,18 @@ from collections import defaultdict
 _ID_PATTERNS: dict[str, re.Pattern] = {
     "drawing_number": re.compile(r"\b\d{2}-\d{7,9}-\d\b"),
     "cad_sheet_id": re.compile(r"\bMS\d{2}[A-Z]{3}\d{3}[A-Z]{2}\b"),
+    # ADDED 10-Aug: a THIRD real format family, found in an actual parts-list Excel's
+    # "Drawing No" column (.../1.Expendable parts drawing/20230831_99Y_NEW-TIGG303_E.xlsx)
+    # -- 27 distinct real values sampled, e.g. "KE-MC000D93-A", "TA-61BG0002-B",
+    # "PA-GA006010-C". Shape: 2-char alphanumeric prefix (first char always a
+    # letter) - 8-char alphanumeric body - 1-char letter suffix, always dash-
+    # separated. Same CAD PDFs in this corpus are literally filenamed after this
+    # exact value (e.g. "20230831_99Y_KE-MC000954-G.pdf") -- see
+    # extract_id_from_filename() below, a complementary, regex-free join.
+    # Deliberately does NOT match the plain-digits "drawing_number" pattern above
+    # (that family's suffix is always a digit, this one's is always a letter), so
+    # no double-tagging under two kinds for the same string.
+    "parts_drawing_no": re.compile(r"\b[A-Z][A-Z0-9]-[A-Z0-9]{8}-[A-Z]\b"),
 }
 
 
@@ -76,6 +88,55 @@ def tag_blocks_with_ids(blocks: list[dict]) -> list[dict]:
                     if v not in flat:
                         flat.append(v)
             meta["mentioned_ids_flat"] = flat
+    return blocks
+
+
+def extract_id_from_filename(filename: str) -> str | None:
+    """A CAD drawing PDF in this corpus is often literally filenamed after its own
+    drawing number (confirmed live, e.g. "20230831_99Y_KE-MC000954-G.pdf" — the
+    exact same value as a parts-list Excel's "Drawing No" cell). No regex needed on
+    the CALLER's side to exploit this: reuse the same _ID_PATTERNS against the
+    filename's stem, which is far higher-precision than scanning prose (a filename
+    has no surrounding words an ID pattern could spuriously match against). Returns
+    the first match found, or None."""
+    if not filename:
+        return None
+    import os
+    stem = os.path.splitext(filename)[0]
+    # \b in each pattern only fires at a transition to/from a NON-word character,
+    # and regex treats "_" as a word character -- real filenames in this corpus
+    # segment with underscores right up against the ID ("20230831_99Y_KE-MC000954-G"),
+    # so \b silently never fires there. Underscores are a segment separator in a
+    # filename, never part of an ID's own body -- swap them for spaces so \b can
+    # actually see the boundary.
+    stem = stem.replace("_", " ")
+    for pattern in _ID_PATTERNS.values():
+        m = pattern.search(stem)
+        if m:
+            return m.group(0)
+    return None
+
+
+def tag_blocks_with_filename_id(blocks: list[dict], filename: str) -> list[dict]:
+    """Stamp the filename-derived ID (if any) onto every block's mentioned_ids --
+    unconditional, no corpus_root gate needed (filename parsing needs no folder
+    structure). Merged into whatever tag_blocks_with_ids() already found in the
+    block's own text, not overwritten -- a block can legitimately mention its own
+    ID string in its text too."""
+    file_id = extract_id_from_filename(filename)
+    if not file_id:
+        return blocks
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        meta = b.setdefault("metadata", {})
+        flat = meta.get("mentioned_ids_flat") or []
+        if file_id not in flat:
+            meta["mentioned_ids_flat"] = flat + [file_id]
+        ids = meta.setdefault("mentioned_ids", {})
+        by_filename = ids.setdefault("filename", [])
+        if file_id not in by_filename:
+            by_filename.append(file_id)
     return blocks
 
 

@@ -29,12 +29,15 @@ class FindRelatedDocumentsTool:
     description = (
         "Find OTHER ingested documents that reference the SAME drawing number or "
         "CAD sheet ID as one you already know about (e.g. spotted in a citation's "
-        "text or an image_ground answer, like '00-83547001-0' or 'MS03AAA789AB'). "
-        "These are strict, machine-generated identifiers -- a match is a PROVEN "
-        "link between documents, not a similarity guess. Use this when a question "
+        "text, an image_ground answer, or a parts-list Excel row, like "
+        "'00-83547001-0', 'MS03AAA789AB', or 'KE-MC000954-G'). These are strict, "
+        "machine-generated identifiers -- a match is a PROVEN link between "
+        "documents, not a similarity guess (a CAD drawing PDF is often literally "
+        "filenamed after its own drawing number, so this also catches matches by "
+        "filename, not just by mentions in the text). Use this when a question "
         "spans document types (e.g. you found a drawing number mentioned in a "
-        "manual and need the actual CAD drawing, or vice versa). Pass the EXACT "
-        "identifier string as you found it."
+        "manual and need the actual CAD drawing or parts list, or vice versa). "
+        "Pass the EXACT identifier string as you found it."
     )
     input_schema = {
         "type": "object",

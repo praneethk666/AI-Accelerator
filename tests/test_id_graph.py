@@ -9,8 +9,10 @@ from unittest.mock import MagicMock, patch
 
 from backend.categorize.id_graph import (
     document_id_summary,
+    extract_id_from_filename,
     extract_ids,
     find_documents_by_id,
+    tag_blocks_with_filename_id,
     tag_blocks_with_ids,
 )
 
@@ -58,6 +60,76 @@ def test_connector_part_numbers_do_not_false_positive_as_drawing_numbers():
     # drawing_number requires 7-9) so this is a genuine edge; confirm no match.
     ids = extract_ids("CONNECTOR IN BOX: 2-1747822-2 (REC HOUSING) 316040-2 (REC CONTACT)")
     assert "drawing_number" not in ids
+
+
+# ---------------------------------------------------------------------------
+# parts_drawing_no -- 3rd real ID format, ADDED 10-Aug. All 27 sample values
+# pulled directly from a real parts-list Excel's "Drawing No" column
+# (.../1.Expendable parts drawing/20230831_99Y_NEW-TIGG303_E.xlsx).
+# ---------------------------------------------------------------------------
+
+def test_parts_drawing_no_matches_real_sampled_values():
+    real_values = [
+        "KB-AE000213-A", "KE-MC000954-G", "KE-MC000957-A", "KE-MC000D93-A",
+        "KE-MC000D94-A", "KG-DE100891-A", "KK-FA000R19-A", "KK-FA000T95-B",
+        "KL-BC001822-A", "KL-BC001J25-A", "KN-CC000T19-A", "KN-CC000T20-A",
+        "PA-GA006010-C", "T2-11LG0005-A", "TA-21NG0001-D", "TA-2N1G0001-C",
+        "TA-4M3G0007-C", "TA-61BG0002-B", "TA-61BG0004-D", "TA-61BG0005-C",
+        "TA-61BG0013-A", "TA-9W5G0001-D", "TA-B8WG0001-B",
+    ]
+    for v in real_values:
+        ids = extract_ids(f"Drawing No: {v}")
+        assert ids.get("parts_drawing_no") == [v], f"missed {v}"
+
+
+def test_parts_drawing_no_does_not_double_match_the_digits_only_family():
+    # Same real Excel column also has plain-digits values ("38-55670039-4") --
+    # already covered by drawing_number (trailing digit); parts_drawing_no
+    # (trailing LETTER) must not also claim them.
+    ids = extract_ids("Drawing No: 38-55670039-4")
+    assert ids.get("drawing_number") == ["38-55670039-4"]
+    assert "parts_drawing_no" not in ids
+
+
+def test_parts_drawing_no_no_false_positive_on_real_manual_prose():
+    text = ("Place the [Operation mode] selection switch to the position of "
+            "[MANU.]. Turn the EMERGENCY-STOP button clockwise to unlock it.")
+    assert extract_ids(text) == {}
+
+
+# ---------------------------------------------------------------------------
+# extract_id_from_filename / tag_blocks_with_filename_id -- ADDED 10-Aug
+# ---------------------------------------------------------------------------
+
+def test_extract_id_from_filename_real_cad_pdf_name():
+    # Real filename from the corpus: the CAD PDF is literally named after its
+    # own drawing number.
+    assert extract_id_from_filename("20230831_99Y_KE-MC000954-G.pdf") == "KE-MC000954-G"
+
+
+def test_extract_id_from_filename_no_match_returns_none():
+    assert extract_id_from_filename("20230831_99Y_02_G0892V10_Operation manual.pdf") is None
+
+
+def test_extract_id_from_filename_empty_returns_none():
+    assert extract_id_from_filename("") is None
+    assert extract_id_from_filename(None) is None
+
+
+def test_tag_blocks_with_filename_id_merges_not_overwrites():
+    blocks = [_block("sheet MS03AAA789AB")]
+    tag_blocks_with_ids(blocks)  # text-based match first, same as real pipeline order
+    tag_blocks_with_filename_id(blocks, "20230831_99Y_KE-MC000954-G.pdf")
+    flat = blocks[0]["metadata"]["mentioned_ids_flat"]
+    assert "MS03AAA789AB" in flat
+    assert "KE-MC000954-G" in flat
+    assert blocks[0]["metadata"]["mentioned_ids"]["filename"] == ["KE-MC000954-G"]
+
+
+def test_tag_blocks_with_filename_id_noop_when_filename_has_no_id():
+    blocks = [_block("nothing technical")]
+    tag_blocks_with_filename_id(blocks, "manual.pdf")
+    assert "mentioned_ids_flat" not in blocks[0]["metadata"]
 
 
 # ---------------------------------------------------------------------------

@@ -554,6 +554,17 @@ query:
     intent:
       enabled: true
       max_tokens: 12          # a label is a few tokens; keeps the call cheap
+    # browse_by_equipment agent tool (backend/retrieval/browse_by_equipment.py) --
+    # ADDED 10-Aug, cross-document equipment traversal via the machine/component/
+    # doc_category tags folder_router.py derives from a folder-structured corpus
+    # (see deployment.corpus_root above). Off by default until a live pass
+    # confirms folder tags are actually populated and useful for this deployment
+    # -- same posture as image_ground below. A DISABLED tool returns a clear
+    # error telling the agent to use search_documents instead, never silently
+    # empty (an agent seeing empty results with no explanation could wrongly
+    # conclude the equipment isn't in the corpus at all).
+    equipment_browse:
+      enabled: false
 document_types:
   - invoice
   - purchase_order
@@ -602,6 +613,17 @@ deployment:
   # force_route:              # defaults to type_to_route[force_document_type]
   default_industry: general   # fallback when classification confidence is low
                                # (used regardless of the bypass above)
+  # Root of a folder-structured corpus (backend/categorize/folder_router.py) --
+  # ADDED 10-Aug: enables machine/doc_category/component tagging at ingest time,
+  # the OTHER half of cross-document correlation alongside id_graph.py's exact-ID
+  # matching. Env var (never a literal local path in this public repo). Real
+  # finding: this deployment's actual corpus has 3 top-level roots under one
+  # OneDrive folder (TNGA, GD, and a "TNGA (1)" that looks like a sync-conflict
+  # duplicate of TNGA, not a genuine third line) -- corpus_root here is a SINGLE
+  # root only (folder_router.route_from_path() takes one string). Point it at one
+  # line at a time; multi-root support is a real but separate future extension if
+  # a deployment genuinely needs more than one root tagged simultaneously.
+  corpus_root: ${CORPUS_ROOT}
 
 # Used by CategorizeTool.
 # config["categorization"]["industry_keywords"] — keyword lists per industry

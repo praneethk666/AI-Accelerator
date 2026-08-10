@@ -83,7 +83,11 @@ class QdrantStore:
             )
         # Create payload indexes required for filtering
         from qdrant_client.models import PayloadSchemaType
-        for field in ["document_id", "doc_type", "industry"]:
+        # machine/component/mentioned_ids ADDED 10-Aug: cross-document equipment
+        # traversal (backend/categorize/folder_router.py, id_graph.py) -- these
+        # values only reach here once chunk_tool.py propagates them into
+        # chunk["tags"] (see _structural_tags_from_block).
+        for field in ["document_id", "doc_type", "industry", "machine", "component", "mentioned_ids"]:
             self.client.create_payload_index(
                 collection_name=self.collection,
                 field_name=field,
@@ -179,6 +183,20 @@ class QdrantStore:
 
     # back-compat alias: dense search was the original `search`
     search = search_dense
+
+    def scroll_by_filter(self, filters: dict, limit: int = 50) -> list[dict]:
+        """Payload-only browse -- no embedding call, no similarity ranking. For
+        "find everything tagged X" (backend/retrieval/browse_by_equipment.py), not
+        "find things similar to this query." ADDED 10-Aug."""
+        records, _ = self.client.scroll(
+            self.collection,
+            scroll_filter=_build_filter(filters),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [{"chunk_id": (r.payload or {}).get("chunk_id"), **(r.payload or {})}
+                for r in records]
 
     def delete_by_document(self, document_id: str) -> None:
         """Delete every point belonging to a document (dense + sparse share one

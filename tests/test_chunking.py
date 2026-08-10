@@ -10,7 +10,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.chunking.chunk_tool import chunk_blocks, _try_extract_alarm_table_chunks
+from backend.chunking.chunk_tool import (
+    chunk_blocks, _try_extract_alarm_table_chunks,
+    _try_extract_troubleshooting_table_chunks, _try_extract_warning_chunk,
+    _try_extract_model_column_chunks, _structural_tags_from_block,
+)
 from backend.core.schemas import Chunk
 
 
@@ -332,6 +336,87 @@ def test_non_redacted_block_produces_chunk_without_the_flag():
     chunks = chunk_blocks(blocks)
     assert "redacted" not in chunks[0] or chunks[0]["redacted"] is False
     Chunk(**chunks[0])
+
+
+# ── structural tag propagation (mentioned_ids / folder) ──────────────────────
+# ADDED 10-Aug: id_graph.py/folder_router.py tag SOURCE BLOCKS at ingest time, but
+# nothing propagated those tags into the chunks retrieval/browse tools actually
+# see -- same class of gap as the earlier `redacted` fix above, for a different
+# pair of fields. _make_chunk AND every bypass extractor that builds chunk dicts
+# directly need the same fix; each gets its own test here.
+
+_FOLDER_META = {
+    "mentioned_ids_flat": ["MS03AAA789AB"],
+    "folder": {"machine": "120_CYLINDRICAL GRINDER", "doc_category": "5.Control related drawings",
+               "component": "Spindlehead"},
+}
+
+
+def test_structural_tags_from_block_extracts_populated_keys_only():
+    assert _structural_tags_from_block({"metadata": _FOLDER_META}) == {
+        "mentioned_ids": ["MS03AAA789AB"],
+        "machine": "120_CYLINDRICAL GRINDER",
+        "doc_category": "5.Control related drawings",
+        "component": "Spindlehead",
+    }
+    assert _structural_tags_from_block({"metadata": {}}) == {}
+    assert _structural_tags_from_block({}) == {}
+
+
+def test_make_chunk_propagates_structural_tags_via_chunk_blocks():
+    blocks = [_text_block("body text", metadata=_FOLDER_META)]
+    chunks = chunk_blocks(blocks)
+    assert len(chunks) == 1
+    tags = chunks[0]["tags"]
+    assert tags["mentioned_ids"] == ["MS03AAA789AB"]
+    assert tags["machine"] == "120_CYLINDRICAL GRINDER"
+    assert tags["component"] == "Spindlehead"
+    Chunk(**chunks[0])
+
+
+def test_alarm_table_chunks_carry_structural_tags():
+    block = _alarm_block(["Alarm name", "Code"], [["Sensor error", "83H"]])
+    block["metadata"] = _FOLDER_META
+    chunks = _try_extract_alarm_table_chunks(block, "d1", lambda r: r)
+    assert chunks[0]["tags"]["machine"] == "120_CYLINDRICAL GRINDER"
+    assert chunks[0]["tags"]["mentioned_ids"] == ["MS03AAA789AB"]
+
+
+def test_troubleshooting_table_chunks_carry_structural_tags():
+    block = {
+        "type": "table", "document_id": "d1",
+        "table_data": {"headers": ["Symptom", "Cause", "Action"],
+                       "rows": [["Won't start", "No power", "Check breaker"]]},
+        "source_ref": {"filename": "x.pdf", "page": 12},
+        "metadata": _FOLDER_META,
+    }
+    chunks = _try_extract_troubleshooting_table_chunks(block, "d1", lambda r: r)
+    assert chunks[0]["tags"]["machine"] == "120_CYLINDRICAL GRINDER"
+
+
+def test_warning_chunk_carries_structural_tags():
+    block = {
+        "type": "text", "document_id": "d1",
+        "text": "WARNING: Keep hands clear of moving parts.",
+        "source_ref": {"filename": "x.pdf", "page": 3},
+        "metadata": _FOLDER_META,
+    }
+    result = _try_extract_warning_chunk(block, "d1", lambda r: r)
+    tags = result[0]["tags"] if isinstance(result, list) else result["tags"]
+    assert tags["machine"] == "120_CYLINDRICAL GRINDER"
+
+
+def test_model_column_chunks_carry_structural_tags():
+    block = {
+        "type": "table", "document_id": "d1",
+        "table_data": {"headers": ["Symbol", "Q2AA 07040D", "Q2AA 08100D"],
+                       "rows": [["Output", "100 W", "150 W"], ["Speed", "3000 min-1", "3600 min-1"]]},
+        "source_ref": {"filename": "x.pdf", "page": 7},
+        "metadata": _FOLDER_META,
+    }
+    chunks = _try_extract_model_column_chunks(block, "d1", lambda r: r)
+    assert chunks is not None
+    assert chunks[0]["tags"]["machine"] == "120_CYLINDRICAL GRINDER"
 
 
 def test_validate_repaired_rows_allows_synthesis_connector_words():

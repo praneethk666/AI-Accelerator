@@ -254,6 +254,29 @@ def _extract_component_codes(text: str, table_data: dict | None = None) -> list[
     return sorted(codes)
 
 
+def _structural_tags_from_block(block: dict) -> dict:
+    """Cross-document correlation tags (backend/categorize/id_graph.py,
+    folder_router.py) stamped on the SOURCE BLOCK at ingest time -- pulled into
+    chunk["tags"] here so retrieval/browse tools can actually filter/find by them.
+    Previously these lived only on document_blocks (raw, pre-chunking rows), never
+    reaching the chunks that are actually embedded and searched. Returns only
+    populated keys, same convention as id_graph.py's own extract_ids()."""
+    block_metadata = block.get("metadata") or {}
+    tags: dict = {}
+    mentioned_ids_flat = block_metadata.get("mentioned_ids_flat")
+    if mentioned_ids_flat:
+        tags["mentioned_ids"] = mentioned_ids_flat
+    folder = block_metadata.get("folder")
+    if folder:
+        if folder.get("machine"):
+            tags["machine"] = folder["machine"]
+        if folder.get("doc_category"):
+            tags["doc_category"] = folder["doc_category"]
+        if folder.get("component"):
+            tags["component"] = folder["component"]
+    return tags
+
+
 def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
     block_metadata = block.get("metadata") or {}
     tags: dict = {}
@@ -272,6 +295,7 @@ def _make_chunk(block: dict, text: str, document_id: str | None) -> dict:
     codes = _extract_component_codes(text, block.get("table_data"))
     if codes:
         tags["component_codes"] = codes
+    tags.update(_structural_tags_from_block(block))
 
     chunk = {
         "chunk_id": str(uuid.uuid4()),
@@ -362,6 +386,7 @@ def _try_extract_troubleshooting_table_chunks(block: dict, document_id: str | No
         return None
 
     source_ref = ref_fn(block.get("source_ref"))
+    structural_tags = _structural_tags_from_block(block)
     trouble_chunks = []
 
     for row in grid[1:]:
@@ -408,6 +433,7 @@ def _try_extract_troubleshooting_table_chunks(block: dict, document_id: str | No
                 "chunk_type": "troubleshooting_row",
                 "fault_name": row_id,
                 "has_table": True,
+                **structural_tags,
             },
         }
         trouble_chunks.append(chunk)
@@ -427,6 +453,7 @@ def _try_extract_alarm_table_chunks(block: dict, document_id: str | None, ref_fn
         return None
 
     source_ref = ref_fn(block.get("source_ref"))
+    structural_tags = _structural_tags_from_block(block)
     alarm_chunks = []
     last_row_id = None
     last_row = None
@@ -490,6 +517,7 @@ def _try_extract_alarm_table_chunks(block: dict, document_id: str | None, ref_fn
                 "chunk_type": "alarm_row",
                 "alarm_name": row_id,
                 "has_table": True,
+                **structural_tags,
             },
         }
         alarm_chunks.append(chunk)
@@ -513,6 +541,7 @@ def _try_extract_warning_chunk(block: dict, document_id: str | None, ref_fn) -> 
 
     severity = warning_match.group(1).capitalize()
     source_ref = ref_fn(block.get("source_ref"))
+    structural_tags = _structural_tags_from_block(block)
 
     if grid and len(grid) >= 2:
         # Emit 1 chunk per legend row instead of smashing all rows into one run-on string
@@ -532,6 +561,7 @@ def _try_extract_warning_chunk(block: dict, document_id: str | None, ref_fn) -> 
                     "document_type": "manual",
                     "chunk_type": "warning",
                     "severity": severity,
+                    **structural_tags,
                 },
             })
         if warning_chunks:
@@ -548,6 +578,7 @@ def _try_extract_warning_chunk(block: dict, document_id: str | None, ref_fn) -> 
             "document_type": "manual",
             "chunk_type": "warning",
             "severity": severity,
+            **structural_tags,
         },
     }
     return chunk
@@ -609,6 +640,7 @@ def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_f
     param_rows = grid[1:]
     source_ref = ref_fn(block.get("source_ref"))
     filename = (source_ref.get("filename") if isinstance(source_ref, dict) else None) or "document"
+    structural_tags = _structural_tags_from_block(block)
 
     col_chunks = []
     for col_idx in range(model_start_col, len(header_row)):
@@ -659,6 +691,7 @@ def _try_extract_model_column_chunks(block: dict, document_id: str | None, ref_f
                 "doc_type": "specifications",
                 "model_name": model_name,
                 "series": series_info,
+                **structural_tags,
             },
         }
         col_chunks.append(chunk)
@@ -1017,6 +1050,7 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
                         "deterministic chunking", block_id, exc)
         return None
 
+    structural_tags = _structural_tags_from_block(block)
     chunks = []
     for item in ordered:
         chunk_text = item["chunk_text"].strip()
@@ -1036,6 +1070,7 @@ def _repair_table_with_llm(block: dict, config: dict, section_lead: str, precedi
                 # answerer._is_thin() from treating a missing summary as "too thin"
                 # and blowing this careful repair away in favor of the raw full page.
                 "summary": chunk_text,
+                **structural_tags,
             },
         })
     return chunks
@@ -1189,6 +1224,14 @@ def chunk_blocks(
     buf_parts: list[str] = []     # accumulated consecutive text, across pages
     buf_ref = None                # source_ref of the first buffered block (cite start)
     buf_page = None               # page number of the first buffered block (cite start)
+    buf_metadata: dict = {}       # union of mentioned_ids/folder from every buffered
+                                   # block (ADDED 10-Aug) -- flush() builds a synthetic
+                                   # {"type": "text", ...} block with no metadata of its
+                                   # own, so without this, structural tags from every
+                                   # block that went through this buffering path (not
+                                   # the direct dict(block) path below) were silently
+                                   # dropped -- caught live by chunk_blocks()'s own test,
+                                   # not just the lower-level extractor unit tests.
     heading_stack: list[str] = [] # active headings path stack
     buf_heading_only = True       # True until real (non-heading) text is appended
 
@@ -1213,14 +1256,25 @@ def chunk_blocks(
     def pending_lead_text() -> str:
         return "\n".join(p for p in buf_parts if p).strip() if buf_heading_only else ""
 
+    def _merge_buf_metadata(block: dict) -> None:
+        nonlocal buf_metadata
+        bm = block.get("metadata") or {}
+        ids = bm.get("mentioned_ids_flat")
+        if ids:
+            existing = buf_metadata.get("mentioned_ids_flat") or []
+            buf_metadata["mentioned_ids_flat"] = existing + [i for i in ids if i not in existing]
+        if bm.get("folder") and not buf_metadata.get("folder"):
+            buf_metadata["folder"] = bm["folder"]
+
     def flush():
-        nonlocal buf_parts, buf_ref, buf_page, buf_heading_only
+        nonlocal buf_parts, buf_ref, buf_page, buf_heading_only, buf_metadata
         stream = "\n".join(p for p in buf_parts if p).strip()
         if stream and not buf_heading_only:
             for piece in _split(stream, size, overlap, strategy, semantic_model):
-                chunks.append(_make_chunk({"type": "text", "source_ref": _ref(buf_ref)},
-                                          piece, document_id))
-        buf_parts, buf_ref, buf_page, buf_heading_only = [], None, None, True
+                chunks.append(_make_chunk(
+                    {"type": "text", "source_ref": _ref(buf_ref), "metadata": buf_metadata},
+                    piece, document_id))
+        buf_parts, buf_ref, buf_page, buf_heading_only, buf_metadata = [], None, None, True, {}
 
     def _process_table_task(block_val, active_sec, prec_context, block_ref, heading_lead_val):
         def _local_ref(x): return block_ref
@@ -1295,7 +1349,8 @@ def chunk_blocks(
             buf_page = pg
             buf_parts.append(text)
             buf_heading_only = True
-            
+            _merge_buf_metadata(block)
+
             # Add to preceding queue
             preceding_blocks.append(text)
             if len(preceding_blocks) > 5:
@@ -1414,6 +1469,7 @@ def chunk_blocks(
                 buf_ref = block.get("source_ref")
             buf_parts.append(text)
             buf_heading_only = False
+            _merge_buf_metadata(block)
             preceding_blocks.append(text)
             if len(preceding_blocks) > 5:
                 preceding_blocks.pop(0)

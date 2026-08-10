@@ -229,6 +229,27 @@ def test_successful_repair_sets_summary_tag_and_chunk_type():
         assert c["tags"]["summary"].strip()
 
 
+def test_repaired_chunks_carry_structural_tags():
+    # ADDED 10-Aug: mentioned_ids/folder tags (id_graph.py/folder_router.py) must
+    # reach repaired-table chunks too, not just the deterministic extractors --
+    # this is the one bypass path that needs the LLM call mocked to test.
+    block = {
+        "block_id": "b1", "document_id": "d1",
+        "table_data": {"headers": _HEADERS, "rows": _ROWS},
+        "source_ref": {"filename": "manual.pdf", "page": 61},
+        "metadata": {
+            "mentioned_ids_flat": ["MS03AAA789AB"],
+            "folder": {"machine": "120_CYLINDRICAL GRINDER", "component": "Spindlehead"},
+        },
+    }
+    with patch("backend.chunking.chunk_tool.get_llm_for", return_value=_mock_llm(_good_parsed())):
+        chunks = _repair_table_with_llm(block, {"chunking": {}}, "Alarm code 11H", "prec ctx", lambda r: r)
+    for c in chunks:
+        assert c["tags"]["mentioned_ids"] == ["MS03AAA789AB"]
+        assert c["tags"]["machine"] == "120_CYLINDRICAL GRINDER"
+        assert c["tags"]["component"] == "Spindlehead"
+
+
 def test_invalid_llm_json_fails_closed_returns_none():
     block = {
         "block_id": "b1", "document_id": "d1",

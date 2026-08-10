@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 import logging
+import os
 import time
 from langgraph.graph import END, START, StateGraph
 from backend.core.config import PipelineConfig
@@ -76,10 +77,26 @@ def _make_node(tool: Tool, raw_config: dict):
                     result = tool.run(state, raw_config)
                     # Cache blocks immediately if this is an extractor
                     if is_extractor and result and result.get("blocks"):
-                        from backend.categorize.id_graph import tag_blocks_with_ids
+                        from backend.categorize.id_graph import tag_blocks_with_ids, tag_blocks_with_filename_id
                         tag_blocks_with_ids(result["blocks"])
+                        # Filename-derived ID (e.g. a CAD PDF literally named after its
+                        # own drawing number) -- unconditional, no corpus_root gate
+                        # needed. See id_graph.py::extract_id_from_filename for why this
+                        # is higher-precision than scanning prose.
+                        tag_blocks_with_filename_id(
+                            result["blocks"], os.path.basename(state.get("file_path") or ""))
                         from backend.categorize.redaction_detect import tag_blocks_with_redaction
                         tag_blocks_with_redaction(result["blocks"])
+                        # Folder-derived machine/doc_category/component tags -- MUST run
+                        # here (before chunk/embed/index), not just in ingest.py's
+                        # finalize block, which runs too late for chunk_tool.py's tag
+                        # propagation to ever see them. Silently inert unless
+                        # deployment.corpus_root is a real, resolved path (unset env var
+                        # substitution leaves the literal "${CORPUS_ROOT}" string).
+                        corpus_root = (raw_config.get("deployment") or {}).get("corpus_root")
+                        if corpus_root and "${" not in str(corpus_root):
+                            from backend.categorize.folder_router import tag_blocks_with_folder_info
+                            tag_blocks_with_folder_info(result["blocks"], state.get("file_path") or "", corpus_root)
                         from backend.storage.postgres_store import PostgresStore
                         pg = PostgresStore()
                         try:

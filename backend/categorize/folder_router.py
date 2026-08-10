@@ -21,8 +21,12 @@ real corpus; retrieval-time filtering by these tags is the step after that.
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # (substring to match in a folder name, case-insensitive) -> document_type.
 # Order matters: first match wins, so more specific keywords go first.
@@ -39,7 +43,27 @@ _CATEGORY_KEYWORDS: list[tuple[str, str]] = [
     ("pdf for printing drawing", "circuit_diagram"),   # text-layer check may override
     ("tooling layout", "cad_drawing"),
     ("electronic data", "unknown"),   # usually raw CAD source (DXF/DWG), not text/PDF
+    # ADDED 10-Aug: this project's real corpus has a SECOND, unrelated numbering
+    # scheme (the GD/BF-5 line) that shares almost none of the above phrases --
+    # surveyed live via a direct folder listing, not guessed. Placed after the
+    # original entries so nothing above changes match order/precedence.
+    ("parts change procedure manual", "manual"),        # "08-Parts change procedure manual"
+    ("lubricating manual", "manual"),                    # "Equipment Oiling & Lubricating Manual"
+    ("circuit diagram", "circuit_diagram"),              # "Electrical circuit diagram", "Pneumatic circuit diagram"
+    ("parts drawing", "cad_drawing"),                    # "Manufactured parts drawing（製作品）", "Purchased parts drawing（追加工図）"
+    # A cycle/timing-sequence diagram isn't a literal electrical circuit --
+    # "schematic" is the closest existing document_types fit, not strongly
+    # validated (only 2 real folder names seen, no document content reviewed).
+    ("cycle line diagram", "schematic"),                 # "Cycle line diagram", "Timing chart type cycle line diagram"
 ]
+
+# A category-folder-shaped segment ("01-Foo", "08_Bar", "3.Baz") that fails every
+# keyword above is a real, actionable gap -- log it so future unmatched schemes
+# are discoverable in ingestion logs instead of a silent, unmeasured guess about
+# corpus coverage. Deliberately loose (leading digits + separator) so it fires on
+# both this corpus's numbering conventions (TNGA's "3.INSTRUCTION MANUAL", GD's
+# "08-Parts change...") without needing to enumerate every real prefix style.
+_NUMBERED_CATEGORY_RE = re.compile(r"^\d{1,2}[.\-_]")
 
 # document_type values whose folder-keyword hit should be double-checked against
 # whether the actual PDF has a real text layer -- these categories in this corpus
@@ -106,6 +130,13 @@ def route_from_path(file_path: str, corpus_root: str) -> dict[str, Any] | None:
         if doc_type:
             break
     if doc_type is None:
+        for seg in parts[1:-1]:
+            if _NUMBERED_CATEGORY_RE.match(seg):
+                logger.info(
+                    "folder_router: numbered category folder %r under machine %r matched "
+                    "no keyword -- a real, unmapped scheme, not a crash. File falls through "
+                    "to normal categorize.", seg, machine,
+                )
         return None
 
     # cad_drawing/circuit_diagram map to a route_extractor override (cad_route/

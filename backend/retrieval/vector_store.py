@@ -45,6 +45,22 @@ class VectorStore:
 
         return _hydrate(hits)
 
+    @staticmethod
+    def browse_by_filter(config: dict, filters: dict, limit: int = 50) -> list[dict]:
+        """Payload-only browse (no embedding, no similarity ranking) -- for
+        backend/retrieval/browse_by_equipment.py's "find everything tagged X"
+        rather than "find things similar to this query." ADDED 10-Aug."""
+        dim        = config["embeddings"]["dense_dim"]
+        collection = config["database"]["qdrant_collection"]
+
+        store = QdrantStore(dim, collection, config=config)
+        try:
+            hits = store.scroll_by_filter(filters, limit=limit)
+        finally:
+            store.close()
+
+        return _hydrate(hits)
+
 
 def _hydrate(hits: list[dict]) -> list[dict]:
     """Fetch chunk text/tags from Postgres for the hit chunk_ids, in hit order.

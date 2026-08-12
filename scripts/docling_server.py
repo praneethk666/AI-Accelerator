@@ -57,6 +57,21 @@ _DROP_LABELS    = {"page_header", "page_footer"}
 _RUNNING_HEADER_GAP_RE = re.compile(r" {15,}")
 
 
+def _with_list_marker(item, text: str) -> str:
+    """Prepend an enumerated list item's own marker ("(1)", "(2)", ...) to its
+    text. Docling parses this correctly (item.marker/item.enumerated) but this
+    server's TextItem handling only ever read item.text, silently dropping the
+    numbering every downstream numbered-step consumer (step_parser.py, client
+    side) depends on. Mirrors the same fix in docling_extract.py's local-mode
+    path -- found+fixed together, 11-Aug."""
+    from docling_core.types.doc import ListItem
+    if isinstance(item, ListItem) and getattr(item, "enumerated", False):
+        marker = (getattr(item, "marker", "") or "").strip()
+        if marker and not text.startswith(marker):
+            return f"{marker} {text}"
+    return text
+
+
 def _block(document_id: str, page, filename: str, btype: str,
            text: str, table_data=None, bbox=None, metadata: dict | None = None) -> dict:
     b = {
@@ -337,6 +352,7 @@ def _extract(pdf_path: str, document_id: str, filename: str,
                 text  = (item.text or "").strip()
                 if not text or label in _DROP_LABELS:
                     continue
+                text = _with_list_marker(item, text)
                 _, bbox = _prov(item)
                 bb = _bbox_topleft_pts(bbox, ph)
                 if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):

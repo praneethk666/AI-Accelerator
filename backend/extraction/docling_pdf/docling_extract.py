@@ -90,6 +90,22 @@ def _converter(dcfg: dict):
     return _CONVERTER
 
 
+def _with_list_marker(item, text: str) -> str:
+    """Prepend an enumerated list item's own marker ("(1)", "(2)", ...) to its
+    text. Docling parses this correctly (item.marker/item.enumerated, confirmed
+    live 11-Aug against the real Changeover manual's numbered steps) but our own
+    TextItem handling only ever read item.text -- silently dropping the numbering
+    every downstream numbered-step consumer (step_parser.py) depends on. Bulleted
+    (non-enumerated) list items are left as-is; no known consumer needs their
+    marker and this stays a scoped fix for the confirmed problem."""
+    from docling_core.types.doc import ListItem
+    if isinstance(item, ListItem) and getattr(item, "enumerated", False):
+        marker = (getattr(item, "marker", "") or "").strip()
+        if marker and not text.startswith(marker):
+            return f"{marker} {text}"
+    return text
+
+
 def _block(document_id, page, filename, btype, text, table_data=None, bbox=None) -> dict:
     return {
         "block_id": str(uuid.uuid4()),
@@ -886,7 +902,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
             pdf_path, document_id, config,
             table_source=table_source, report=report, on_page=on_page)
 
-    from docling_core.types.doc import TextItem, TableItem, PictureItem
+    from docling_core.types.doc import TextItem, TableItem, PictureItem, ListItem
     from backend.chunking.chunk_tool import _has_blank_continuation_rows
     min_pic = float(dcfg.get("min_picture_pts", 24))   # drop tiny marks/logos
     min_area_frac = float(dcfg.get("min_picture_area_frac", 0.004))  # drop <0.4%-of-page icons
@@ -1056,6 +1072,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         text = (item.text or "").strip()
                         if not text or label in _DROP_LABELS:
                             continue
+                        text = _with_list_marker(item, text)
                         _, bbox = _prov(item)
                         page_no = pg_num
                         bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
@@ -1187,6 +1204,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     text = (item.text or "").strip()
                     if not text or label in _DROP_LABELS:
                         continue
+                    text = _with_list_marker(item, text)
                     page_no, bbox = _prov(item)
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
                     if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):

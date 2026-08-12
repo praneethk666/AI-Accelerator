@@ -213,7 +213,13 @@ SYSTEM_PROMPT = (
     "step list), fall back to presenting that section as normal prose instead.\n"
     "- While a walkthrough is active, an '## ACTIVE GUIDED PROCEDURE' note tells you the "
     "current step — use advance_procedure_step, not search_documents, to respond to the "
-    "user's next reply about it.\n\n"
+    "user's next reply about it.\n"
+    "- CRITICAL: call advance_procedure_step AT MOST ONCE per user message, even if the "
+    "result says has_next=true or shows more steps remaining. ONE user reply (\"done\", "
+    "\"next\", \"what does that mean\") means ONE step transition — never chain multiple "
+    "advance_procedure_step calls in the same turn to jump ahead several steps; that skips "
+    "steps the user hasn't actually done yet. After the single call, report ONLY that one "
+    "resulting step's text and stop.\n\n"
 
     "## COMPLETION\n"
 
@@ -1000,11 +1006,25 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
 
         # --- Search short-circuit: skip agent Turn 2 if search_documents was the
         # ONLY tool called this turn and it returned a complete non-refusal answer.
-        # Saves ~6-7s and ~4000 tokens per standard question. ---
+        # Saves ~6-7s and ~4000 tokens per standard question.
+        #
+        # Disabled whenever procedure_walkthrough is on: real finding, 11-Aug, live
+        # tested against "walk me through replacing the workpiece holder step by
+        # step" -- search_documents's own answerer confidently returned all 13
+        # steps as one block of text, which short-circuited Turn 2 (the ONLY turn
+        # that ever reads "## GUIDED PROCEDURES" and could choose
+        # start_procedure_walkthrough instead), so the walkthrough tool was never
+        # even considered. Gating on the feature flag keeps the optimization for
+        # deployments that don't use guided procedures, and costs the extra turn
+        # only where a walkthrough could plausibly apply. ---
+        procedure_walkthrough_on = bool(
+            (agent_cfg.get("procedure_walkthrough") or {}).get("enabled")
+        )
         shortcircuit = False
         all_calls = getattr(last, "tool_calls", None) or []
         if (
-            len(all_calls) == 1
+            not procedure_walkthrough_on
+            and len(all_calls) == 1
             and all_calls[0]["name"] == "search_documents"
             and not pending
             and not clarification
@@ -1825,12 +1845,27 @@ def run_agent(
         llm=intent_llm,
     )
     is_question = intent_result.requires_tools
+    procedure_prompt_addition = _resolve_turn_procedure_state(session_id, config)
+    if procedure_prompt_addition:
+        # CRITICAL, real bug found live 11-Aug: a short reply during an active
+        # walkthrough ("done", "ok got it, done", "actually go back one step")
+        # gets classified follow_up/general (requires_tools=False) by the intent
+        # classifier, which is reasonable in general but WRONG here -- it let the
+        # model skip advance_procedure_step entirely and free-associate a
+        # plausible-sounding but completely fabricated "next step" from its own
+        # training data (confirmed: it invented "Press the [RESET] button" and
+        # "Set the [CNC MODE] switch to [PROGRAM]", neither of which exist
+        # anywhere in the real manual, while Postgres state sat frozen). A wrong
+        # invented step in an industrial procedure is a real hazard, not just an
+        # inaccuracy, so an active procedure overrides the classifier: force
+        # tool_choice="required" and never relax the search mandate this turn,
+        # same as any other tool-requiring question.
+        is_question = True
 
     system_prompt_text = SYSTEM_PROMPT
     if not is_question:
         # Relax the ALWAYS-SEARCH mandate for this turn only (see the constant).
         system_prompt_text += DIRECT_ANSWER_OVERRIDE
-    procedure_prompt_addition = _resolve_turn_procedure_state(session_id, config)
     if procedure_prompt_addition:
         system_prompt_text += procedure_prompt_addition
     if is_ambiguous_trigger:

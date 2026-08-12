@@ -26,10 +26,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# "(1) some step text" through the next "(N) " at the start of a line, or the end
-# of the buffer. MULTILINE so ^ anchors each line; DOTALL so a step's own text can
-# span multiple physical lines (a step is rarely one line in the real source).
-_STEP_RE = re.compile(r"^\((\d+)\)\s+(.+?)(?=^\(\d+\)\s+|\Z)", re.MULTILINE | re.DOTALL)
+# "(1) some step text" through the next "(N) " marker or the end of the buffer.
+# Matches a marker anywhere it's preceded by whitespace/string-start, NOT only at
+# a line start -- real finding, 11-Aug: Docling sometimes extracts several
+# consecutive numbered steps as ONE block (e.g. "(1) Turn the... (2) Press the...
+# (3) Place the..." all on one joined line, no newlines between them), which a
+# line-anchored ^ pattern would only match the FIRST marker of, silently losing
+# the rest and failing the section closed. Requiring the following char be
+# uppercase is a light precision guard against matching an unrelated
+# parenthesized number in running prose (e.g. a figure callout) -- the real
+# backstop is parse_procedure_from_blocks' own contiguous-increasing-sequence
+# check below, which any spurious match would very likely break anyway. DOTALL
+# so a step's own text can still span multiple physical lines/blocks.
+_STEP_RE = re.compile(
+    r"(?:\A|(?<=\s))\((\d+)\)\s+(?=[A-Z])(.+?)(?=\s\(\d+\)\s+[A-Z]|\Z)",
+    re.DOTALL,
+)
 
 # Best-effort branch detection: a step's OWN text explicitly naming a conditional
 # jump to another step number ("if <condition> ... step (N)"). Never inferred

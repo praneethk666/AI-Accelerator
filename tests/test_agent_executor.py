@@ -524,4 +524,39 @@ def test_run_agent_injects_active_procedure_note_into_system_prompt():
     assert "ACTIVE GUIDED PROCEDURE" in system_msg.content
 
 
+def test_active_procedure_overrides_intent_classifier_direct_answer(monkeypatch):
+    """Real bug found live, 11-Aug: a short reply during an active walkthrough
+    ("done", "ok got it, done") got classified follow_up/general (requires_tools=
+    False) by the intent classifier, which relaxed the ALWAYS-SEARCH mandate for
+    that turn -- the model then skipped advance_procedure_step entirely and
+    fabricated a plausible-sounding but completely invented "next step" from its
+    own training data instead of the real tool-backed state. An active procedure
+    must force tools-required regardless of what the classifier says, since every
+    reply during a walkthrough needs to go through the real state machine."""
+    from unittest.mock import MagicMock, patch
+    from backend.agent.intent_classifier import IntentResult
+
+    store = MagicMock()
+    store.get_session_active_procedure.return_value = {
+        "section_title": "1.1 Replacing the Workpiece Holder",
+        "current_step": "2", "status": "in_progress",
+        "steps": {"2": {"text": "Press the MASTER ON button.", "page": 5, "next": "3"}},
+    }
+    cfg = {"query": {"agent": {"max_iterations": 5, "write_tools": [],
+                                "procedure_walkthrough": {"enabled": True}}}}
+    llm = _ScriptedLLM([AIMessage(content="Step 3: ...")])
+
+    monkeypatch.setattr(
+        "backend.agent.executor.classify_intent",
+        lambda *a, **k: IntentResult(intent="follow_up", requires_tools=False, fallback=False),
+    )
+
+    with patch("backend.storage.conversation_store.PostgresConversationStore", return_value=store):
+        run_agent("ok got it, done", config=cfg, registry={}, llm=llm, session_id="session-1")
+
+    system_msg = llm.invocations[0][0]
+    assert "DIRECT ANSWER PERMITTED" not in system_msg.content
+    assert "ACTIVE GUIDED PROCEDURE" in system_msg.content
+
+
 

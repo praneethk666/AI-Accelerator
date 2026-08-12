@@ -107,6 +107,82 @@ def test_locate_by_start_page_instead_of_hint():
     assert result["section_title"] == "1.2 Replacing the Phase Datum Pad"
 
 
+# ── Real transcript: section 1.4 of the same manual, where Docling merges
+# several consecutive numbered steps into ONE block with no newline between
+# markers -- real bug found+fixed 11-Aug (a line-anchored regex only caught the
+# first marker per block). Verbatim from the real extracted blocks.
+
+_INLINE_MERGED_STEPS_BLOCKS = [
+    _heading("1. CHANGING THE SETUP OF WORKPIECE HOLDER AND PHASE INDEXING", 7),
+    _heading("1.4 Setting the Phase Indexing Encoder", 7),
+    _text(
+        "(1) Turn the [EMERGENCY STOP] button clockwise to unlock it. "
+        "(2) Press the [MASTER ON] button. "
+        "(3) Place the [Operation mode] selection switch to the position of [MANU.]. "
+        "(4) Place the [CNC MODE] selection switch in the [MEMORY] position. "
+        "(5) Press the [GR.WHEEL SPINDLE STOP] button and stop the wheel rotation. "
+        "(6) Load a pre-machined workpiece and execute the operations from the advancing of the phase datum. "
+        "(7) Advance the phase indexing unit. "
+        "(8) Input the part number at the controller (e.g. VS-T11) in the terminal box provided at the rear of the machine.",
+        7,
+    ),
+    _text("Example: Part No. 7 Press the [MODE] key. Press the [–] key. Press the [+] key twice to display “7”. Press the [SET] key.", 7),
+    _text(
+        "(9) Press the [ON/OFF] key to turn on the ON indicator. "
+        "(10) Press the [TEACH] key to store the present position data. <NOTE> The present position data has no dimension.",
+        7,
+    ),
+    _text(
+        "(11) Execute the operations from the retraction of the phase indexing unit to the retraction of both centers and unload the pre-machined workpiece. "
+        "(12) Load a machined workpiece and execute the operations from the advancing of both centers to the advancing of the phase datum. "
+        "(13) Advance the phase indexing unit. "
+        "(14) Input the part number at the controller (e.g. VS-T11) in the terminal box provided at the rear of the machine.",
+        7,
+    ),
+    _text("Example: Part No. 7 Press the [MODE] key. Press the [–] key. Press the [+] key twice to display “7”. Press the [SET] key.", 7),
+    _text(
+        "(15) Press the [ON/OFF] key to turn on the OFF indicator. "
+        "(16) Press the [TEACH] key to store the present position data. "
+        "(17) Execute the operations from the retraction of the phase indexing unit to the retraction of both centers and unload the machined workpiece.",
+        7,
+    ),
+]
+
+
+def test_inline_merged_steps_all_17_parsed_in_order():
+    result = parse_procedure_from_blocks(
+        _INLINE_MERGED_STEPS_BLOCKS, section_hint="1.4 Setting the Phase Indexing Encoder")
+    assert result is not None
+    assert sorted(int(k) for k in result["steps"]) == list(range(1, 18))
+    assert result["steps"]["1"]["text"] == "Turn the [EMERGENCY STOP] button clockwise to unlock it."
+    assert result["steps"]["17"]["text"].startswith("Execute the operations")
+
+
+def test_inline_merged_steps_unmarked_example_asides_dont_become_their_own_steps():
+    # The "Example: Part No. 7 ..." asides carry no "(N)" marker of their own,
+    # so they're swept into whichever preceding step's span they fall in
+    # (correct -- it's illustrative context for that step, not a separate one).
+    # What matters is they don't spuriously inflate the step count or break
+    # the contiguous sequence.
+    result = parse_procedure_from_blocks(
+        _INLINE_MERGED_STEPS_BLOCKS, section_hint="1.4 Setting the Phase Indexing Encoder")
+    assert len(result["steps"]) == 17
+    assert "Example: Part No." in result["steps"]["8"]["text"]
+
+
+def test_stray_parenthesized_number_in_prose_does_not_produce_false_step():
+    # "(2)" here is a citation-like aside mid-sentence, not a step marker -- the
+    # text has no OTHER numbered markers around it, so even if it matched, the
+    # contiguous-sequence check (or simply "only one match found") should not
+    # yield a usable multi-step result.
+    blocks = [
+        _heading("3. TORQUE SPECIFICATIONS", 1),
+        _text("Tighten the bolt per the reference table (2) shown in the appendix.", 1),
+    ]
+    result = parse_procedure_from_blocks(blocks, section_hint="3. TORQUE SPECIFICATIONS")
+    assert result is None
+
+
 # ── Fail-closed behavior ──────────────────────────────────────────────────────
 
 def test_no_section_hint_or_start_page_returns_none():

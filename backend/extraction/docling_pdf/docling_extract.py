@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
 from collections import defaultdict
 
@@ -89,6 +90,22 @@ def _converter(dcfg: dict):
     return _CONVERTER
 
 
+def _with_list_marker(item, text: str) -> str:
+    """Prepend an enumerated list item's own marker ("(1)", "(2)", ...) to its
+    text. Docling parses this correctly (item.marker/item.enumerated, confirmed
+    live 11-Aug against the real Changeover manual's numbered steps) but our own
+    TextItem handling only ever read item.text -- silently dropping the numbering
+    every downstream numbered-step consumer (step_parser.py) depends on. Bulleted
+    (non-enumerated) list items are left as-is; no known consumer needs their
+    marker and this stays a scoped fix for the confirmed problem."""
+    from docling_core.types.doc import ListItem
+    if isinstance(item, ListItem) and getattr(item, "enumerated", False):
+        marker = (getattr(item, "marker", "") or "").strip()
+        if marker and not text.startswith(marker):
+            return f"{marker} {text}"
+    return text
+
+
 def _block(document_id, page, filename, btype, text, table_data=None, bbox=None) -> dict:
     return {
         "block_id": str(uuid.uuid4()),
@@ -108,6 +125,28 @@ def _block(document_id, page, filename, btype, text, table_data=None, bbox=None)
 # block by chunk_tool; structural furniture (page header/footer) is dropped.
 _HEADING_LABELS = {"section_header", "title", "subtitle_level_1"}
 _DROP_LABELS = {"page_header", "page_footer"}
+
+_CALLOUT_HEADING_RE = re.compile(r"^[\s<\[(*]*(IMPORTANT|NOTE|ONE POINT|WARNING|CAUTION|DANGER)[\s>\])*]*$", re.IGNORECASE)
+
+_RUNNING_HEADER_GAP_RE = re.compile(r" {15,}")
+
+
+def _is_running_header_leak(text: str, bbox: list[float] | None) -> bool:
+    """A running page-header Docling didn't label page_header/page_footer (so
+    _DROP_LABELS never catches it) — real finding, 27-Jul, on the servo manual:
+    a two-column running header (chapter number on the left, chapter title on the
+    right, joined by a run of literal spaces spanning most of the page width)
+    surfaced as ordinary body TEXT on 23 of 105 pages, producing a near-empty
+    noise chunk whenever it happened to sit right before a table/figure that
+    forced a flush. Generic signature, not tied to this document's specific
+    chapter titles: near the top margin AND an abnormally large single run of
+    literal spaces relative to how little real content there is — a genuine
+    sentence doesn't have 15+ consecutive spaces in the middle of it."""
+    if not bbox or bbox[1] > 60:
+        return False
+    if not _RUNNING_HEADER_GAP_RE.search(text):
+        return False
+    return len(" ".join(text.split())) < 80
 
 
 def _block_page(b: dict):
@@ -141,6 +180,23 @@ def _update_page_progress(document_id: str, tool_name: str, current_page: int, t
                 pg.close()
         except Exception:
             pass
+
+
+def _checkpoint_page_blocks(document_id: str, page_no: int, page_blocks: list[dict]) -> None:
+    """Persist one page's worth of TEXT/TABLE blocks immediately (see call site for why).
+    Best-effort: a checkpoint failure must never abort real extraction progress, so
+    every error is swallowed here exactly like _update_page_progress above."""
+    if not page_blocks:
+        return
+    try:
+        from backend.storage.postgres_store import PostgresStore
+        pg = PostgresStore()
+        try:
+            pg.write_page_blocks(document_id, page_no, page_blocks)
+        finally:
+            pg.close()
+    except Exception as e:
+        logger.debug("docling: checkpoint failed (page %s): %s", page_no, e)
 
 
 def _pp(report: dict | None, page) -> dict | None:
@@ -205,10 +261,234 @@ def _vlm_table(pdf_path, page_no, bbox, config) -> str:
     return res
 
 
+def _local_table_engine(config) -> bool:
+    """True when hard digital tables should escalate to the self-hosted Unlimited-OCR
+    server (extraction.docling.table_engine: local) instead of the hosted VLM. Real
+    finding, 27-Jul: cropping just the hard table region (not the whole page) got a
+    dense nested table 100% correct where whole-page parsing dropped every value —
+    same server as vision_ocr's rescue path (vision_ocr.local_endpoint), different
+    escalation trigger (a specific table Docling/pymupdf can't handle, not a whole
+    scanned/garbled page)."""
+    dcfg = (config.get("extraction") or {}).get("docling") or {}
+    return (dcfg.get("table_engine") or "vlm") == "local"
+
+
+def _local_table_ocr_engine(config) -> str:
+    """Which self-hosted engine handles per-table-crop escalation, once
+    _local_table_engine() has already picked "local" over "vlm". Real finding,
+    27-Jul: PaddleOCR-VL-1.6 transcribed all 3 of Unlimited-OCR's hardest known
+    real failures on this project's servo manual (2 decoder-length-bound OOMs
+    + 1 silently-dropped-row misalignment) perfectly — see
+    backend/extraction/paddleocr_vl.py. Kept as a separate config knob, not a
+    hardcoded swap, so Unlimited-OCR (with its own validated OOM-retry-ladder
+    and split-crop fallback) stays available with no code change if needed."""
+    dcfg = (config.get("extraction") or {}).get("docling") or {}
+    return dcfg.get("local_table_ocr_engine") or "unlimited_ocr"
+
+
+def _local_table(pdf_path, page_no, bbox, config) -> dict | None:
+    """Crop a table region and transcribe it via a self-hosted local engine
+    (picked by _local_table_ocr_engine), returning {headers, rows} DIRECTLY (no
+    markdown round trip) so the rowspan denormalization survives intact.
+
+    engine="paddleocr_vl" (see backend/extraction/paddleocr_vl.py): single
+    request, no retry ladder — no OOM observed on this engine in any real
+    testing so far.
+
+    engine="unlimited_ocr" (default, see backend/extraction/unlimited_ocr.py):
+    if the whole-table crop exhausts transcribe_table_local's own OOM retry
+    ladder (real finding, 27-Jul: some tables OOM regardless of base_size
+    because the real bottleneck is decoder/generation-length, not input
+    resolution — a long, dense table needs a long output sequence, and THAT's
+    what runs out of memory, not the vision encoder), split the region into
+    top/bottom halves (with overlap so a row straddling the seam is still
+    whole in at least one half) and transcribe each half separately — half the
+    rows means half the output sequence length, which directly targets THIS
+    bottleneck in a way no input-side parameter can. Only engaged as a last
+    resort after the cheaper single-shot retries are exhausted."""
+    from backend.vision.pdf_cropper import PDFCropper
+    import httpx
+    png = PDFCropper().crop_region(pdf_path, page_no, bbox)
+
+    if _local_table_ocr_engine(config) == "paddleocr_vl":
+        from backend.extraction.paddleocr_vl import transcribe_table_paddleocr_vl
+        table_data = transcribe_table_paddleocr_vl(png, config)
+        if table_data is not None:
+            table_data = _cross_check_sparse_columns(table_data, png, config)
+        return table_data
+
+    from backend.extraction.unlimited_ocr import transcribe_table_local
+    try:
+        return transcribe_table_local(png, config)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 503:
+            raise
+        logger.warning("docling: table crop still OOM after every base_size retry "
+                       "(page %s), splitting into row-halves", page_no)
+        top_bbox, bottom_bbox = _split_bbox_vertically(bbox)
+        top_png = PDFCropper().crop_region(pdf_path, page_no, top_bbox)
+        bottom_png = PDFCropper().crop_region(pdf_path, page_no, bottom_bbox)
+        top_td = transcribe_table_local(top_png, config)
+        bottom_td = transcribe_table_local(bottom_png, config)
+        return _merge_split_table_data(top_td, bottom_td)
+
+
+def _sparse_column_indices(table_data: dict, min_empty_frac: float = 0.5,
+                            max_sibling_empty_frac: float = 0.2) -> list[int]:
+    """Columns that are empty in MOST rows while OTHER columns in the same table
+    are consistently populated — a real, confirmed failure signature (28-Jul:
+    PaddleOCR-VL dropped a 7-segment-display "Indication" icon column on 9/11
+    rows of a real alarm table while every other column, including short ones
+    like "Code" ("82H" etc), stayed fully populated). A naive "short values"
+    heuristic would also flag that correct Code column, which is why this
+    checks EMPTINESS, not value length.
+
+    Different from unlimited_ocr.py's _has_fully_empty_column, which only
+    catches a column blank in EVERY row (avoiding false positives on a table
+    that's genuinely sparse everywhere) — this catches the softer, more common
+    "mostly blank" pattern, gated on at least one sibling column being
+    well-populated so a table that's legitimately sparse throughout (e.g. an
+    optional-notes column) doesn't trigger an unnecessary cross-check call."""
+    headers = table_data.get("headers") or []
+    rows = table_data.get("rows") or []
+    if len(headers) < 2 or len(rows) < 2:
+        return []
+    empty_fracs = []
+    for col in range(len(headers)):
+        vals = [str(r[col]).strip() if col < len(r) else "" for r in rows]
+        empty_fracs.append(sum(1 for v in vals if not v) / len(vals))
+    if not any(f <= max_sibling_empty_frac for f in empty_fracs):
+        return []  # whole table reads sparse -- not a signal, don't flag anything
+    return [i for i, f in enumerate(empty_fracs) if f >= min_empty_frac]
+
+
+def _vlm_table_from_png(png_bytes: bytes, config: dict) -> str:
+    """Same as _vlm_table but takes already-cropped PNG bytes directly, so a
+    cross-check reads the EXACT SAME visual crop a local engine already read
+    (not a fresh re-crop that could differ slightly)."""
+    from backend.core.vision_client import describe_image
+    from backend.core import prompts
+    vcfg = {"vision": config.get("vision_ocr")}
+    return describe_image(png_bytes, prompts.TABLE_TRANSCRIBE, vcfg).strip()
+
+
+def _cross_check_sparse_columns(table_data: dict, png_bytes: bytes, config: dict) -> dict:
+    """For columns that look suspiciously under-read (see _sparse_column_indices),
+    cross-check against an independent VLM reading of the SAME crop and fill in
+    values it found that the local engine missed. Never overwrites a value the
+    local engine already has -- this only fills gaps, since the local engine
+    is otherwise the validated-better reader (see paddleocr_vl.py).
+
+    Matches the ensemble/consensus pattern from OCR research (correct reads
+    converge, errors/misses diverge — arxiv 2504.11101): cross-checking with an
+    independent model catches exactly this kind of column-specific miss. Kept
+    cheap by only firing on tables that actually show the sparse-column
+    signature, not on every table.
+
+    Rows are matched by their first-column identity value (this codebase's own
+    row_id convention — e.g. alarm name/code), NOT by position, since the two
+    engines can segment/merge a rowspan-wrapped row differently."""
+    sparse = _sparse_column_indices(table_data)
+    if not sparse:
+        return table_data
+    try:
+        vlm_md = _vlm_table_from_png(png_bytes, config)
+        vlm_td = _markdown_table_data(vlm_md)
+    except Exception as e:
+        logger.warning("docling: sparse-column cross-check VLM call failed (%s)", e)
+        return table_data
+    if not vlm_td or not vlm_td.get("rows"):
+        return table_data
+
+    def norm(s):
+        return re.sub(r"\s+", " ", str(s)).strip().lower()
+
+    local_headers = [norm(h) for h in table_data.get("headers") or []]
+    vlm_headers = [norm(h) for h in vlm_td.get("headers") or []]
+    local_rows = table_data.get("rows") or []
+    vlm_rows = vlm_td.get("rows") or []
+
+    vlm_by_id: dict[str, list] = {}
+    for r in vlm_rows:
+        if r:
+            vlm_by_id.setdefault(norm(r[0]), []).append(r)
+
+    filled = 0
+    for col in sparse:
+        if col >= len(local_headers) or local_headers[col] not in vlm_headers:
+            continue
+        vcol = vlm_headers.index(local_headers[col])
+        for row in local_rows:
+            if not row or col >= len(row) or row[col].strip():
+                continue
+            candidates = vlm_by_id.get(norm(row[0])) if row[0] else None
+            if not candidates:
+                continue
+            val = next((str(c[vcol]).strip() for c in candidates
+                        if vcol < len(c) and str(c[vcol]).strip()), None)
+            if val:
+                row[col] = val
+                filled += 1
+    if filled:
+        logger.info("docling: sparse-column cross-check filled %d cell(s) from VLM reading", filled)
+    return table_data
+
+
+def _split_bbox_vertically(bbox: list[float], overlap_frac: float = 0.15) -> tuple[list[float], list[float]]:
+    """Split a [x0, y0, x1, y1] top-left-origin bbox into top/bottom halves with a
+    modest vertical overlap, so a row whose text sits right at the geometric
+    midpoint still lands fully inside at least one half instead of being cut
+    across both (which would corrupt or drop that row's content in either crop)."""
+    x0, y0, x1, y1 = bbox
+    height = y1 - y0
+    mid = y0 + height / 2
+    overlap = height * overlap_frac
+    top = [x0, y0, x1, min(y1, mid + overlap)]
+    bottom = [x0, max(y0, mid - overlap), x1, y1]
+    return top, bottom
+
+
+def _merge_split_table_data(top: dict | None, bottom: dict | None) -> dict | None:
+    """Combine two table_data dicts from a split-crop retry into one. Headers come
+    from whichever half has them (the top crop's header row, normally). Rows are
+    concatenated top-then-bottom; if the two halves' overlap band caused the SAME
+    row to be transcribed twice (once at the bottom of the top half, once at the
+    top of the bottom half), the exact-duplicate is dropped rather than shipping a
+    row twice."""
+    if top is None:
+        return bottom
+    if bottom is None:
+        return top
+    headers = top.get("headers") or bottom.get("headers") or []
+    top_rows = top.get("rows") or []
+    bottom_rows = bottom.get("rows") or []
+    if top_rows and bottom_rows and top_rows[-1] == bottom_rows[0]:
+        bottom_rows = bottom_rows[1:]
+    return {"headers": headers, "rows": top_rows + bottom_rows}
+
+
+def _table_has_span(table) -> bool:
+    """Merged/spanning cells (row_span/col_span > 1) specifically — a DIFFERENT kind
+    of complexity than list-heavy/tall-header cells, because it's structurally
+    incompatible with pymupdf's ruled-line reading, not just risky for TableFormer.
+    Real finding, 27-Jul: pymupdf reads each visually-separate ruled cell literally
+    — it has no notion of "this cell visually spans 3 rows" — so a rowspan table
+    that pymupdf CAN find ruled lines for still comes out ragged (the spanning
+    cell's value only appears once, blank in the rows below it). Since 'auto' tries
+    pymupdf first whenever it succeeds at all, this let real rowspan tables (e.g.
+    the servo manual's alarm-code table, F7H-FFH) skip vlm/local escalation
+    entirely even with table_engine: local configured — pymupdf "succeeded" at
+    finding ruled lines, just not at representing the actual structure. See
+    _table_is_complex's caller in extract_docling for how this changes routing."""
+    cells = getattr(getattr(table, "data", None), "table_cells", None) or []
+    return any((getattr(c, "col_span", 1) or 1) > 1 or (getattr(c, "row_span", 1) or 1) > 1
+               for c in cells)
+
+
 def _table_is_complex(table) -> bool:
     """Decide if a table is risky for TableFormer and should go to the VLM instead.
     Signals validated on the Argo/Mendoza corpus:
-      - merged/spanning cells (row_span/col_span > 1), or
+      - merged/spanning cells (row_span/col_span > 1) — see _table_has_span, or
       - a multi-line HEADER cell: bbox height >= ~2x the table's median cell height
         (these wrapped cells are where TableFormer clipped text), or
       - LIST-HEAVY DATA cells: several cells each packing multiple enumerated items
@@ -219,9 +499,8 @@ def _table_is_complex(table) -> bool:
     cells = getattr(getattr(table, "data", None), "table_cells", None) or []
     if not cells:
         return False
-    for c in cells:
-        if (getattr(c, "col_span", 1) or 1) > 1 or (getattr(c, "row_span", 1) or 1) > 1:
-            return True
+    if _table_has_span(table):
+        return True
     # List-heavy DATA cells: >=2 data cells that each hold multiple enumerated items or
     # a long wrapped paragraph. One such cell can be normal; several means the table is
     # a multi-line list grid TableFormer mis-segments across columns.
@@ -412,6 +691,44 @@ def _bbox_topleft_pts(bbox, page_height):
     return [min(l, r), min(t, b), max(l, r), max(t, b)]
 
 
+def _picture_caption_info(item, doc, page_no) -> dict | None:
+    """Resolve a Docling PictureItem's LINKED caption (item.captions -> TextItem refs)
+    to its exact text + bbox. Docling already parses "Figure 12: ..." as its own text
+    item and links it to the picture -- reading that beats guessing crop padding and
+    re-deriving the caption from pixels. Returns None if the picture has no caption
+    link (common for YOLO-only figures and most scanned pages, which have no text
+    layer to link from)."""
+    try:
+        refs = list(getattr(item, "captions", None) or [])
+        if not refs:
+            return None
+        text = (item.caption_text(doc) or "").strip()
+        if not text:
+            return None
+        bboxes = []
+        for ref in refs:
+            try:
+                cap_item = ref.resolve(doc)
+            except Exception:
+                continue
+            cpage, cbbox = _prov(cap_item)
+            if cpage != page_no:
+                continue
+            cbb = _bbox_topleft_pts(cbbox, _page_height(doc, page_no))
+            if cbb:
+                bboxes.append(cbb)
+        if not bboxes:
+            return {"text": text, "bbox": None}
+        return {
+            "text": text,
+            "bbox": [min(b[0] for b in bboxes), min(b[1] for b in bboxes),
+                     max(b[2] for b in bboxes), max(b[3] for b in bboxes)],
+        }
+    except Exception as e:
+        logger.debug("docling: caption-link resolve failed (page %s): %s", page_no, e)
+        return None
+
+
 def _page_height(doc, page_no):
     try:
         if page_no in doc.pages:
@@ -444,6 +761,29 @@ def _fig_too_small(bb, page_area: float, min_pic: float, min_area_frac: float) -
     (page_area / min_area_frac kept in the signature for callers; unused.)"""
     w, h = bb[2] - bb[0], bb[3] - bb[1]
     return w < min_pic or h < min_pic
+
+
+def _bbox_area_frac(bb, pdf_path: str, page_no: int) -> float:
+    """Fraction of the page area this bbox covers -- used by PER-IMAGE size-based
+    lazy captioning (extraction.docling.eager_caption_min_area_frac). Cheap (local
+    PDF geometry only, no VLM/network call) -- safe to compute per figure. Fails
+    OPEN (returns 1.0, i.e. "caption eagerly") on any error, since silently
+    deferring real content because of a geometry bug would be worse than just
+    paying for a caption."""
+    try:
+        import fitz
+        fdoc = fitz.open(pdf_path)
+        try:
+            prect = fdoc[page_no - 1].rect
+            page_area = prect.width * prect.height
+        finally:
+            fdoc.close()
+        if page_area <= 0:
+            return 1.0
+        bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+        return max(0.0, bw * bh) / page_area
+    except Exception:
+        return 1.0
 
 
 def picture_boxes(pdf_path: str, config: dict) -> dict[int, list]:
@@ -542,7 +882,8 @@ def _dedup_pic_jobs(pic_jobs: list[tuple]) -> list[tuple]:
 
 
 def extract_docling(pdf_path: str, document_id: str, config: dict,
-                    table_source: str = "docling", report: dict | None = None) -> list[dict]:
+                    table_source: str = "docling", report: dict | None = None,
+                    on_page=None) -> list[dict]:
     """Convert a PDF with Docling and emit NormalizedBlock dicts in reading order.
 
     table_source: who transcribes tables. 'docling' (default) = TableFormer
@@ -552,10 +893,19 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     whose tables come out wrong, e.g. some scans); 'auto' = TableFormer for simple
     tables, pymupdf for complex ones (merged cells/multi-line headers), VLM only if
     pymupdf finds no ruled table there (scanned/borderless).
-    report: optional dict mutated with decision counts (tables, figures) for tracking."""
-    from docling_core.types.doc import TextItem, TableItem, PictureItem
-
+    report: optional dict mutated with decision counts (tables, figures) for tracking.
+    on_page: optional callback(page_no, total_pages, elapsed_s) fired after each
+    page finishes converting — real per-page progress for a long document, since
+    Docling converts one page at a time here specifically to bound memory."""
     dcfg = (config.get("extraction") or {}).get("docling") or {}
+    if dcfg.get("mode") == "remote":
+        from backend.extraction.docling_remote import extract_docling_remote
+        return extract_docling_remote(
+            pdf_path, document_id, config,
+            table_source=table_source, report=report, on_page=on_page)
+
+    from docling_core.types.doc import TextItem, TableItem, PictureItem, ListItem
+    from backend.chunking.chunk_tool import _has_blank_continuation_rows
     min_pic = float(dcfg.get("min_picture_pts", 24))   # drop tiny marks/logos
     min_area_frac = float(dcfg.get("min_picture_area_frac", 0.004))  # drop <0.4%-of-page icons
     table_source = (table_source or "docling").lower()
@@ -645,7 +995,9 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     if bbox:
                         idx = len(blocks)
                         blocks.append(None)
-                        pic_jobs.append((idx, page_no, bbox))
+                        # Remote server only returns rendered blocks, not a DoclingDocument
+                        # object -- no item.captions link available client-side here.
+                        pic_jobs.append((idx, page_no, bbox, None))
                         dfigs[int(page_no)].append(bbox)
                 elif btype == "table":
                     if report is not None:
@@ -706,7 +1058,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                 from backend.core.tool import check_cancelled
                 check_cancelled(document_id)
                 _update_page_progress(document_id, "docling_pdf", pg_num, total_pages)
-                pg_start_blocks = len(blocks)
+                _page_start_idx = len(blocks)   # checkpoint boundary -- see end of loop body
+                pg_start_blocks = len(blocks)   # structured per-page logging -- see end of loop body
                 pg_start_pics = len(pic_jobs)
                 try:
                     res = conv.convert(pdf_path, page_range=(pg_num, pg_num))
@@ -721,10 +1074,14 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         text = (item.text or "").strip()
                         if not text or label in _DROP_LABELS:
                             continue
+                        text = _with_list_marker(item, text)
                         _, bbox = _prov(item)
                         page_no = pg_num
                         bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-                        btype = "heading" if label in _HEADING_LABELS else "text"
+                        if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):
+                            continue
+                        is_callout = bool(_CALLOUT_HEADING_RE.match(text))
+                        btype = "text" if is_callout else ("heading" if label in _HEADING_LABELS else "text")
                         blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
                         page_text.setdefault(page_no, []).append(text)
 
@@ -741,10 +1098,34 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                             continue
 
                         complex_ = _table_is_complex(item)
+                        has_span = _table_has_span(item)
                         pmd_td = None
+                        # In "auto" mode, skip pymupdf for SPANNING tables specifically —
+                        # it reads each visually-separate ruled cell literally, with no
+                        # notion of a cell spanning multiple rows, so it "succeeds" at
+                        # finding ruled lines but still produces the ragged/blank-
+                        # continuation pattern. vlm/local can actually see the merge.
+                        # Explicit table_source: pymupdf is a deliberate override, not
+                        # subject to this — only "auto"'s smart-selection is affected.
                         if fdoc is not None and bb and (table_source == "pymupdf" or
-                                                         (table_source == "auto" and complex_)):
+                                                         (table_source == "auto" and complex_
+                                                          and not has_span)):
                             pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                            # Real gap found 27-Jul: has_span relies on DOCLING's own
+                            # span metadata, which this exact class of dense multi-line
+                            # table can leave empty even though the source table genuinely
+                            # has merged cells (TableFormer's structure model garbles the
+                            # content instead of flagging a span). So has_span alone can
+                            # miss the case it exists to catch. Closing the loop on the
+                            # ACTUAL symptom instead: if pymupdf's own result comes out
+                            # ragged (chunk_tool.py's own repair-trigger detector), don't
+                            # accept it — escalate to vlm/local, which reads the true
+                            # rowspan structure directly (see unlimited_ocr.py's
+                            # _RowspanTableParser) instead of leaning on downstream LLM
+                            # repair to patch up a result we already know is ragged.
+                            if (table_source == "auto" and pmd_td is not None
+                                    and _has_blank_continuation_rows(pmd_td.get("rows") or [])):
+                                pmd_td = None
                         use_pymupdf = pmd_td is not None
                         use_vlm = (not use_pymupdf) and bb and (
                             table_source == "vlm" or (table_source == "auto" and complex_))
@@ -754,13 +1135,23 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                             md = _render_table_markdown(td)
                             logger.info("📊 [Docling Table] Page %d: Ruled table extracted via PyMuPDF vector lines", page_no)
                         elif use_vlm:
-                            try:
-                                md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                                td = None
-                            except Exception as e:
-                                logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
-                                source = "tableformer"
-                                md, td = _table_markdown(item, doc), _table_data(item, doc)
+                            td = None
+                            if _local_table_engine(config):
+                                try:
+                                    td = _local_table(pdf_path, page_no, bb, config)
+                                except Exception as e:
+                                    logger.warning("docling: local table engine failed (page %s): %s; "
+                                                   "falling back to VLM", page_no, e)
+                                if td is not None:
+                                    md = _render_table_markdown(td)
+                                    source = "local"
+                            if td is None:
+                                try:
+                                    md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                                except Exception as e:
+                                    logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                                    source = "tableformer"
+                                    md, td = _table_markdown(item, doc), _table_data(item, doc)
                         else:
                             md, td = _table_markdown(item, doc), _table_data(item, doc)
                             logger.info("📊 [Docling Table] Page %d: Structured table extracted via TableFormer (%d cols)", page_no, ncols)
@@ -784,8 +1175,22 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
                             idx = len(blocks)
                             blocks.append(None)
-                            pic_jobs.append((idx, page_no, bb))
+                            cap_info = _picture_caption_info(item, doc, page_no)
+                            pic_jobs.append((idx, page_no, bb, cap_info))
                             dfigs[int(page_no)].append(bb)
+
+                # Checkpoint this page's TEXT/TABLE blocks NOW, not at the end of the whole
+                # document. Real gap found 3-Aug: extract_docling had ZERO persistence of
+                # its own (only a status-string progress label) -- everything lived in an
+                # in-memory list until write_blocks() ran once after the ENTIRE step
+                # finished, so a crash/kill at page 900 of 1147 lost all 900 pages, not
+                # just the tail. Figure blocks are still None placeholders here (captioned
+                # in a separate batched pass below) so they're excluded -- this is a safety
+                # net against total loss, not a full per-page resume/skip (that would also
+                # need to reconcile pic_jobs on restart, a bigger change deferred for now).
+                _checkpoint_page_blocks(
+                    document_id, pg_num,
+                    [b for b in blocks[_page_start_idx:] if b is not None])
 
                 pg_text_cnt = sum(1 for b in blocks[pg_start_blocks:] if b and b.get("type") in ("text", "heading"))
                 pg_tbl_cnt = sum(1 for b in blocks[pg_start_blocks:] if b and b.get("type") == "table")
@@ -802,9 +1207,13 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     text = (item.text or "").strip()
                     if not text or label in _DROP_LABELS:
                         continue
+                    text = _with_list_marker(item, text)
                     page_no, bbox = _prov(item)
                     bb = _bbox_topleft_pts(bbox, _page_height(doc, page_no))
-                    btype = "heading" if label in _HEADING_LABELS else "text"
+                    if label not in _HEADING_LABELS and _is_running_header_leak(text, bb):
+                        continue
+                    is_callout = bool(_CALLOUT_HEADING_RE.match(text))
+                    btype = "text" if is_callout else ("heading" if label in _HEADING_LABELS else "text")
                     blocks.append(_block(document_id, page_no, filename, btype, text, bbox=bb))
                     page_text.setdefault(page_no, []).append(text)
 
@@ -820,10 +1229,34 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         continue
 
                     complex_ = _table_is_complex(item)
+                    has_span = _table_has_span(item)
                     pmd_td = None
+                    # In "auto" mode, skip pymupdf for SPANNING tables specifically —
+                    # it reads each visually-separate ruled cell literally, with no
+                    # notion of a cell spanning multiple rows, so it "succeeds" at
+                    # finding ruled lines but still produces the ragged/blank-
+                    # continuation pattern. vlm/local can actually see the merge.
+                    # Explicit table_source: pymupdf is a deliberate override, not
+                    # subject to this — only "auto"'s smart-selection is affected.
                     if fdoc is not None and bb and (table_source == "pymupdf" or
-                                                     (table_source == "auto" and complex_)):
+                                                     (table_source == "auto" and complex_
+                                                      and not has_span)):
                         pmd_td = _pymupdf_table_data(fdoc, page_no, bb, _pymupdf_cache)
+                        # Real gap found 27-Jul: has_span relies on DOCLING's own
+                        # span metadata, which this exact class of dense multi-line
+                        # table can leave empty even though the source table genuinely
+                        # has merged cells (TableFormer's structure model garbles the
+                        # content instead of flagging a span). So has_span alone can
+                        # miss the case it exists to catch. Closing the loop on the
+                        # ACTUAL symptom instead: if pymupdf's own result comes out
+                        # ragged (chunk_tool.py's own repair-trigger detector), don't
+                        # accept it — escalate to vlm/local, which reads the true
+                        # rowspan structure directly (see unlimited_ocr.py's
+                        # _RowspanTableParser) instead of leaning on downstream LLM
+                        # repair to patch up a result we already know is ragged.
+                        if (table_source == "auto" and pmd_td is not None
+                                and _has_blank_continuation_rows(pmd_td.get("rows") or [])):
+                            pmd_td = None
                     use_pymupdf = pmd_td is not None
                     use_vlm = (not use_pymupdf) and bb and (
                         table_source == "vlm" or (table_source == "auto" and complex_))
@@ -832,13 +1265,23 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                         td = pmd_td
                         md = _render_table_markdown(td)
                     elif use_vlm:
-                        try:
-                            md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
-                            td = None
-                        except Exception as e:
-                            logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
-                            source = "tableformer"
-                            md, td = _table_markdown(item, doc), _table_data(item, doc)
+                        td = None
+                        if _local_table_engine(config):
+                            try:
+                                td = _local_table(pdf_path, page_no, bb, config)
+                            except Exception as e:
+                                logger.warning("docling: local table engine failed (page %s): %s; "
+                                               "falling back to VLM", page_no, e)
+                            if td is not None:
+                                md = _render_table_markdown(td)
+                                source = "local"
+                        if td is None:
+                            try:
+                                md = _vlm_table(pdf_path, page_no, bb, config) or _table_markdown(item, doc)
+                            except Exception as e:
+                                logger.warning("docling: VLM table failed (page %s): %s; using TableFormer", page_no, e)
+                                source = "tableformer"
+                                md, td = _table_markdown(item, doc), _table_data(item, doc)
                     else:
                         md, td = _table_markdown(item, doc), _table_data(item, doc)
                     if td is None:
@@ -860,7 +1303,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
                     if bb and not _fig_too_small(bb, _page_area(doc, page_no), min_pic, min_area_frac):
                         idx = len(blocks)
                         blocks.append(None)
-                        pic_jobs.append((idx, page_no, bb))
+                        cap_info = _picture_caption_info(item, doc, page_no)
+                        pic_jobs.append((idx, page_no, bb, cap_info))
                         dfigs[int(page_no)].append(bb)
 
         if fdoc is not None:
@@ -875,7 +1319,8 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         for pg, yb in _yolo_extra_boxes(pdf_path, dfigs, dtables, min_pic, min_area_frac):
             idx = len(blocks)
             blocks.append(None)
-            pic_jobs.append((idx, pg, yb))
+            # YOLO-only detections have no Docling item to link a caption from.
+            pic_jobs.append((idx, pg, yb, None))
     # Drop nested/duplicate figure crops (collage composite + its sub-photos). Dropped
     # jobs leave a None placeholder in `blocks` that the final filter removes.
     pic_jobs = _dedup_pic_jobs(pic_jobs)
@@ -885,35 +1330,93 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         report["figures"]["yolo_added"] += len(pic_jobs) - d
         report["figures"]["proposed"] = report["figures"].get("proposed", 0) + len(pic_jobs)
 
+    # Every kept figure box on the SAME page, keyed by its own job idx so a figure
+    # never excludes itself -- fed into _figure_block as exclusion zones so one
+    # figure's padding can't bleed into a neighboring figure a few points away
+    # (real bug on a scanned doc with no text layer at all: the collision guard
+    # below has nothing else to check against there, so this matters most on scans,
+    # but it's a strict improvement on digital pages too).
+    page_to_boxes: dict = defaultdict(list)
+    for j_idx, pg, bb, _ci in pic_jobs:
+        page_to_boxes[pg].append((j_idx, bb))
+
+    # Pages where Docling extracted NO text at all (do_ocr:false + no text layer --
+    # i.e. scanned, as far as Docling itself can tell) get their figure captioning
+    # DEFERRED to caption_deferred_figures(), called after route_and_rescue() has
+    # produced the page's real OCR/VLM text -- otherwise the semantic gate runs
+    # totally blind (no page context) on exactly the pages that need it most. Only
+    # safe to defer if a later rescue pass will actually run to resolve it.
+    defer_ok = bool(dcfg.get("page_rescue", True))
+
+    # Size-based lazy figure captioning: real cost driver is FIGURE COUNT, not page
+    # count (plain text/table extraction is ~free regardless of length -- validated
+    # live, 3-Aug: a 1147-page text-only circuit diagram is cheap; a 50-page
+    # CAD-drawing-heavy manual can cost more). Above defer_figures_above_pages,
+    # figures on pages that DO have text also get deferred -- but PERMANENTLY (no
+    # route_and_rescue pass will ever resolve these; they stay deferred until an
+    # agent looks at that specific page on demand via view_page_image), unlike the
+    # scanned-page case above which auto-resolves once real OCR text exists.
+    figure_mode = dcfg.get("figure_caption_mode", "eager")
+    lazy_threshold = int(dcfg.get("defer_figures_above_pages", 250) or 250)
+    size_lazy = figure_mode == "size_based" and total_pages > lazy_threshold
+
+    # PER-IMAGE size-based lazy captioning -- a separate, orthogonal axis from the
+    # per-DOCUMENT one above. Real gap found live, 4-Aug: we already know which page/
+    # bbox every figure belongs to and can render+answer from it on demand
+    # (view_page_image), so eagerly paying a VLM call for every small/minor figure in
+    # a NORMAL-sized document (which size_lazy above never touches) is real,
+    # avoidable ingestion cost for images that may never actually be queried. Figures
+    # narrower than this fraction of the page area get deferred PERMANENTLY (same
+    # policy as large_document_lazy -- never auto-resolved by route_and_rescue, only
+    # resolved on-demand), regardless of document length. 0 = disabled (default,
+    # unchanged behavior) -- opt in per deployment. 0.02 (2% of page area) is a
+    # first-pass estimate, not yet validated against a real corpus of eagerly- vs
+    # lazily-captioned figures -- tune once there's real query-pattern data.
+    eager_min_area_frac = float(dcfg.get("eager_caption_min_area_frac", 0) or 0)
+
     # Caption figures now that page text is complete. Run CONCURRENTLY (the slow part is
     # the VLM call latency): vision.max_concurrency workers, each paced by describe_image's
     # rate limiter so we overlap latency without bursting past the provider RPM. Context is
     # copied into each worker so the per-run token-usage sink still records off-thread.
     workers = max(1, int((config.get("vision") or {}).get("max_concurrency", 1) or 1))
 
-    def _cap(idx, page_no, bb):
+    def _cap(idx, page_no, bb, cap_info):
         from backend.core.tool import check_cancelled
         check_cancelled(document_id)
+        others = [b for j_idx, b in page_to_boxes.get(page_no, []) if j_idx != idx]
+        no_text = not page_text.get(page_no)
+        if no_text:
+            defer_reason = "scanned_no_text"
+        elif size_lazy:
+            defer_reason = "large_document_lazy"
+        elif eager_min_area_frac > 0 and _bbox_area_frac(bb, pdf_path, page_no) < eager_min_area_frac:
+            defer_reason = "small_image_lazy"
+        else:
+            defer_reason = None
+        defer = defer_ok and defer_reason is not None
         return idx, _figure_block(pdf_path, document_id, page_no, filename, bb,
-                                  page_text.get(page_no, []), config, header_footer_cache)
+                                  page_text.get(page_no, []), config, header_footer_cache,
+                                  cap_info=cap_info, other_figure_bboxes=others, defer=defer,
+                                  defer_reason=defer_reason)
 
     if workers > 1 and len(pic_jobs) > 1:
         from concurrent.futures import ThreadPoolExecutor
         from backend.core import usage as _usage
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_usage.copy_ctx().run, _cap, idx, pg, bb)
-                    for idx, pg, bb in pic_jobs]
+            futs = [ex.submit(_usage.copy_ctx().run, _cap, idx, pg, bb, cap_info)
+                    for idx, pg, bb, cap_info in pic_jobs]
             for f in futs:
                 from backend.core.tool import check_cancelled
                 check_cancelled(document_id)
                 idx, blk = f.result()
                 blocks[idx] = blk
     else:
-        for idx, page_no, bb in pic_jobs:
+        for idx, page_no, bb, cap_info in pic_jobs:
             from backend.core.tool import check_cancelled
             check_cancelled(document_id)
-            blocks[idx] = _cap(idx, page_no, bb)[1]
+            blocks[idx] = _cap(idx, page_no, bb, cap_info)[1]
     blocks = [b for b in blocks if b is not None]
+    blocks = _merge_small_repeated_icons(blocks)
 
     # Figure totals reflect what the semantic gate KEPT (proposed - furniture dropped).
     if report is not None:
@@ -921,7 +1424,7 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
         report["figures"]["total"] = kept
         report["figures"]["dropped_by_gate"] = report["figures"].get("proposed", 0) - kept
         # Per-page figure ledger: proposed (pre-gate) vs kept, with the kept kinds.
-        for _idx, pg, _bb in pic_jobs:
+        for _idx, pg, _bb, _cap_info in pic_jobs:
             rec = _pp(report, pg)
             if rec:
                 rec["figures"]["proposed"] += 1
@@ -945,49 +1448,136 @@ def extract_docling(pdf_path: str, document_id: str, config: dict,
     return blocks
 
 
-def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config, hf_cache=None):
+def _merge_small_repeated_icons(blocks: list[dict], icon_pt: float = 40.0, min_group: int = 3) -> list[dict]:
+    """Small warning/legend icons are real, correctly-classified figures (the VLM gate
+    already keeps them, not page furniture) — but a safety-warnings page can carry 6-9
+    of them (validated live on a real Toyota manual: diamond/triangle hazard symbols,
+    each ~25-32pt), and indexing each as its own near-duplicate image_caption chunk
+    fragments retrieval without adding distinct value — a query about 'fire hazard
+    warning' would get several nearly-identical hits instead of one useful one.
+
+    When a page has >= min_group image_caption blocks that are ALL under icon_pt in
+    both dimensions, merge them into ONE combined block for that page (keeping every
+    caption's content, just as one chunk) instead of dropping any of them — this is
+    about de-fragmenting redundant real content, not filtering false positives."""
+    by_page: dict[int, list[int]] = defaultdict(list)
+    for i, b in enumerate(blocks):
+        if b.get("type") != "image_caption":
+            continue
+        ref = b.get("source_ref") or {}
+        bbox = ref.get("bbox") or []
+        if len(bbox) == 4 and (bbox[2] - bbox[0]) <= icon_pt and (bbox[3] - bbox[1]) <= icon_pt:
+            by_page[ref.get("page")].append(i)
+
+    drop: set[int] = set()
+    for page, idxs in by_page.items():
+        if len(idxs) < min_group:
+            continue
+        captions = [(blocks[i].get("text") or "").strip() for i in idxs]
+        merged_text = (
+            f"This page has {len(idxs)} small warning/legend icons: "
+            + " | ".join(c for c in captions if c)
+        )
+        merged = dict(blocks[idxs[0]])
+        merged["text"] = merged_text
+        merged["metadata"] = dict(merged.get("metadata") or {})
+        merged["metadata"]["merged_icon_count"] = len(idxs)
+        blocks[idxs[0]] = merged
+        drop.update(idxs[1:])
+        logger.info("docling: merged %d small icons on page %s into one chunk", len(idxs), page)
+    return [b for i, b in enumerate(blocks) if i not in drop]
+
+
+def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, config,
+                  hf_cache=None, cap_info: dict | None = None, other_figure_bboxes: list | None = None,
+                  defer: bool = False, defer_reason: str | None = None):
     """Crop a Docling-located figure, run the SEMANTIC GATE (classify + caption), and
     return the image_caption block — or None if the gate says it's page furniture
     (logo/banner/header/text/blank), so we never crop+index a non-figure. Keeps any
-    real content incl. wide schematics/CAD that geometry filters would have dropped."""
+    real content incl. wide schematics/CAD that geometry filters would have dropped.
+
+    cap_info (optional): {"text": ..., "bbox": [l,t,r,b] | None} from
+    _picture_caption_info() -- Docling's OWN linked caption for this figure, when it
+    has one. When present we union its bbox into the crop region (so the real caption
+    is guaranteed inside the image instead of relying on guessed padding) and pass its
+    exact text to the VLM gate as ground truth, then hard-append it to whatever caption
+    the model returns so the real wording (part numbers, figure number) is never lost
+    even if the model paraphrases or ignores it.
+
+    other_figure_bboxes (optional): every OTHER kept figure's bbox on this same page --
+    treated as collision zones (same as nearby text) so padding never grows into a
+    neighboring figure. Matters most on scanned pages, which have no PDF text layer at
+    all, so the text-collision check below has nothing else to guard against there.
+
+    defer: True skips the VLM gate entirely -- crops and saves the image, marks the
+    block metadata.caption_deferred=True, and returns a placeholder. Used for pages
+    Docling extracted NO text from (do_ocr:false + no text layer = scanned), so the
+    gate isn't run blind; caption_deferred_figures() resolves it later once
+    route_and_rescue() has produced the page's real OCR/VLM text."""
     from backend.vision.pdf_cropper import PDFCropper
     import fitz
-    
+
+    # 0. Fold the linked caption's own bbox into the crop region FIRST so the real
+    # caption text is guaranteed to be physically inside the crop -- padding below is
+    # then just breathing room, not the only thing standing between us and a cut caption.
+    crop_bbox = list(bbox)
+    if cap_info and cap_info.get("bbox"):
+        cb = cap_info["bbox"]
+        crop_bbox = [min(crop_bbox[0], cb[0]), min(crop_bbox[1], cb[1]),
+                     max(crop_bbox[2], cb[2]), max(crop_bbox[3], cb[3])]
+
     # 1. Compute collision-aware padded bounding box
-    padded_bbox = list(bbox)
+    padded_bbox = list(crop_bbox)
+    # PDFCropper.crop_region() ALSO adds its own (larger) unconditional padding on
+    # top of padded_bbox (side_frac/top_frac/bottom_frac/caption_pad_pts, ~52pt on
+    # the bottom by default) -- collision detection below is pointless unless THAT
+    # padding is suppressed too on any edge where a collision was found, so this
+    # gets filled in per-edge and passed through to the crop_region() call.
+    crop_kwargs: dict = {}
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_no - 1]
         page_rect = page.rect
-        
-        # Get all text block rects on the page
+
+        # Get all text block rects on the page, PLUS every other kept figure on this
+        # page -- a scanned page has zero text rects (no text layer), so without the
+        # figure boxes here padding has nothing at all to guard against and can bleed
+        # straight into a neighboring figure a few points away.
         rects = []
         for block in page.get_text("blocks"):
             if block[6] == 0:  # Text block type
                 rects.append(fitz.Rect(block[0], block[1], block[2], block[3]))
-                
-        x0, y0, x1, y1 = bbox
+        for ob in (other_figure_bboxes or []):
+            rects.append(fitz.Rect(ob[0], ob[1], ob[2], ob[3]))
+
+        # Collision = the overlap covers >10% of whichever of the two rects is
+        # SMALLER (pad strip vs the other rect). Using only the OTHER rect's area
+        # (as this used to) works for small text words but is far too weak against
+        # a full-size neighboring FIGURE: a thin 10pt pad strip fully swallowed by a
+        # large figure can still be under 10% of that figure's total area, so a real
+        # collision would go undetected. min() catches both cases.
+        def _collides(pad_rect) -> bool:
+            return any((pad_rect & r).get_area() > 0.1 * min(r.get_area(), pad_rect.get_area())
+                       for r in rects)
+
+        x0, y0, x1, y1 = crop_bbox
         pad = 10.0
-        
+
         # Left edge check
         px0 = max(page_rect.x0, x0 - pad)
-        left_pad_rect = fitz.Rect(px0, y0, x0, y1)
-        left_collision = any((left_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        left_collision = _collides(fitz.Rect(px0, y0, x0, y1))
+
         # Right edge check
         px1 = min(page_rect.x1, x1 + pad)
-        right_pad_rect = fitz.Rect(x1, y0, px1, y1)
-        right_collision = any((right_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        right_collision = _collides(fitz.Rect(x1, y0, px1, y1))
+
         # Top edge check
         py0 = max(page_rect.y0, y0 - pad)
-        top_pad_rect = fitz.Rect(x0, py0, x1, y0)
-        top_collision = any((top_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
-        
+        top_collision = _collides(fitz.Rect(x0, py0, x1, y0))
+
         # Bottom edge check
-        py1 = min(page_rect.x1, y1 + pad)
-        bottom_pad_rect = fitz.Rect(x0, y1, x1, py1)
-        bottom_collision = any((bottom_pad_rect & r).get_area() > 0.1 * r.get_area() for r in rects)
+        py1 = min(page_rect.y1, y1 + pad)  # was page_rect.x1 (width, not height) -- fixed
+        bottom_collision = _collides(fitz.Rect(x0, y1, x1, py1))
         
         final_pad_left = 0.0 if left_collision else pad
         final_pad_right = 0.0 if right_collision else pad
@@ -999,7 +1589,18 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
                 "Page %s figure bbox collision detected. Capped padding (Left: %s, Right: %s, Top: %s, Bottom: %s)",
                 page_no, final_pad_left, final_pad_right, final_pad_top, final_pad_bottom
             )
-            
+            # crop_region()'s side padding is one symmetric value (no separate
+            # left/right knob) -- a collision on EITHER side suppresses both,
+            # trading a little missed side-callout margin for guaranteed no bleed.
+            if left_collision or right_collision:
+                crop_kwargs["side_frac"] = 0.0
+                crop_kwargs["side_pad_pts"] = 0.0
+            if top_collision:
+                crop_kwargs["top_frac"] = 0.0
+            if bottom_collision:
+                crop_kwargs["bottom_frac"] = 0.0
+                crop_kwargs["caption_pad_pts"] = 0.0
+
         padded_bbox = [
             max(page_rect.x0, x0 - final_pad_left),
             max(page_rect.y0, y0 - final_pad_top),
@@ -1009,15 +1610,45 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
         doc.close()
     except Exception as e:
         logger.warning("docling: pad calculation failed (page %s): %s", page_no, e)
-        padded_bbox = list(bbox)
+        padded_bbox = list(crop_bbox)
 
     b = _block(document_id, page_no, filename, "image_caption", "[figure]", bbox=bbox)
     try:
-        png = PDFCropper().crop_region(pdf_path, page_no, padded_bbox)
+        png = PDFCropper().crop_region(pdf_path, page_no, padded_bbox, **crop_kwargs)
     except Exception as e:
         logger.warning("docling: crop failed (page %s): %s", page_no, e)
         b["metadata"]["pending_vision"] = True
         return b
+
+    if defer:
+        # No gate decision yet -- can't drop furniture we haven't classified, so save
+        # the crop unconditionally (caption_deferred_figures cleans up any that turn
+        # out to be furniture once it finally runs the gate with real page context).
+        img_dir = os.path.join("uploads", "images", document_id)
+        os.makedirs(img_dir, exist_ok=True)
+        fname = f"{b['block_id']}.png"
+        with open(os.path.join(img_dir, fname), "wb") as f:
+            f.write(png)
+        b["metadata"]["image_path"] = f"/images/{document_id}/{fname}"
+        b["metadata"]["pending_vision"] = True
+        b["metadata"]["caption_deferred"] = True
+        b["metadata"]["defer_reason"] = defer_reason
+        # "large_document_lazy" and "small_image_lazy" figures are NEVER auto-resolved
+        # during ingestion (see caption_deferred_figures()) -- give them real, useful
+        # text now so they're still findable via normal search instead of sitting as a
+        # bare "[figure]" forever. view_page_image is how an agent actually looks at
+        # one on demand.
+        if defer_reason == "large_document_lazy":
+            b["text"] = ("[Figure present on this page -- not yet captioned "
+                         "(large document, captions load on demand). Use "
+                         "view_page_image on this page to see it.]")
+        elif defer_reason == "small_image_lazy":
+            b["text"] = ("[Small figure present on this page -- not yet captioned "
+                         "(minor images load on demand). Use view_page_image on "
+                         "this page to see it.]")
+        return b
+
+    known_caption = (cap_info or {}).get("text") or ""
     # Gate FIRST (before writing the crop to disk) so dropped furniture leaves no file.
     logger.info("👁️ [Vision API] Page %s: Captioning figure crop (bbox: %s) via Vision model...",
                 page_no, [round(float(x), 1) for x in bbox] if bbox else [])
@@ -1050,12 +1681,13 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
             
     try:
         from backend.extraction.vision_ocr import classify_caption_crop
-        res = classify_caption_crop(png, " ".join(page_lines)[:1000], config)
+        res = classify_caption_crop(png, " ".join(page_lines)[:1000], config,
+                                    known_caption=known_caption)
         if cache_key is not None:
             hf_cache[cache_key] = res
     except Exception as e:
         logger.warning("docling: caption failed (page %s): %s", page_no, e)
-        res = {"keep": True, "kind": "unknown", "caption": "[figure]"}
+        res = {"keep": True, "kind": "unknown", "caption": known_caption or "[figure]"}
         b["metadata"]["pending_vision"] = True
 
     if not res.get("keep"):
@@ -1082,5 +1714,87 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
     b["metadata"]["image_path"] = f"/images/{document_id}/{fname}"
     b["metadata"]["pending_vision"] = b["metadata"].get("pending_vision", False)
     b["metadata"]["figure_kind"] = res.get("kind")
-    b["text"] = res.get("caption") or "[figure]"
-    return b 
+    caption = res.get("caption") or "[figure]"
+    # Hard-guarantee the real caption text (exact figure number, part numbers) is in the
+    # searchable text even if the model paraphrased or dropped it -- this is the one piece
+    # we KNOW is correct (Docling's text layer), not a VLM guess.
+    if known_caption:
+        b["metadata"]["docling_caption"] = known_caption
+        if known_caption.lower() not in caption.lower():
+            caption = f"{known_caption} — {caption}"
+    b["text"] = caption
+    return b
+
+
+def caption_deferred_figures(blocks: list[dict], config: dict) -> list[dict]:
+    """Resolve figures _figure_block() deferred (metadata.caption_deferred=True --
+    Docling saw no text on that page at crop-time, so the gate would've run blind).
+    Call this AFTER route_and_rescue() has produced the page's real OCR/VLM text, so
+    the semantic gate finally gets real context instead of guessing from pixels alone.
+    No-op (returns blocks unchanged) if nothing was deferred. Runs concurrently with
+    the same worker budget as the original captioning pass; a per-figure failure
+    leaves it pending (self-healing on a future re-run) rather than failing the batch.
+
+    Deliberately SKIPS defer_reason in ("large_document_lazy", "small_image_lazy")
+    figures -- those were deferred as a permanent cost-control policy (size-based
+    lazy captioning, by document length or by individual image size -- see
+    extract_docling), not because they're waiting on OCR text that's now available.
+    They stay deferred until an agent looks at that page on demand (view_page_image)."""
+    _PERMANENT_DEFER_REASONS = ("large_document_lazy", "small_image_lazy")
+    pending = [b for b in blocks if b and b.get("type") == "image_caption"
+               and (b.get("metadata") or {}).get("caption_deferred")
+               and (b.get("metadata") or {}).get("defer_reason") not in _PERMANENT_DEFER_REASONS]
+    if not pending:
+        return blocks
+
+    page_text: dict = defaultdict(list)
+    for b in blocks:
+        if b and b.get("type") in ("text", "heading"):
+            t = (b.get("text") or "").strip()
+            if t:
+                page_text[_block_page(b)].append(t)
+
+    def _resolve(b: dict) -> None:
+        page_no = _block_page(b)
+        img_path = (b.get("metadata") or {}).get("image_path") or ""
+        parts = img_path.split("/")
+        if len(parts) < 4:   # expects "/images/<document_id>/<fname>.png"
+            return
+        fs_path = os.path.join("uploads", "images", *parts[2:])
+        try:
+            with open(fs_path, "rb") as f:
+                png = f.read()
+        except Exception as e:
+            logger.warning("docling: deferred-caption image read failed (%s): %s", fs_path, e)
+            return
+        try:
+            from backend.extraction.vision_ocr import classify_caption_crop
+            res = classify_caption_crop(png, " ".join(page_text.get(page_no, []))[:1000], config)
+        except Exception as e:
+            logger.warning("docling: deferred caption failed (page %s): %s", page_no, e)
+            return
+        if not res.get("keep"):
+            b["_drop"] = True
+            try:
+                os.remove(fs_path)
+            except Exception:
+                pass
+            return
+        b["metadata"]["figure_kind"] = res.get("kind")
+        b["metadata"]["pending_vision"] = False
+        b["metadata"]["caption_deferred"] = False
+        b["text"] = res.get("caption") or "[figure]"
+
+    workers = max(1, int((config.get("vision") or {}).get("max_concurrency", 1) or 1))
+    if workers > 1 and len(pending) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        from backend.core import usage as _usage
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_usage.copy_ctx().run, _resolve, b) for b in pending]
+            for f in futs:
+                f.result()
+    else:
+        for b in pending:
+            _resolve(b)
+
+    return [b for b in blocks if not b.get("_drop")]

@@ -47,6 +47,7 @@ DEFAULT_OVERLAP = 50  # tokens
 # self-attention allocation (memory scales quadratically with sequence length).
 # Real prose never repeats a 1-3 char unit 10+ times in a row.
 _REPEATED_UNIT = re.compile(r"(.{1,3}?)\1{9,}")
+_CALLOUT_HEADING_RE = re.compile(r"^[\s<\[(*]*(IMPORTANT|NOTE|ONE POINT|WARNING|CAUTION|DANGER)[\s>\])*]*$", re.IGNORECASE)
 
 
 def _collapse_repeated_chars(text: str) -> str:
@@ -143,6 +144,22 @@ def _table_markdown_rows(headers: list, rows: list) -> str:
     lines = [_fmt(headers), "| " + " | ".join(["---"] * len(headers)) + " |"]
     lines += [_fmt(r) for r in rows]
     return "\n".join(lines)
+
+
+def _has_blank_continuation_rows(rows: list[list]) -> bool:
+    """Check if table rows contain blank continuation cells (ragged rows where first
+    column is empty while other columns have text). Used by docling_extract to reject
+    ragged PyMuPDF vector tables and escalate to VLM/local extraction."""
+    if not rows or len(rows) < 2:
+        return False
+    for row in rows:
+        if not row:
+            continue
+        first_col_empty = not str(row[0]).strip() if len(row) > 0 else True
+        has_other_content = any(bool(str(c).strip()) for c in row[1:])
+        if first_col_empty and has_other_content:
+            return True
+    return False
 
 
 def _split_table_rows(headers: list, rows: list, size: int) -> list[list]:
@@ -1112,7 +1129,7 @@ def chunk_blocks(
             else:
                 flush()
 
-        if section_aware and btype == "heading" and text:
+        if section_aware and btype == "heading" and text and not _CALLOUT_HEADING_RE.match(text.strip()):
             if not buf_heading_only:
                 flush()
             
@@ -1261,6 +1278,33 @@ class ChunkTool:
             split_large_tables=cfg.get("split_large_tables", True),
             config=config,
         )
+
+        # ──── Stamp revision, versioning, and RBAC fields onto every chunk ────
+        # These fields are injected by ingest.py into pipeline state so chunk_tool
+        # can propagate them to every chunk's tags without any coupling to ingest.py.
+        # Fields default gracefully to None so the tool works even when called
+        # outside the main ingest pipeline (e.g. tests, standalone chunk_tool runs).
+        revision_id           = state.get("revision_id")
+        document_hash         = state.get("document_hash")
+        embedding_model_ver   = state.get("embedding_model_version")
+        index_version         = state.get("index_version")
+        allowed_roles         = state.get("allowed_roles") or []
+
+        if any([revision_id, document_hash, embedding_model_ver, index_version]):
+            for chunk in chunks:
+                tags = chunk.setdefault("tags", {})
+                if revision_id:
+                    tags["revision_id"]             = revision_id
+                if document_hash:
+                    tags["document_hash"]           = document_hash
+                if embedding_model_ver:
+                    tags["embedding_model_version"] = embedding_model_ver
+                if index_version:
+                    tags["index_version"]           = index_version
+                # RBAC: top-level field (also mirrored in tags for Qdrant filter use)
+                if allowed_roles:
+                    chunk["allowed_roles"] = allowed_roles
+                    tags["allowed_roles"]  = allowed_roles
             
         state.setdefault("chunks", []).extend(chunks)
         return state

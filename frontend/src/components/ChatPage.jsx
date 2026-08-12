@@ -474,8 +474,11 @@ const ChatPage = () => {
       const hadFile = deduped.some(
         (m) => m.role === 'user' && typeof m.content === 'string' && m.content.includes('📎')
       );
+      // Find index of last assistant message to know which ones are historical
+      const lastAssistantIdx = deduped.reduce((acc, m, i) => m.role === 'assistant' ? i : acc, -1);
+
       setMessages(
-        deduped.map((m) => {
+        deduped.map((m, idx) => {
           let content = typeof m.content === 'string' ? m.content : (m.content ? JSON.stringify(m.content) : '');
           if (m.role === 'user') {
             content = content
@@ -483,18 +486,29 @@ const ChatPage = () => {
               .replace(/^Please ingest this file\.\s*/i, '')
               .trim() || content;
           }
+          const msgStatus = m.status || m.metadata?.status;
+          // Historical assistant messages that had step/clarification prompts should
+          // NOT show buttons when the conversation is re-loaded — only the last
+          // assistant message can still be active.
+          const isHistoricalClarification =
+            m.role === 'assistant' &&
+            idx < lastAssistantIdx &&
+            (msgStatus === 'needs_clarification' || msgStatus === 'needs_approval');
+
           return {
             role: m.role,
             content,
             toolCalls: m.tool_calls || [],
             tokenUsage: m.token_usage || null,
             traceId: m.trace_id || null,
-            // Restore clarification / approval state from DB metadata
-            status: m.status || m.metadata?.status,
+            // Restore clarification / approval state from DB metadata,
+            // but suppress it for historical (non-last) messages
+            status: isHistoricalClarification ? 'historical' : msgStatus,
             options: m.options || m.metadata?.options || [],
             question: m.question || m.metadata?.question || null,
             pending: m.pending || m.metadata?.pending || [],
-            clarifyAnswered: m.clarifyAnswered || m.metadata?.clarifyAnswered || false,
+            clarifyAnswered: isHistoricalClarification ? true : (m.clarifyAnswered || m.metadata?.clarifyAnswered || false),
+            cadDiagrams: m.cad_diagrams || m.metadata?.cad_diagrams || [],
             // Restore direct ingestion fields from DB metadata
             type: m.type || m.metadata?.type,
             filename: m.filename || m.metadata?.filename,
@@ -687,6 +701,7 @@ const ChatPage = () => {
                 options: data.options || [],
                 tokenUsage: data.token_usage || null,
                 traceId: data.trace_id || null,
+                cadDiagrams: data.cad_diagrams || [],
               }
             : m
         )
@@ -739,7 +754,10 @@ const ChatPage = () => {
   // (fileType tagging, filtering, dedup, sort) so this stays in sync with the
   // per-message "View Source" button in MessageRow.
   const updatePageViewer = (data) => {
-    const allSources = parseSources(data.tool_calls || [], allFiles);
+    let allSources = parseSources(data.tool_calls || [], allFiles);
+    if (data.cad_diagrams && data.cad_diagrams.length > 0) {
+      allSources = [...allSources, ...data.cad_diagrams];
+    }
     const viewableSources = buildViewableSources(allSources);
 
     if (viewableSources.length > 0) {
@@ -836,6 +854,7 @@ const ChatPage = () => {
                 options: data.options || [],
                 tokenUsage: data.token_usage || null,
                 traceId: data.trace_id || null,
+                cadDiagrams: data.cad_diagrams || [],
               }
             : m
         )
@@ -1207,6 +1226,7 @@ const ChatPage = () => {
                 options: data.options || [],
                 tokenUsage: data.token_usage || null,
                 traceId: data.trace_id || null,
+                cadDiagrams: data.cad_diagrams || [],
               }
             : m
         )
@@ -2585,11 +2605,50 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
       </div>
     );
   }
-  // ── End direct-ingestion cards ───────────────────────────────────────────
+  // ── Compact historical step messages ─────────────────────────────────────
+  // When a session is re-loaded, guided-process step prompts that have already
+  // been answered are tagged status='historical'. Render them as a slim pill
+  // so the chat doesn't fill up with full-size "Is this step completed?" cards.
+  const isHistoricalStep =
+    !isUser &&
+    msg.status === 'historical' &&
+    msg.options &&
+    msg.options.some(o => typeof o === 'string' && o.toLowerCase().includes('step complete'));
+
+  if (isHistoricalStep) {
+    // Extract step number from content like "Step 5 of 38: ..."
+    const stepMatch = (msg.content || '').match(/Step\s+(\d+)\s+(?:of\s+\d+)?/i);
+    const stepNum = stepMatch ? stepMatch[1] : null;
+    return (
+      <div className="py-0.5 flex justify-start">
+        <div className="max-w-full w-full">
+          <div className="flex items-center gap-2 px-1">
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-[#007a5a] bg-[#e6f7f0] border border-[#007a5a]/20 rounded-full px-2.5 py-0.5">
+              <CheckIcon className="h-3 w-3 stroke-[2.5]" />
+              {stepNum ? `Step ${stepNum} done` : 'Step done'}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  // ── End compact historical step ──────────────────────────────────────────
+
+  // ── Compact historical user "Step Complete - Next" messages ──────────────
+  // Suppress the plain "Step Complete - Next" user messages in history too,
+  // since the ✓ pill above already represents that step being done.
+  if (isUser) {
+    const trimmed = (msg.content || '').trim();
+    if (trimmed === 'Step Complete - Next' || trimmed === 'Stop checklist') {
+      return null; // hide redundant user step-navigation messages
+    }
+  }
+  // ── End compact historical user step messages ─────────────────────────────
 
   return (
     <div className={`py-2.5 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={isUser ? 'max-w-xl' : 'max-w-full w-full'}>
+
         {isUser ? (
           <div className="bg-[#4a154b] text-white rounded-2xl px-4 py-2.5 shadow-sm font-medium text-xs md:text-sm leading-relaxed whitespace-pre-wrap">
             {msg.content}
@@ -2635,7 +2694,31 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                               {children}
                             </a>
                           );
-                        }
+                        },
+                        // Fix: HTML <ol> uses list-style-type:decimal which drops the
+                        // tens digit on step 10+ in some CSS environments. Use an
+                        // explicit counter rendered as inline text instead.
+                        ol({ node, children, start, ...props }) {
+                          let counter = (typeof start === 'number' && !isNaN(start)) ? start : 1;
+                          const numbered = React.Children.map(children, (child) => {
+                            if (!child || typeof child !== 'object') return child;
+                            const num = counter++;
+                            return React.cloneElement(child, {
+                              style: { listStyle: 'none', paddingLeft: 0 },
+                              children: (
+                                <span style={{ display: 'flex', gap: '0.5em', alignItems: 'baseline' }}>
+                                  <span style={{ minWidth: '1.8em', textAlign: 'right', flexShrink: 0, fontWeight: 600, color: '#4a154b' }}>{num}.</span>
+                                  <span>{child.props?.children}</span>
+                                </span>
+                              ),
+                            });
+                          });
+                          return (
+                            <ol style={{ paddingLeft: '0.25rem', listStyle: 'none' }} {...props}>
+                              {numbered}
+                            </ol>
+                          );
+                        },
                       }}
                     >
                       {renderMathInMarkdown(msg.content)}
@@ -2865,6 +2948,19 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
                     >
                       <DocumentIcon className="h-4 w-4 text-[#4a154b]" />
                       View Source Documents ({pageSources.length})
+                    </button>
+                  </div>
+                )}
+
+                {/* View Associated CAD Diagram */}
+                {msg.cadDiagrams && msg.cadDiagrams.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-[#e6e6e6]">
+                    <button
+                      onClick={() => onViewPages(msg.cadDiagrams)}
+                      className="btn-secondary-pill text-xs inline-flex items-center gap-2 !py-2 bg-blue-50 border-blue-200 hover:bg-blue-100 text-blue-800"
+                    >
+                      <SparklesIcon className="h-4 w-4 text-blue-600" />
+                      View Associated CAD Diagram
                     </button>
                   </div>
                 )}

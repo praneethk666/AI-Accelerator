@@ -56,6 +56,14 @@ class ConversationStore(Protocol):
         """Update session metadata (custom title, pinned status)."""
         ...
 
+    def get_interactive_state(self, session_id: str) -> dict | None:
+        """Get current interactive checklist state for a session."""
+        ...
+
+    def set_interactive_state(self, session_id: str, state: dict | None) -> None:
+        """Set or clear interactive checklist state for a session."""
+        ...
+
 
 class PostgresConversationStore:
     """ConversationStore backed by the `conversations` table.
@@ -135,6 +143,7 @@ class PostgresConversationStore:
                     session_id  TEXT PRIMARY KEY,
                     title       TEXT,
                     pinned      BOOLEAN DEFAULT FALSE,
+                    interactive_state JSONB,
                     created_at  TIMESTAMPTZ DEFAULT NOW(),
                     updated_at  TIMESTAMPTZ DEFAULT NOW()
                 )
@@ -150,14 +159,20 @@ class PostgresConversationStore:
                 )
             except Exception:
                 pass
-            # Migrations for history performance optimizations
+            # Migrations for sessions table columns
+            for col_ddl in [
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_document_id TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS interactive_state JSONB",
+            ]:
+                try:
+                    pg.conn.execute(col_ddl)
+                except Exception:
+                    pass
+
             try:
-                pg.conn.execute(
-                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_document_id TEXT"
-                )
-                pg.conn.execute(
-                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT"
-                )
                 pg.conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at "
                     "ON sessions (pinned DESC, updated_at DESC)"
@@ -282,6 +297,38 @@ class PostgresConversationStore:
                 DO UPDATE SET active_document_id = EXCLUDED.active_document_id, updated_at = NOW()
                 """,
                 (session_id, doc_id),
+            )
+        finally:
+            pg.close()
+
+    def get_interactive_state(self, session_id: str) -> dict | None:
+        """Fetch current interactive checklist state for a session from Postgres."""
+        if not session_id:
+            return None
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT interactive_state FROM sessions WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            pg.close()
+
+    def set_interactive_state(self, session_id: str, state: dict | None) -> None:
+        """Atomically UPSERT current interactive checklist state for a session in Postgres."""
+        if not session_id:
+            return
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, interactive_state, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET interactive_state = EXCLUDED.interactive_state, updated_at = NOW()
+                """,
+                (session_id, _Json(state) if state else None),
             )
         finally:
             pg.close()

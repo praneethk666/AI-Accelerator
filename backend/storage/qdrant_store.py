@@ -89,14 +89,34 @@ class QdrantStore:
                 field_name=field,
                 field_schema=PayloadSchemaType.KEYWORD
             )
+        # Revision-tracking indexes: is_active_revision lets retrieval pre-filter
+        # out superseded chunks at the vector level. revision_id / document_hash
+        # enable future 'as-of' queries against a specific document version.
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection,
+                field_name="is_active_revision",
+                field_schema=PayloadSchemaType.BOOL,
+            )
+            for field in ["revision_id", "document_hash"]:
+                self.client.create_payload_index(
+                    collection_name=self.collection,
+                    field_name=field,
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+        except Exception:
+            pass  # older Qdrant versions may not support BOOL index — non-fatal
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk's dense + sparse vectors + tag payload (keyed by chunk_id)."""
         # tags flattened to top level so retrieval filters by plain keys (industry,
         # doc_type, ...); chunk_id/document_id kept explicit for the Postgres join.
+        # is_active_revision=True is stamped on write; mark_superseded_in_qdrant()
+        # flips this to False when a document is re-ingested.
         payload = {
             "chunk_id": chunk["chunk_id"],
             "document_id": chunk.get("document_id"),
+            "is_active_revision": True,
             **chunk.get("tags", {}),
         }
 
@@ -126,6 +146,7 @@ class QdrantStore:
             payload = {
                 "chunk_id": chunk["chunk_id"],
                 "document_id": chunk.get("document_id"),
+                "is_active_revision": True,
                 **chunk.get("tags", {}),
             }
             vector: dict = {DENSE: chunk["vector"]}
@@ -179,6 +200,24 @@ class QdrantStore:
 
     # back-compat alias: dense search was the original `search`
     search = search_dense
+
+    def mark_superseded_in_qdrant(self, document_id: str) -> None:
+        """Flip is_active_revision=False for all points belonging to this document.
+
+        Called during _preclean() before re-ingestion. Doing this BEFORE delete
+        ensures the flag is false if delete fails partway through (no ghost actives).
+        The subsequent delete_by_document() removes them completely; this is a
+        belt-and-suspenders guard for the window between the flag flip and the delete.
+        """
+        from qdrant_client.models import SetPayload, FilterSelector
+        try:
+            self.client.set_payload(
+                collection_name=self.collection,
+                payload={"is_active_revision": False},
+                points=FilterSelector(filter=_build_filter({"document_id": document_id})),
+            )
+        except Exception:
+            pass  # non-fatal — delete_by_document follows immediately
 
     def delete_by_document(self, document_id: str) -> None:
         """Delete every point belonging to a document (dense + sparse share one

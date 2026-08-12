@@ -80,42 +80,89 @@ class PostgresStore:
             dsn = get_db_url(config)
         # schema is owned by scripts/init_db.sql (run at DB init); no DDL here
         self.conn = psycopg.connect(dsn or dsn_from_env(), autocommit=True, prepare_threshold=None)
-        # Auto-migration: add file_path column to documents if it doesn't exist yet.
+        # Auto-migration: add columns/tables introduced after initial schema.
         # Guard with a class-level flag so this runs ONCE per process, not per request.
         if not PostgresStore._migration_done:
-            try:
-                self.conn.execute(
-                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT"
+            # Helper to run a DDL statement safely without aborting on individual error
+            def _safe_exec(stmt: str):
+                try:
+                    self.conn.execute(stmt)
+                except Exception:
+                    pass
+
+            # Existing migrations
+            _safe_exec("ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_path TEXT")
+            _safe_exec("ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS session_id TEXT")
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id, created_at)")
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)")
+            _safe_exec(
+                """
+                CREATE TABLE IF NOT EXISTS terminal_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ DEFAULT NOW(),
+                    level TEXT,
+                    logger_name TEXT,
+                    message TEXT,
+                    exception TEXT
                 )
-                self.conn.execute(
-                    "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS session_id TEXT"
+                """
+            )
+            # ── P0: Document revision tracking & RBAC ─────────────────────────
+            for col_ddl in [
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS revision_id UUID",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_hash TEXT",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS effective_date TIMESTAMPTZ",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS superseded_by UUID",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingestion_quality_score REAL",
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS previous_chunk_count INTEGER",
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS allowed_roles TEXT[]",
+            ]:
+                _safe_exec(col_ddl)
+
+            # ── P0: Query audit table ──────────────────────────────────────────
+            _safe_exec(
+                """
+                CREATE TABLE IF NOT EXISTS query_audit (
+                    audit_id             UUID PRIMARY KEY,
+                    session_id           TEXT,
+                    query_hash           TEXT NOT NULL,
+                    query_text           TEXT NOT NULL,
+                    retrieved_chunk_ids  TEXT[],
+                    answer_excerpt       TEXT,
+                    latency_ms           REAL,
+                    index_version        TEXT,
+                    user_roles           TEXT[],
+                    created_at           TIMESTAMPTZ DEFAULT NOW()
                 )
-                self.conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id, created_at)"
+                """
+            )
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_query_audit_session ON query_audit (session_id, created_at DESC)")
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_query_audit_created ON query_audit (created_at DESC)")
+
+            # ── P0: Index version registry ─────────────────────────────────────
+            _safe_exec(
+                """
+                CREATE TABLE IF NOT EXISTS index_versions (
+                    index_version   TEXT PRIMARY KEY,
+                    model_name      TEXT NOT NULL,
+                    config_hash     TEXT,
+                    created_at      TIMESTAMPTZ DEFAULT NOW()
                 )
-                self.conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls (created_at DESC)"
-                )
-                self.conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS terminal_logs (
-                        id BIGSERIAL PRIMARY KEY,
-                        ts TIMESTAMPTZ DEFAULT NOW(),
-                        level TEXT,
-                        logger_name TEXT,
-                        message TEXT,
-                        exception TEXT
-                    )
-                    """
-                )
-                PostgresStore._migration_done = True
-            except Exception:
-                pass  # DB might not be reachable yet (health probe) — never block startup
+                """
+            )
+
+            # ── Indexes for new columns ────────────────────────────────────────
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents (document_hash)")
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_documents_revision ON documents (revision_id)")
+            _safe_exec("CREATE INDEX IF NOT EXISTS idx_chunks_roles ON chunks USING gin(allowed_roles) WHERE allowed_roles IS NOT NULL")
+
+            PostgresStore._migration_done = True
 
     def write_chunk(self, chunk: dict) -> None:
         """Upsert one chunk row (full record), keyed by chunk_id.
 
-        Persists table_data / image_path too — table and image_caption chunks
+        Persists table_data / image_path / allowed_roles too — table and image_caption chunks
         carry these and retrieval/citations need them back (Qdrant holds only the
         vectors + tag payload; Postgres is the source of truth for content)."""
         chunk = _strip_nul(chunk)
@@ -123,16 +170,17 @@ class PostgresStore:
             """
             INSERT INTO chunks
                 (chunk_id, document_id, text, token_count, tags, source_ref,
-                 table_data, image_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 table_data, image_path, allowed_roles)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (chunk_id) DO UPDATE SET
-                document_id = EXCLUDED.document_id,
-                text        = EXCLUDED.text,
-                token_count = EXCLUDED.token_count,
-                tags        = EXCLUDED.tags,
-                source_ref  = EXCLUDED.source_ref,
-                table_data  = EXCLUDED.table_data,
-                image_path  = EXCLUDED.image_path
+                document_id   = EXCLUDED.document_id,
+                text          = EXCLUDED.text,
+                token_count   = EXCLUDED.token_count,
+                tags          = EXCLUDED.tags,
+                source_ref    = EXCLUDED.source_ref,
+                table_data    = EXCLUDED.table_data,
+                image_path    = EXCLUDED.image_path,
+                allowed_roles = EXCLUDED.allowed_roles
             """,
             (
                 chunk["chunk_id"],
@@ -143,6 +191,7 @@ class PostgresStore:
                 _Json(chunk.get("source_ref")),
                 _Json(chunk.get("table_data")) if chunk.get("table_data") else None,
                 chunk.get("image_path"),
+                chunk.get("allowed_roles") or None,   # None = public (no ACL)
             ),
         )
 
@@ -156,16 +205,17 @@ class PostgresStore:
                 """
                 INSERT INTO chunks
                     (chunk_id, document_id, text, token_count, tags, source_ref,
-                     table_data, image_path)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                     table_data, image_path, allowed_roles)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (chunk_id) DO UPDATE SET
-                    document_id = EXCLUDED.document_id,
-                    text        = EXCLUDED.text,
-                    token_count = EXCLUDED.token_count,
-                    tags        = EXCLUDED.tags,
-                    source_ref  = EXCLUDED.source_ref,
-                    table_data  = EXCLUDED.table_data,
-                    image_path  = EXCLUDED.image_path
+                    document_id   = EXCLUDED.document_id,
+                    text          = EXCLUDED.text,
+                    token_count   = EXCLUDED.token_count,
+                    tags          = EXCLUDED.tags,
+                    source_ref    = EXCLUDED.source_ref,
+                    table_data    = EXCLUDED.table_data,
+                    image_path    = EXCLUDED.image_path,
+                    allowed_roles = EXCLUDED.allowed_roles
                 """,
                 [
                     (
@@ -177,6 +227,7 @@ class PostgresStore:
                         _Json(c.get("source_ref")),
                         _Json(c.get("table_data")) if c.get("table_data") else None,
                         c.get("image_path"),
+                        c.get("allowed_roles") or None,
                     )
                     for c in chunks
                 ],
@@ -404,7 +455,7 @@ class PostgresStore:
             # ::text cast keeps this agnostic to the chunk_id column type (uuid)
             """
             SELECT chunk_id, document_id, text, token_count, tags, source_ref,
-                   table_data, image_path
+                   table_data, image_path, allowed_roles
             FROM chunks WHERE chunk_id::text = ANY(%s)
             """,
             (chunk_ids,),
@@ -419,6 +470,7 @@ class PostgresStore:
                 "source_ref": r[5],
                 "table_data": r[6],
                 "image_path": r[7],
+                "allowed_roles": r[8] or [],
             }
             for r in rows
         ]
@@ -468,33 +520,45 @@ class PostgresStore:
     def finalize_document(
         self, document_id: str, *, document_type, industry, route, confidence,
         status, errors, metrics=None, token_usage=None, indexed_tokens=None,
-        chunk_count=None,
+        chunk_count=None, revision_id=None, document_hash=None, effective_date=None,
+        ingestion_quality_score=None, previous_chunk_count=None,
     ) -> None:
         """Record categorization results, final aggregates, and terminal status after
         the pipeline runs — the durable end-state the API reports."""
         self.conn.execute(
             """
             UPDATE documents SET
-                document_type  = %s,
-                industry       = %s,
-                route          = %s,
-                confidence     = %s,
-                status         = %s,
-                errors         = %s,
-                metrics        = COALESCE(%s::jsonb, metrics),
-                token_usage    = %s,
-                indexed_tokens = %s,
-                chunk_count    = %s,
-                current_step   = 'done',
-                progress       = 1.0,
-                updated_at     = NOW()
+                document_type          = %s,
+                industry               = %s,
+                route                  = %s,
+                confidence             = %s,
+                status                 = %s,
+                errors                 = %s,
+                metrics                = COALESCE(%s::jsonb, metrics),
+                token_usage            = %s,
+                indexed_tokens         = %s,
+                chunk_count            = %s,
+                current_step           = 'done',
+                progress               = 1.0,
+                updated_at             = NOW(),
+                revision_id            = COALESCE(%s::uuid, revision_id),
+                document_hash          = COALESCE(%s, document_hash),
+                effective_date         = COALESCE(%s, effective_date),
+                ingestion_quality_score = COALESCE(%s, ingestion_quality_score),
+                previous_chunk_count   = COALESCE(%s, previous_chunk_count)
             WHERE document_id::text = %s
             """,
             (document_type, industry, route, confidence, status,
              _Json(errors or []),
              _Json(metrics) if metrics is not None else None,
              _Json(token_usage) if token_usage is not None else None,
-             indexed_tokens, chunk_count, document_id),
+             indexed_tokens, chunk_count,
+             str(revision_id) if revision_id else None,
+             document_hash,
+             effective_date,
+             ingestion_quality_score,
+             previous_chunk_count,
+             document_id),
         )
 
     def list_documents(self) -> list[dict]:
@@ -650,6 +714,128 @@ class PostgresStore:
             "SELECT 1 FROM documents WHERE document_id::text = %s", (document_id,)
         ).fetchone()
         return bool(row)
+
+    # ── Revision tracking ───────────────────────────────────────────────────────
+
+    def mark_superseded(self, document_id: str, superseded_by: str) -> None:
+        """Mark a document revision as superseded by a newer one.
+
+        Keeps the document row (for audit history / 'as-of' queries) but
+        updates its status to 'superseded' and records who replaced it.
+        The chunks are deleted separately by _preclean() in the new ingest run.
+        """
+        self.conn.execute(
+            """
+            UPDATE documents SET
+                status        = 'superseded',
+                superseded_at = NOW(),
+                superseded_by = %s::uuid,
+                updated_at    = NOW()
+            WHERE document_id::text = %s
+              AND status NOT IN ('superseded')
+            """,
+            (superseded_by, document_id),
+        )
+
+    def get_previous_chunk_count(self, document_id: str) -> int | None:
+        """Return the current chunk_count before re-ingestion (for quality gate comparison)."""
+        row = self.conn.execute(
+            "SELECT chunk_count FROM documents WHERE document_id::text = %s",
+            (document_id,),
+        ).fetchone()
+        return row[0] if row else None
+
+    # ── Query audit ─────────────────────────────────────────────────────────────
+
+    def write_query_audit(
+        self,
+        *,
+        session_id: str | None,
+        query_text: str,
+        retrieved_chunk_ids: list[str],
+        answer_excerpt: str | None = None,
+        latency_ms: float | None = None,
+        index_version: str | None = None,
+        user_roles: list[str] | None = None,
+    ) -> None:
+        """Append one query audit record. Call after answer generation completes.
+
+        This is the compliance record: session, query hash, which chunks were
+        used, and the first 500 chars of the answer. Append-only — never updated.
+        """
+        import hashlib as _hashlib
+        import uuid as _uuid
+
+        query_hash = _hashlib.sha256(query_text.encode()).hexdigest()
+        self.conn.execute(
+            """
+            INSERT INTO query_audit
+                (audit_id, session_id, query_hash, query_text, retrieved_chunk_ids,
+                 answer_excerpt, latency_ms, index_version, user_roles)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(_uuid.uuid4()),
+                session_id,
+                query_hash,
+                query_text,
+                [str(c) for c in (retrieved_chunk_ids or [])],
+                (answer_excerpt or "")[:500],
+                latency_ms,
+                index_version,
+                user_roles or None,
+            ),
+        )
+
+    def list_query_audits(
+        self,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Fetch query audit records for compliance inspection."""
+        query = (
+            "SELECT audit_id, session_id, query_hash, query_text, retrieved_chunk_ids, "
+            "answer_excerpt, latency_ms, index_version, user_roles, created_at "
+            "FROM query_audit WHERE 1=1"
+        )
+        params: list = []
+        if session_id:
+            query += " AND session_id = %s"
+            params.append(session_id)
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        rows = self.conn.execute(query, params).fetchall()
+        return [
+            {
+                "audit_id": str(r[0]),
+                "session_id": r[1],
+                "query_hash": r[2],
+                "query_text": r[3],
+                "retrieved_chunk_ids": r[4] or [],
+                "answer_excerpt": r[5],
+                "latency_ms": r[6],
+                "index_version": r[7],
+                "user_roles": r[8] or [],
+                "created_at": r[9].isoformat() if r[9] else None,
+            }
+            for r in rows
+        ]
+
+    # ── Index version registry ───────────────────────────────────────────────────
+
+    def register_index_version(
+        self, index_version: str, model_name: str, config_hash: str | None = None
+    ) -> None:
+        """Record a new index version (model + config). Idempotent."""
+        self.conn.execute(
+            """
+            INSERT INTO index_versions (index_version, model_name, config_hash)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (index_version) DO NOTHING
+            """,
+            (index_version, model_name, config_hash),
+        )
 
     def close(self) -> None:
         self.conn.close()

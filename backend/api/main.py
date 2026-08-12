@@ -114,6 +114,15 @@ EXT_TO_FILE_TYPE = {
 
 app = FastAPI(title="Document Intelligence + RAG Accelerator", version="1.0.0")
 
+
+@app.on_event("startup")
+def startup_event():
+    pass
+
+
+
+
+
 # CORS origins: configurable via ALLOWED_ORIGINS env var (comma-separated).
 # Default covers local dev; set ALLOWED_ORIGINS in production .env.
 _ALLOWED_ORIGINS = [
@@ -1445,6 +1454,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
                     "execution_trace": exec_trace,
                     "token_usage": result.get("token_usage"),
                     "trace_id": result.get("trace_id"),
+                    "cad_diagrams": result.get("cad_diagrams"),
                 },
             )
         except Exception:
@@ -1468,6 +1478,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
                     "execution_trace": exec_trace,
                     "token_usage": result.get("token_usage"),
                     "trace_id": result.get("trace_id"),
+                    "cad_diagrams": result.get("cad_diagrams"),
                 },
             )
         except Exception:
@@ -1502,6 +1513,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
         "execution_trace": exec_trace,
         "token_usage": result.get("token_usage"),
         "trace_id": result.get("trace_id"),
+        "cad_diagrams": result.get("cad_diagrams"),
     }
 
 
@@ -1747,6 +1759,63 @@ def get_vision_calls(file_id: str, limit: int = 200):
         pg.close()
 
 
+# ── P0 Compliance & Observability Endpoints ──────────────────────────────────
+
+@app.get("/audit/queries")
+def list_query_audits(
+    request: Request,
+    session_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Compliance: list query audit records (query text, retrieved chunk IDs, latency).
+
+    Accessible to admin users. Pass X-Admin-Key header matching the ADMIN_API_KEY
+    env var. Returns up to 50 records. Filter by session_id for a single conversation.
+    """
+    admin_key = os.getenv("ADMIN_API_KEY")
+    if admin_key:
+        provided = request.headers.get("X-Admin-Key", "")
+        if provided != admin_key:
+            raise HTTPException(status_code=403, detail="Admin access required")
+
+    pg = _pg()
+    try:
+        return pg.list_query_audits(session_id=session_id, limit=limit, offset=offset)
+    finally:
+        pg.close()
+
+
+@app.get("/audit/index-versions")
+def list_index_versions(request: Request):
+    """List registered index versions (embedding model + config hash + date).
+
+    Lets you trace which embedding model was active when an answer was generated.
+    Admin-only.
+    """
+    admin_key = os.getenv("ADMIN_API_KEY")
+    if admin_key:
+        provided = request.headers.get("X-Admin-Key", "")
+        if provided != admin_key:
+            raise HTTPException(status_code=403, detail="Admin access required")
+
+    pg = _pg()
+    try:
+        rows = pg.conn.execute(
+            "SELECT index_version, model_name, config_hash, created_at "
+            "FROM index_versions ORDER BY created_at DESC"
+        ).fetchall()
+        return [
+            {
+                "index_version": r[0],
+                "model_name": r[1],
+                "config_hash": r[2],
+                "created_at": r[3].isoformat() if r[3] else None,
+            }
+            for r in rows
+        ]
+    finally:
+        pg.close()
 
 
 @app.get("/")

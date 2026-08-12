@@ -6,6 +6,7 @@ RetrievalTool — implements the Tool Protocol from backend/core/tool.py.
   run(state, config)
     READS  state["sub_questions"]    list[str]   — decomposed sub-questions
            state["document_scope"]   list[str]   — doc_ids to restrict search
+           state["user_roles"]       list[str]   — JWT roles for RBAC filtering
     WRITES state["retrieved_chunks"] list[Chunk] — flat, deduped, best-first
     ERRORS state["errors"]           list        — append only, never raise
 
@@ -36,6 +37,7 @@ class RetrievalTool:
     State contract:
         READS  sub_questions    list[str]   ← decomposed sub-questions
                document_scope  list[str]   ← doc_id filter, empty = all docs
+               user_roles      list[str]   ← JWT roles for RBAC post-filter
         WRITES retrieved_chunks list[Chunk]
         ERRORS errors           list
     """
@@ -45,6 +47,8 @@ class RetrievalTool:
     def run(self, state: PipelineState, config: dict) -> PipelineState:
         sub_questions: list[str] = state.get("sub_questions") or []
         doc_scope:     list[str] = state.get("document_scope") or []
+        # RBAC: user roles from JWT, set by the API layer before calling the pipeline.
+        user_roles:    list[str] = state.get("user_roles") or []
 
         if not sub_questions:
             raw_q = state.get("standalone_query") or state.get("query")
@@ -87,6 +91,7 @@ class RetrievalTool:
 
         all_chunks: list[Chunk] = []
         seen_ids:   set[str]   = set()
+        _t0_total = time.perf_counter()
 
         for query in sub_questions:
             try:
@@ -105,16 +110,20 @@ class RetrievalTool:
                         query=query, retrieval_cfg=retrieval_cfg, full_config=config,
                         filters=(hard_filters or None),
                     )
-                logger.debug(
-                    "RetrievalTool q=%r method=%s n=%d %.1fms",
-                    query[:60], result["method"],
-                    len(result["chunks"]), result["latency_ms"],
-                )
+
+                new_chunk_ids = []
                 for chunk in result["chunks"]:
                     cid = chunk["chunk_id"]
                     if cid not in seen_ids:
                         seen_ids.add(cid)
                         all_chunks.append(chunk)
+                        new_chunk_ids.append(str(cid))
+
+                logger.info(
+                    "RetrievalTool q=%r method=%s n=%d new_ids=%s %.1fms",
+                    query[:60], result["method"],
+                    len(result["chunks"]), new_chunk_ids, result["latency_ms"],
+                )
 
             except Exception as exc:
                 logger.error("RetrievalTool failed for %r: %s", query[:60], exc)
@@ -122,7 +131,43 @@ class RetrievalTool:
                 errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
                 state["errors"] = errors
 
-        # ── Fallback: Context Expansion (page-level) ──────────────────────────
+        # ── RBAC post-filter ─────────────────────────────────────────────────────────
+        # Drop chunks whose allowed_roles list is set and doesn't intersect with
+        # user_roles. A chunk with allowed_roles=None (or []) is PUBLIC — all users.
+        if user_roles:
+            user_roles_set = set(r.lower() for r in user_roles)
+            pre_acl = len(all_chunks)
+            all_chunks = [
+                c for c in all_chunks
+                if _rbac_allowed(c, user_roles_set)
+            ]
+            dropped = pre_acl - len(all_chunks)
+            if dropped:
+                logger.info("RetrievalTool RBAC: dropped %d chunks (user roles: %s)", dropped, user_roles)
+        else:
+            # No user roles in state — pass-through (unauthenticated / internal call).
+            # ACL-restricted chunks are NOT dropped here; deploy with an auth middleware
+            # that always injects user_roles before any real user request reaches this.
+            pass
+
+        # ── OTel span enrichment ─────────────────────────────────────────────────────
+        try:
+            from opentelemetry import trace as _otel_trace
+            span = _otel_trace.get_current_span()
+            if span and span.is_recording():
+                chunk_ids_str = ",".join(str(c["chunk_id"]) for c in all_chunks[:50])
+                span.set_attribute("retrieval.chunk_ids", chunk_ids_str)
+                span.set_attribute("retrieval.chunk_count", len(all_chunks))
+                # Stamp the index_version from the first chunk that carries it
+                for c in all_chunks:
+                    iv = (c.get("tags") or {}).get("index_version")
+                    if iv:
+                        span.set_attribute("retrieval.index_version", iv)
+                        break
+        except Exception:
+            pass  # OTel is optional; never let it break retrieval
+
+        # ── Fallback: Context Expansion (page-level) ───────────────────────────
         # If all retrieved chunks score below `fallback_threshold`, it means the
         # query terms exist in the document but are spread across different chunks
         # (e.g. "WORKHEAD" in one chunk, spare-parts table in another). Instead of
@@ -160,8 +205,57 @@ class RetrievalTool:
             state["retrieved_chunks"] = selected_chunks
         else:
             state["retrieved_chunks"] = all_chunks
+
+        # ── Persist audit record (best-effort, never block retrieval) ───────────
+        try:
+            final_chunks  = state["retrieved_chunks"]
+            total_ms      = round((time.perf_counter() - _t0_total) * 1000, 1)
+            raw_query_str = (state.get("query") or "").strip()
+            # Infer index_version from the first chunk that carries it in tags
+            _index_ver = None
+            for _c in final_chunks:
+                _iv = (_c.get("tags") or {}).get("index_version")
+                if _iv:
+                    _index_ver = _iv
+                    break
+            from backend.storage.postgres_store import PostgresStore as _PGS
+            _pg = _PGS()
+            try:
+                _pg.write_query_audit(
+                    session_id=state.get("session_id"),
+                    query_text=raw_query_str or "(unknown)",
+                    retrieved_chunk_ids=[str(c["chunk_id"]) for c in final_chunks],
+                    latency_ms=total_ms,
+                    index_version=_index_ver,
+                    user_roles=user_roles or None,
+                )
+            finally:
+                _pg.close()
+        except Exception:
+            logger.debug("RetrievalTool: query_audit write failed (non-fatal)", exc_info=True)
+
         return state
 
+
+
+# ── RBAC helper ───────────────────────────────────────────────────────────────
+
+def _rbac_allowed(chunk: dict, user_roles_set: set[str]) -> bool:
+    """Return True if the user is allowed to see this chunk.
+
+    A chunk is PUBLIC (allowed_roles is None or []) — any user can see it.
+    A chunk is RESTRICTED if allowed_roles is a non-empty list; only users
+    whose roles intersect with allowed_roles may see it.
+
+    Roles are stored in both chunk["allowed_roles"] (top-level) and
+    chunk["tags"]["allowed_roles"] (for Qdrant payload filtering later).
+    We check both, preferring the top-level field.
+    """
+    roles = chunk.get("allowed_roles") or (chunk.get("tags") or {}).get("allowed_roles")
+    if not roles:
+        return True   # public chunk
+    chunk_roles = set(r.lower() for r in roles)
+    return bool(user_roles_set & chunk_roles)
 
 
 # ── dispatcher ────────────────────────────────────────────────────────────────

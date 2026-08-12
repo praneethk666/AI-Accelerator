@@ -530,7 +530,7 @@ class AnswererTool:
             # for PPT), so read every locator field with .get and never assume page.
             citations = []
             for chunk in chunks:
-                ref = chunk.get("source_ref") or {}
+                ref  = chunk.get("source_ref") or {}
                 tags = chunk.get("tags") or {}
                 citations.append({
                     "filename":    _clean_filename(ref.get("filename") or "") or ref.get("filename"),
@@ -546,6 +546,14 @@ class AnswererTool:
                     "table_data":  chunk.get("table_data"),
                     "chunk_type":  tags.get("chunk_type"),
                     "section":     tags.get("section") or ref.get("section"),
+                    # ── Revision traceability ────────────────────────────────
+                    # These let the consumer (UI, audit log) pin exactly which
+                    # content version of the document produced this answer.
+                    # revision_id: unique per ingestion run (not per file)
+                    # document_hash: sha256 of file bytes — same content = same hash
+                    "revision_id":   tags.get("revision_id"),
+                    "document_hash": tags.get("document_hash"),
+                    "effective_date": tags.get("effective_date"),
                 })
 
             # Don't attach a source list to a 'not found' answer — it drew on nothing.

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS documents (
     industry      TEXT,
     route         TEXT,
     confidence    REAL,                         -- categorize confidence (UI shows a bar)
-    status        TEXT DEFAULT 'processing',   -- processing | ready | failed
+    status        TEXT DEFAULT 'processing',   -- processing | ready | failed | superseded
     errors        JSONB DEFAULT '[]',
     -- live ingestion progress (DB is the single source of truth; the API reads
     -- these, survives restarts + works across workers — no in-memory state).
@@ -30,7 +30,16 @@ CREATE TABLE IF NOT EXISTS documents (
     progress        REAL DEFAULT 0,             -- 0..1 (completed_steps / total_steps)
     total_steps     INTEGER,
     created_at    TIMESTAMP DEFAULT NOW(),
-    updated_at    TIMESTAMP DEFAULT NOW()
+    updated_at    TIMESTAMP DEFAULT NOW(),
+    -- ── Revision tracking (P0) ─────────────────────────────────────────────
+    revision_id       UUID,                     -- unique id per ingestion run (not per file)
+    document_hash     TEXT,                     -- sha256 of file bytes (content identity)
+    effective_date    TIMESTAMPTZ,              -- when this revision becomes the active version
+    superseded_at     TIMESTAMPTZ,              -- set when a newer revision replaces this one
+    superseded_by     UUID,                     -- document_id of the successor revision
+    -- ── Ingestion quality (P1) ─────────────────────────────────────────────
+    ingestion_quality_score  REAL,             -- 0..1; computed from extraction confidence
+    previous_chunk_count     INTEGER           -- chunk_count of the prior revision (for sanity check)
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -42,7 +51,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     source_ref    JSONB,
     table_data    JSONB,        -- non-null only for table chunks
     image_path    TEXT,         -- non-null only for image_caption chunks
-    created_at    TIMESTAMP DEFAULT NOW()
+    created_at    TIMESTAMP DEFAULT NOW(),
+    -- ── Access control (P1 RBAC) ───────────────────────────────────────────
+    allowed_roles TEXT[]        -- NULL = public; otherwise restrict to these JWT roles
 );
 
 -- Raw extracted blocks (extractor output BEFORE chunking — text/heading/table/
@@ -105,15 +116,46 @@ CREATE TABLE IF NOT EXISTS conversations (
     created_at    TIMESTAMP DEFAULT NOW()
 );
 
+-- ── Query audit log (P0 Observability) ────────────────────────────────────
+-- Every retrieval+answer turn is logged here for compliance inspection and
+-- hallucination debugging. Append-only; never update or delete rows.
+CREATE TABLE IF NOT EXISTS query_audit (
+    audit_id             UUID PRIMARY KEY,
+    session_id           TEXT,
+    query_hash           TEXT NOT NULL,          -- sha256(query_text) — privacy-safe filter key
+    query_text           TEXT NOT NULL,
+    retrieved_chunk_ids  TEXT[],                 -- chunk_ids returned to the LLM
+    answer_excerpt       TEXT,                   -- first 500 chars of the answer
+    latency_ms           REAL,
+    index_version        TEXT,                   -- embedding model version active at query time
+    user_roles           TEXT[],                 -- roles from JWT at query time
+    created_at           TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_query_audit_session  ON query_audit (session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_audit_hash     ON query_audit (query_hash);
+CREATE INDEX IF NOT EXISTS idx_query_audit_created  ON query_audit (created_at DESC);
+
+-- ── Index version registry (P0 Index Versioning) ───────────────────────────
+-- Tracks which embedding model + config was active for each ingestion batch.
+CREATE TABLE IF NOT EXISTS index_versions (
+    index_version   TEXT PRIMARY KEY,            -- e.g. "bge-m3@2026-08-11"
+    model_name      TEXT NOT NULL,
+    config_hash     TEXT,                        -- sha256 of relevant embeddings config
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ── Indexes ────────────────────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_chunks_tags      ON chunks USING gin(tags);
-CREATE INDEX IF NOT EXISTS idx_chunks_doc       ON chunks (document_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_img       ON chunks (image_path) WHERE image_path IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_chunks_tokens    ON chunks (document_id, token_count);
-CREATE INDEX IF NOT EXISTS idx_conversations    ON conversations (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chunks_tags          ON chunks USING gin(tags);
+CREATE INDEX IF NOT EXISTS idx_chunks_doc           ON chunks (document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_img           ON chunks (image_path) WHERE image_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chunks_tokens        ON chunks (document_id, token_count);
+CREATE INDEX IF NOT EXISTS idx_chunks_roles         ON chunks USING gin(allowed_roles) WHERE allowed_roles IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_conversations        ON conversations (session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_session_created ON conversations (session_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_conversations_session_role_created ON conversations (session_id, role, created_at, id) WHERE role = 'user';
-CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status);
+CREATE INDEX IF NOT EXISTS idx_documents_status     ON documents (status);
+CREATE INDEX IF NOT EXISTS idx_documents_hash       ON documents (document_hash);
+CREATE INDEX IF NOT EXISTS idx_documents_revision   ON documents (revision_id);
 
 -- ── Guardrails (v5 Tables) ──────────────────────────────────────────────────
 -- Operational guardrail events log (all events)

@@ -351,7 +351,7 @@ _DROP_KINDS = {"logo", "banner", "header_footer", "decoration", "rule_line",
                "text", "blank"}
 
 
-def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict) -> dict:
+def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict, known_caption: str = "") -> dict:
     """SEMANTIC FIGURE GATE: one VLM call both classifies a crop (photo / diagram /
     schematic / circuit / cad_drawing / chart / … vs logo / banner / text / blank) and
     captions it. Returns {keep, kind, caption}. This replaces geometry thresholds for
@@ -362,11 +362,14 @@ def classify_caption_crop(png_bytes: bytes, page_context: str, config: dict) -> 
     and use the raw reply as the caption (never silently lose content)."""
     from backend.vision.block_builder import _extract_json
     cfg = config.get("vision_ocr") or {}
-    raw = describe_image(png_bytes, prompts.figure_prompt(page_context), {"vision": cfg})
+    ctx = page_context
+    if known_caption:
+        ctx = f"KNOWN CAPTION: {known_caption}\n{ctx}"
+    raw = describe_image(png_bytes, prompts.figure_prompt(ctx), {"vision": cfg})
     data = _extract_json(raw)
     if not isinstance(data, dict):
         # Couldn't parse structure — don't lose the figure; keep with the raw caption.
-        return {"keep": True, "kind": "unknown", "caption": (raw or "").strip()[:600]}
+        return {"keep": True, "kind": "unknown", "caption": (known_caption or raw or "").strip()[:600]}
     kind = str(data.get("kind") or "").strip().lower()
     keep = data.get("keep")
     if keep is None:                       # infer from kind if the model omitted the flag

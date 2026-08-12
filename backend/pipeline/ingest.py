@@ -24,6 +24,7 @@ from backend.core.config import PipelineConfig, load_config
 from backend.core.tracing import traced_request, record_handled_error
 from backend.pipeline.default_registry import build_default_registry
 from backend.pipeline.graph import run_pipeline
+from backend.pipeline.quality_gates import run_quality_gates, compute_index_version
 from backend.core.paths import display_filename
 from backend.storage.postgres_store import PostgresStore
 from backend.storage.qdrant_store import QdrantStore
@@ -63,13 +64,20 @@ def file_type_of(path: str) -> str:
     return EXT_TO_FILE_TYPE.get(os.path.splitext(path)[1].lower(), "unknown")
 
 
-def _content_id(file_path: str) -> str:
-    """Deterministic document_id from file content — same bytes => same id."""
+def _content_id(file_path: str) -> tuple[str, str]:
+    """Deterministic document_id and hex SHA-256 hash from file content.
+
+    Returns (document_id, document_hash). Same bytes => same values.
+    The document_hash is stored on both the documents row AND every chunk's
+    tags so retrieval can trace which content version an answer came from.
+    """
     h = hashlib.sha256()
     with open(file_path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
-    return str(uuid.uuid5(_DOC_NAMESPACE, h.hexdigest()))
+    hex_hash = h.hexdigest()
+    doc_id   = str(uuid.uuid5(_DOC_NAMESPACE, hex_hash))
+    return doc_id, hex_hash
 
 
 def _ingestion_cfg(cfg: dict) -> PipelineConfig:
@@ -82,7 +90,12 @@ def _ingestion_cfg(cfg: dict) -> PipelineConfig:
 
 
 def _preclean(document_id: str, cfg: dict) -> None:
-    """Remove any prior chunks for this document from both stores (idempotency)."""
+    """Remove any prior chunks for this document from both stores (idempotency).
+
+    Flips is_active_revision=False in Qdrant BEFORE deleting, so there is no
+    window where old chunks are still searchable with is_active_revision=True
+    while new ones haven't been written yet.
+    """
     pg = PostgresStore()
     try:
         pg.delete_chunks(document_id)
@@ -93,7 +106,8 @@ def _preclean(document_id: str, cfg: dict) -> None:
     try:
         vectors = QdrantStore(dim, collection)
         try:
-            vectors.delete_by_document(document_id)
+            vectors.mark_superseded_in_qdrant(document_id)   # flip flag first
+            vectors.delete_by_document(document_id)          # then hard delete
         finally:
             vectors.close()
     except Exception:
@@ -109,21 +123,24 @@ def ingest_document(
     registry=None,
     on_step=None,
     on_complete=None,
+    allowed_roles: list[str] | None = None,
 ) -> dict:
     """Run the full ingestion pipeline on one file and return its outcome.
 
     Args:
-        file_path: path to the document (pdf/xlsx/pptx/image).
-        document_id: reuse this id (update in place). If None, it's derived from
-            the file's content hash so the same file is idempotent.
-        config: loaded config dict; defaults to load_config(CONFIG_PATH).
-        registry: tool registry; defaults to build_default_registry(). Pass a
-            prebuilt one (e.g. from the API) to avoid re-warming models.
-        on_step: optional callback(entry, snapshot) for live per-step progress.
-        on_complete: optional callback(result) run after finalize with the FULL
-            pipeline result (includes chunks + "status") — lets a caller do its own
-            tail work (e.g. the API renders page images) without bloating the
-            agent-facing return.
+        file_path:     path to the document (pdf/xlsx/pptx/image).
+        document_id:   reuse this id (update in place). If None, it's derived from
+                       the file's content hash so the same file is idempotent.
+        config:        loaded config dict; defaults to load_config(CONFIG_PATH).
+        registry:      tool registry; defaults to build_default_registry(). Pass a
+                       prebuilt one (e.g. from the API) to avoid re-warming models.
+        on_step:       optional callback(entry, snapshot) for live per-step progress.
+        on_complete:   optional callback(result) run after finalize with the FULL
+                       pipeline result (includes chunks + "status") — lets a caller
+                       do its own tail work (e.g. the API renders page images) without
+                       bloating the agent-facing return.
+        allowed_roles: optional list of JWT roles that may access this document's
+                       chunks. None (default) = public — all authenticated users.
 
     Returns:
         {"document_id", "status", "metrics", "errors", "trace_id"}. status is one of:
@@ -150,9 +167,30 @@ def ingest_document(
     if not os.path.isfile(file_path_for_pipeline):
         raise FileNotFoundError(file_path_for_pipeline)
 
-    document_id = document_id or _content_id(file_path_for_pipeline)
+    # ── Revision tracking: derive stable IDs from file content ───────────────
+    _derived_id, document_hash = _content_id(file_path_for_pipeline)
+    document_id  = document_id or _derived_id
+    revision_id  = uuid.uuid4()              # unique per run, even for same file
+    effective_date = __import__('datetime').datetime.utcnow()
+
+    # ── Index versioning: stamp model + date on every ingestion run ─────────
+    model_name          = cfg.get("embeddings", {}).get("model", "unknown")
+    embedding_model_ver = model_name.split("/")[-1]   # strip org prefix if any
+    index_version       = compute_index_version(model_name, cfg)
+
     file_type = file_type_of(file_path_for_pipeline)
-    filename = display_filename(file_path_for_pipeline)
+    filename  = display_filename(file_path_for_pipeline)
+
+    # Capture previous chunk count BEFORE preclean for the quality gate.
+    previous_chunk_count: int | None = None
+    try:
+        _pg_pre = PostgresStore()
+        try:
+            previous_chunk_count = _pg_pre.get_previous_chunk_count(document_id)
+        finally:
+            _pg_pre.close()
+    except Exception:
+        logger.debug("ingest: could not read previous_chunk_count for %s", document_id)
 
     # register the doc row (no-op if it exists) + clear prior chunks so re-ingest
     # replaces rather than duplicates. We record the original file_path (e.g. supabase://...) in the DB.
@@ -161,7 +199,46 @@ def ingest_document(
         pg.insert_document(document_id, filename, file_type, file_path)
     finally:
         pg.close()
+
+    # ── Supersede any prior revision with the same document_id ───────────────
+    # If this document was previously ingested (same document_id but a different
+    # run), mark the old row superseded NOW — before _preclean() removes its chunks
+    # — so the audit trail is consistent even if ingestion fails partway through.
+    # This is idempotent: mark_superseded only acts when status != 'superseded'.
+    try:
+        _pg_sup = PostgresStore()
+        try:
+            # Find the current active revision for this document_id (if any)
+            old_row = _pg_sup.conn.execute(
+                """
+                SELECT revision_id FROM documents
+                WHERE document_id::text = %s AND status NOT IN ('superseded', 'processing')
+                """,
+                (document_id,)
+            ).fetchone()
+            if old_row and old_row[0] and str(old_row[0]) != str(revision_id):
+                # There's a prior active revision — mark it superseded by this run
+                _pg_sup.mark_superseded(document_id, superseded_by=document_id)
+                logger.info(
+                    "ingest: marked prior revision %s of document %s as superseded",
+                    old_row[0], document_id
+                )
+        finally:
+            _pg_sup.close()
+    except Exception:
+        logger.debug("ingest: mark_superseded check failed (non-fatal)", exc_info=True)
+
     _preclean(document_id, cfg)
+
+    # Register this index version in the registry (idempotent INSERT).
+    try:
+        _pg_idx = PostgresStore()
+        try:
+            _pg_idx.register_index_version(index_version, model_name)
+        finally:
+            _pg_idx.close()
+    except Exception:
+        logger.debug("ingest: could not register index_version %s", index_version)
 
     # Fail LOUD on formats we cannot extract: an "unknown" file_type enables no
     # extractor, so the pipeline would produce zero chunks yet still finalize
@@ -178,8 +255,19 @@ def ingest_document(
         logger.warning("ingest %s (%s): %s", filename, document_id, unsupported_msg)
 
     # run the pipeline (graph owns routing/extraction; we just seed file_type)
-    state = {"document_id": document_id, "file_path": file_path_for_pipeline,
-             "file_type": file_type, "errors": []}
+    state = {
+        "document_id":          document_id,
+        "file_path":            file_path_for_pipeline,
+        "file_type":            file_type,
+        "errors":               [],
+        # ── revision + versioning fields ─────────────────────────────────
+        "revision_id":          str(revision_id),
+        "document_hash":        document_hash,
+        "embedding_model_version": embedding_model_ver,
+        "index_version":        index_version,
+        # ── RBAC ───────────────────────────────────────────────────────────
+        "allowed_roles":        allowed_roles or [],
+    }
 
     with traced_request(
         "ingest_document", input={"filename": filename, "file_type": file_type},
@@ -207,8 +295,8 @@ def ingest_document(
     trace_id = trace_info["trace_id"]
 
     metrics = result.get("metrics", []) or []
-    errors = result.get("errors", []) or []
-    chunks = result.get("chunks", []) or []
+    errors  = result.get("errors", []) or []
+    chunks  = result.get("chunks", []) or []
 
     # A SUPPORTED file that extracted nothing is not a success — surface it instead
     # of finalizing "ready" with zero content (corrupt/empty/image-only-without-OCR).
@@ -219,6 +307,19 @@ def ingest_document(
             "or image-only without a working OCR/vision path."
         ]
         logger.warning("ingest %s (%s): zero chunks -> status 'empty'", filename, document_id)
+
+    # ── Quality gates ─────────────────────────────────────────────────────────
+    ingestion_quality_score: float | None = None
+    if status in ("ready", "empty"):
+        try:
+            quality = run_quality_gates(result, previous_chunk_count=previous_chunk_count, config=cfg)
+            ingestion_quality_score = quality["score"]
+            if quality["warnings"]:
+                # Quality warnings are non-fatal — surface them in errors list so
+                # the API / UI can show them, but don't change status to 'failed'.
+                errors = list(errors) + [f"[quality_gate] {w}" for w in quality["warnings"]]
+        except Exception:
+            logger.exception("quality_gates failed for %s (non-fatal)", document_id)
 
     indexed_tokens = sum(int(c.get("token_count") or 0) for c in chunks)
 
@@ -306,6 +407,12 @@ def ingest_document(
                 token_usage=result.get("token_usage"),
                 indexed_tokens=indexed_tokens,
                 chunk_count=len(chunks),
+                # ── new production fields ──────────────────────────────────
+                revision_id=revision_id,
+                document_hash=document_hash,
+                effective_date=effective_date,
+                ingestion_quality_score=ingestion_quality_score,
+                previous_chunk_count=previous_chunk_count,
             )
             # Raw extracted blocks (pre-chunking) and the full prompt/response audit
             # trail for every LLM/vision call — kept even on a "failed"/"empty"

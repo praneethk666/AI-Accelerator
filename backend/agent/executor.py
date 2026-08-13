@@ -1748,7 +1748,7 @@ def _format_callout_headers(text: str) -> str:
     return text.strip()
 
 
-def _extract_sections_with_steps_agentic(blocks: list[dict], llm=None) -> list[dict]:
+def _extract_sections_with_steps_agentic(blocks: list[dict], llm=None, target_topic: str = "") -> list[dict]:
     """Agentic (LLM-driven) extraction of procedural sections and steps.
 
     Uses LLM language intelligence to parse document blocks into structured sections
@@ -1776,10 +1776,15 @@ def _extract_sections_with_steps_agentic(blocks: list[dict], llm=None) -> list[d
                 clean_blocks.append(raw)
 
             if clean_blocks:
-                doc_text = "\n\n".join(clean_blocks)[:20000]
+                doc_text = "\n\n".join(clean_blocks)[:250000]
+                topic_instruction = ""
+                if target_topic and len(target_topic.strip()) > 3:
+                    topic_instruction = f"\nTARGET PROCEDURE / TOPIC: {target_topic[:300]}\nFocus your extraction specifically on the section and steps related to this procedure.\n"
+
                 prompt = (
                     "You are an expert technical procedure extraction assistant.\n"
-                    "Analyze the following technical manual text and extract all procedural sections along with their complete step-by-step instructions.\n\n"
+                    "Analyze the following technical manual text and extract all procedural sections along with their complete step-by-step instructions.\n"
+                    f"{topic_instruction}\n"
                     "STRICT RULES FOR ACTION STEPS:\n"
                     "1. Extract ONLY actual procedural ACTION steps (things the technician must DO).\n"
                     "2. INCLUDE ALL EXPLANATORY SENTENCES: Include all trailing explanation sentences belonging to a step (e.g. Step (14) must include 'When a protector such as portable plug and electromagnetic lock is provided, this operation is not necessary when the power supply is set to ON.', Step (16) must include 'If the screen is already the operation screen, this operation is not necessary.', Step (21) and (23) must include their full second sentences). Do NOT cut off a step at the first period.\n"
@@ -1868,10 +1873,7 @@ def _get_blocks_for_page(blocks: list[dict], page_no: int) -> list[dict]:
 
 
 def _detect_procedure_boundaries(blocks: list[dict]) -> tuple[int, int]:
-    """Detect start_page and end_page boundary for procedure in a PDF manual.
-
-    Returns (start_page, end_page). Defaults to (5, max_page) if boundary markers not found.
-    """
+    """Detect start_page and end_page boundary for procedure in a PDF manual dynamically."""
     pages = []
     for b in blocks:
         ref = b.get("source_ref") or {}
@@ -1884,29 +1886,29 @@ def _detect_procedure_boundaries(blocks: list[dict]) -> tuple[int, int]:
 
     min_p, max_p = min(pages), max(pages)
 
-    # Find first page containing procedural steps (1) or explicit section headers 1.1 / 1.
+    # Find first page containing procedural steps (1), 1., Step 1, or explicit section headers
     start_p = None
     for b in blocks:
         ref = b.get("source_ref") or {}
         pg = ref.get("page") or ref.get("sheet") or 0
-        if pg >= 5:  # Skip cover pages 1-4
+        if pg > 0:
             text = b.get("text", "").strip()
-            if text.startswith("(1)") or text.startswith("1. ") or text.startswith("1.1 "):
+            if (text.startswith("(1)") or text.startswith("1.") or text.startswith("1-1") or
+                text.lower().startswith("step 1") or text.startswith("[1]") or text.startswith("1.1")):
                 start_p = pg
                 break
 
     if not start_p:
-        start_p = 5 if max_p >= 5 else min_p
+        start_p = min_p
 
-    # End page is max page before Revision History / Appendix
+    # End page is max page before Revision History / Published by boilerplate (only if near end of doc)
     end_p = max_p
     for b in blocks:
         ref = b.get("source_ref") or {}
         pg = ref.get("page") or ref.get("sheet") or 0
         text = b.get("text", "").strip()
-        if "Revision History" in text or "Published by" in text:
-            if pg > start_p:
-                end_p = min(end_p, pg - 1)
+        if ("Revision History" in text or "Published by" in text) and pg >= (max_p - 2) and pg > start_p:
+            end_p = min(end_p, pg - 1)
 
     return (start_p, max(start_p, end_p))
 
@@ -2027,8 +2029,17 @@ def _extract_sections_with_steps(blocks: list[dict]) -> list[dict]:
     BOLD_RE = re.compile(
         r'^\*\*([A-Z][A-Za-z0-9\s\-\(\)\/\.\,\:\;\&\=\+]{2,80})\*\*$'
     )
-    # Regex for parenthesized step "(N) text"
-    PAREN_RE = re.compile(r'^\((\d+)\)\s*(.+)$', re.DOTALL)
+    # Regex for step matching: "(1)", "1.", "1-1.", "Step 1:", "[1]"
+    PAREN_RE = re.compile(r'^(?:\((\d+)\)|\b(\d+)\.|\b(\d+-\d+)\.|Step\s+(\d+)[:\.]?|\[(\d+)\])\s*(.+)$', re.IGNORECASE | re.DOTALL)
+
+    def _parse_step(raw_text: str) -> tuple[int, str] | None:
+        m = PAREN_RE.match(raw_text)
+        if m:
+            n_str = m.group(1) or m.group(2) or m.group(4) or m.group(5)
+            n_val = int(n_str) if n_str and n_str.isdigit() else 1
+            body = m.group(6).strip()
+            return n_val, body
+        return None
 
     # Blocks to always skip
     SKIP_SUB = ("HOW TO READ", "Handing Over", "Cost-free Repairs", "Revision History",
@@ -2137,21 +2148,21 @@ def _extract_sections_with_steps(blocks: list[dict]) -> list[dict]:
 
         steps: list[str] = []
 
-        # Check if this section uses parenthesized (N) steps
-        has_paren_steps = any(PAREN_RE.match(t) for t in blks)
+        # Check if this section uses numbered steps
+        has_paren_steps = any(_parse_step(t) is not None for t in blks)
 
         if has_paren_steps:
-            # ── YOUR IDEA: find (1) then collect all (N) blocks from there ──
             found_start = False
             for t in blks:
-                pm = PAREN_RE.match(t)
-                if pm:
-                    n = int(pm.group(1))
+                parsed = _parse_step(t)
+                if parsed:
+                    n, body = parsed
                     if n == 1 and not found_start:
                         found_start = True
                         steps = []  # reset — start fresh from initial (1)
-                    if found_start:
-                        steps.append(pm.group(2).strip())
+                    if found_start or n > 1 or not steps:
+                        found_start = True
+                        steps.append(body)
                 elif found_start and steps:
                     t_clean = t.strip()
                     # Preserve <IMPORTANT> / <NOTE> callout blocks with header formatting under parent step
@@ -2346,56 +2357,24 @@ def _collect_procedural_steps_from_blocks(blocks: list[dict]) -> list[str]:
         # Preface / warranty text
         "Published by", "All rights Reserved", "Reproduction of this manual",
         "Cost-free Repairs", "Chargeable Repairs", "term of the guarantee",
-        "free of cost within the term", "Wear and tear, abrasion",
-        "viscosity of which is not proper", "Failure and damage caused by oil",
-        "Handing Over the Machine", "Strictly observe the following",
-        "This manual contains the following", "Failure to observe",
         "Revision History", "Description of revision",
         "No part of this manual", "All specifications and designs",
         "subject to change without notice",
-        # These are intro/preface sentences, not steps
-        "This is a supplement to Chapter",
-        "When changing wheels, please follow the directions mentioned herein",
-        "Please follow the procedures below to carry out cleaning",
-        "Refer to the chapter on",
         "Store this operation manual",
         "Read the operation manual and become fully familiar",
-        # TOC entry patterns
-        "Cleaning up the Wheel Mounting Section...",
-        # Operation manual references
-        "(Operation manual",
     )
 
-    # Conditional / corrective sentences that follow <NOTE>/<IMPORTANT> — these are
-    # note body text, not numbered steps. The key heuristic: they start with "If "
-    # and describe what happens when something goes wrong, not what the technician does.
+    # Note body prefixes - generic heuristics for secondary text
     NOTE_BODY_PREFIXES = (
-        "If adhesive grains",
-        "If the labyrinth cap has silicone",
-        "Please use a blade knife",          # continuation of silicone note
-        "If you use air blow for cleaning",  # <IMPORTANT> body
-        "If this happens, abrasive grains",  # continuation
-        "Be sure to clean inside the wheel cover",  # <IMPORTANT> body text
-        "Make sure to clean the area",       # <IMPORTANT> continuation
-        "After release the lock,do not press",  # <NOTE> body
-        "If the [master on] button has been pushed",  # <NOTE> corrective
-        "By pressing [EMERGENCY STOP] button, you can also stop",  # <NOTE> alternative
-        "Insert the gap gage for a depth of 8 to 10mm from the front",  # <IMPORTANT> repeat
-        "Exceeding 10 mm may cause damage",  # <IMPORTANT> warning text
-        "If you find the gap gage un-insertable",  # <IMPORTANT> corrective
-        "Turning the wheel spindle in this state",  # <IMPORTANT> consequence
-        "Remove the cap for cleaning and re-insert",  # <IMPORTANT> corrective
-        "In such a case, remove corrosion",  # <NOTE> body
-        "If the wheel spindle is corroded",  # <NOTE> body
-        "If there are any abrasive grains",  # <IMPORTANT> body embedded
+        "Note:", "Important:", "Caution:", "Warning:", "Danger:",
+        "<IMPORTANT>", "<NOTE>", "<CAUTION>", "<WARNING>", "<DANGER>"
     )
 
     # Section heading patterns (page section titles, not steps)
     SECTION_HEADER_RE = re.compile(
         r'^\d+\.\s+[A-Z][A-Za-z ]{5,}$|'          # "1. Cleaning up the Wheel..."
         r'^\*\*\[?[A-Z][^*]{2,}\]?\*\*$|'          # **[Tools to be prepared]**
-        r'^(Preface|Contents|HOW TO READ|About the Manual|Guarantee|'
-        r'GC20M|Labyrinth cap|Labyrinth cover|View on arrow)'
+        r'^(Preface|Contents|HOW TO READ|About the Manual|Guarantee|Overview|Table of Contents)'
     )
 
     INLINE_MARKER_RE = re.compile(r'^\(Operation manual|^When a protector such as')
@@ -2546,68 +2525,212 @@ def _collect_procedural_steps_from_blocks(blocks: list[dict]) -> list[str]:
 
 
 
-def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int = 5) -> int:
+def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int = 1) -> int:
     """Find the exact PDF page number in DB blocks where step_text originates."""
     if not step_text or not blocks:
         return fallback_page
 
     import re
-    # Strip markdown formatting and section prefixes like **[1. Section Title - Step X of Y]** or [1. Section Title]
-    clean = step_text.strip()
-    clean = re.sub(r'^\*+\s*\[.*?\]\s*\*+\s*', '', clean)
-    clean = re.sub(r'^\[.*?\]\s*', '', clean)
-    clean = re.sub(r'^\*+|\*+$', '', clean).strip()
 
-    # Strip any leading (N) or N. step number prefix
-    clean = re.sub(r'^\(\d+\)\s*', '', clean)
-    clean = re.sub(r'^\d+\.\s*', '', clean)
+    # Strip any leading section bracket prefix [1.1 Title] to access the actual step marker
+    clean_for_step_num = re.sub(r'^\*?\s*\[.*?\]\s*\*?\s*', '', step_text.strip())
+    step_num_match = re.search(
+        r'^(?:\((\d+)\)|\b(\d+)\.|\b(\d+-\d+)\.|Step\s+(\d+)[:\.]?|\[(\d+)\])',
+        clean_for_step_num,
+        re.IGNORECASE
+    )
+    step_num_str = None
+    if step_num_match:
+        step_num_str = (step_num_match.group(1) or step_num_match.group(2) or
+                        step_num_match.group(4) or step_num_match.group(5))
 
-    # Take first clean sentence of instruction text
-    first_sentence = clean.split('\n')[0].strip()
-    short_snippet = first_sentence[:60].strip().lower()
+    def _norm(s: str) -> str:
+        s = re.sub(r'^\*+\s*\[.*?\]\s*\*+\s*', '', s)
+        s = re.sub(r'^\[.*?\]\s*', '', s)
+        s = re.sub(r'^\*+|\*+$', '', s)
+        s = re.sub(r'^(?:\(\d+\)|\b\d+[\.\-:]|Step\s+\d+[:\.]?|\[\d+\])\s*', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'<\s*[A-Z_]+\s*>', ' ', s)
+        s = re.sub(r'[^a-zA-Z0-9\s]', ' ', s)
+        return ' '.join(s.lower().split())
 
-    if not short_snippet or len(short_snippet) < 4:
+    clean_step = _norm(step_text)
+    if not clean_step or len(clean_step) < 3:
         return fallback_page
 
-    # 1. Substring match in DB block text
+    step_snippet = clean_step[:60] if len(clean_step) >= 60 else clean_step
+
+    # Partition blocks: forward (page >= fallback_page) vs prior (page < fallback_page)
+    forward_blocks = []
+    prior_blocks = []
     for b in blocks:
-        b_text = (b.get("text") or "").strip().lower()
-        if not b_text:
-            continue
         ref = b.get("source_ref") or {}
-        pg = ref.get("page") or ref.get("sheet")
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
         if not pg:
             continue
-        if short_snippet in b_text or (len(b_text) > 20 and b_text[:40] in clean.lower()):
-            return int(pg)
+        try:
+            pg_int = int(pg)
+        except (ValueError, TypeError):
+            continue
 
-    # 2. Key words matching fallback
-    words = [w for w in re.findall(r'\w+', short_snippet) if len(w) > 3]
-    if len(words) >= 2:
-        best_pg = fallback_page
-        max_matches = 0
-        for b in blocks:
-            b_text = (b.get("text") or "").strip().lower()
-            ref = b.get("source_ref") or {}
-            pg = ref.get("page") or ref.get("sheet")
-            if not pg:
+        if pg_int >= fallback_page:
+            forward_blocks.append((pg_int, b))
+        else:
+            prior_blocks.append((pg_int, b))
+
+    # Pass 1: Step number + snippet match in forward_blocks
+    if step_num_str:
+        step_patterns = [
+            f"({step_num_str})",
+            f"{step_num_str}.",
+            f"{step_num_str}-",
+            f"step {step_num_str}",
+            f"[{step_num_str}]"
+        ]
+        for pg_int, b in forward_blocks:
+            raw_b = (b.get("text") or "").strip()
+            if not raw_b:
                 continue
-            matches = sum(1 for w in words if w in b_text)
-            if matches > max_matches:
-                max_matches = matches
-                best_pg = int(pg)
-        if max_matches >= 2:
-            return best_pg
+            raw_b_lo = raw_b.lower()
+            if any(p in raw_b_lo for p in step_patterns) or re.search(r'\b' + re.escape(step_num_str) + r'\b', raw_b):
+                norm_b = _norm(raw_b)
+                if (step_snippet and step_snippet in norm_b) or (len(norm_b) >= 12 and norm_b in clean_step):
+                    return pg_int
+
+    # Pass 2: Snippet match in forward_blocks
+    for pg_int, b in forward_blocks:
+        raw_b = (b.get("text") or "").strip()
+        if not raw_b:
+            continue
+        norm_b = _norm(raw_b)
+        if (step_snippet and step_snippet in norm_b) or (len(norm_b) >= 12 and norm_b in clean_step):
+            return pg_int
+
+    # Pass 3: Keyword overlap scoring in forward_blocks
+    STOP_WORDS = {"the", "that", "this", "with", "from", "have", "before", "after", "then", "when", "your", "into", "over", "step", "page", "section", "figure", "table", "note", "important", "must", "shall", "should"}
+    step_words = set(w for w in clean_step.split() if len(w) >= 3 and w not in STOP_WORDS)
+
+    if step_words and forward_blocks:
+        page_scores: dict[int, int] = {}
+        for pg_int, b in forward_blocks:
+            norm_b = _norm(b.get("text") or "")
+            if not norm_b:
+                continue
+            b_words = set(w for w in norm_b.split() if len(w) >= 3 and w not in STOP_WORDS)
+            matches = len(step_words.intersection(b_words))
+            if matches > 0:
+                page_scores[pg_int] = page_scores.get(pg_int, 0) + matches
+
+        if page_scores:
+            best_pg, best_score = max(page_scores.items(), key=lambda item: item[1])
+            if best_score >= 2 or (len(step_words) <= 3 and best_score >= 1):
+                return best_pg
+
+    # Pass 4: Check prior_blocks if forward_blocks returned no match
+    if step_num_str:
+        step_patterns = [
+            f"({step_num_str})",
+            f"{step_num_str}.",
+            f"{step_num_str}-",
+            f"step {step_num_str}",
+            f"[{step_num_str}]"
+        ]
+        for pg_int, b in prior_blocks:
+            raw_b = (b.get("text") or "").strip()
+            if not raw_b:
+                continue
+            raw_b_lo = raw_b.lower()
+            if any(p in raw_b_lo for p in step_patterns) or re.search(r'\b' + re.escape(step_num_str) + r'\b', raw_b):
+                norm_b = _norm(raw_b)
+                if (step_snippet and step_snippet in norm_b) or (len(norm_b) >= 12 and norm_b in clean_step):
+                    return pg_int
+
+    for pg_int, b in prior_blocks:
+        raw_b = (b.get("text") or "").strip()
+        if not raw_b:
+            continue
+        norm_b = _norm(raw_b)
+        if (step_snippet and step_snippet in norm_b) or (len(norm_b) >= 12 and norm_b in clean_step):
+            return pg_int
 
     return fallback_page
 
 
-def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, config: dict, llm) -> list[str]:
-    """Extract procedural steps using a 3-tier strategy:
+def _select_best_sections_agentic(sec_data: list[dict], target_topic: str, llm=None) -> list[dict]:
+    """Agentically filter extracted document sections down to the specific section matching target_topic."""
+    if not sec_data:
+        return []
+    if len(sec_data) == 1 or not target_topic or len(target_topic.strip()) < 3:
+        return sec_data
 
-    Tier 1: Deterministic numbered-pattern matching  (fastest, most reliable)
-    Tier 2: Page-aware block collector               (for vision-processed PDFs)
-    Tier 3: LLM extraction from filtered text        (last resort)
+    topic_clean = target_topic.lower()
+    import re
+    topic_words = set(w for w in re.findall(r'\b\w{4,}\b', topic_clean) if w not in (
+        "step", "steps", "procedure", "how", "with", "from", "that", "this", "have", "been",
+        "using", "your", "what", "which", "process", "checklist", "manual", "guide", "here"
+    ))
+
+    if not topic_words:
+        return sec_data
+
+    # First find maximum match score across all sections
+    scores = []
+    for sec in sec_data:
+        title = sec.get("title", "").lower()
+        steps_text = " ".join(sec.get("steps", [])).lower()
+        sec_full = f"{title} {steps_text}"
+        title_matches = sum(1 for w in topic_words if w in title)
+        full_matches = sum(1 for w in topic_words if w in sec_full)
+        scores.append(title_matches * 3 + full_matches)
+
+    max_score = max(scores) if scores else 0
+
+    matched_secs = []
+    for sec, score in zip(sec_data, scores):
+        if max_score > 0 and score >= max(1, max_score * 0.4):
+            matched_secs.append(sec)
+
+    if matched_secs:
+        logger.info("🤖 [Agentic Section Selection] Matched target topic '%s' to %d section(s): %s",
+                    target_topic[:50], len(matched_secs), [s['title'] for s in matched_secs])
+        return matched_secs
+
+    # LLM fallback for section selection if keyword matching is ambiguous
+    if llm and len(sec_data) > 1:
+        try:
+            sec_summaries = "\n".join([f"{idx+1}. {s['title']} ({len(s['steps'])} steps)" for idx, s in enumerate(sec_data)])
+            sel_prompt = (
+                f"The user requested instructions for topic: '{target_topic[:200]}'.\n"
+                f"Which of the following document section(s) best match this specific procedure?\n\n"
+                f"{sec_summaries}\n\n"
+                f"Return ONLY a JSON array of 1-based section indices that apply (e.g. [2])."
+            )
+            res = llm.invoke(sel_prompt)
+            content = getattr(res, "content", "").strip()
+            indices = _extract_json_array(content)
+            valid_indices = []
+            for idx_str in indices:
+                try:
+                    idx_val = int(idx_str) - 1
+                    if 0 <= idx_val < len(sec_data):
+                        valid_indices.append(idx_val)
+                except Exception:
+                    pass
+            if valid_indices:
+                selected = [sec_data[i] for i in valid_indices]
+                logger.info("🤖 [Agentic Section Selection] LLM selected sections: %s", [s['title'] for s in selected])
+                return selected
+        except Exception as e:
+            logger.warning("LLM section selection failed: %s", e)
+
+    return sec_data
+
+
+def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, config: dict, llm) -> list[str]:
+    """Extract procedural steps using an agentic multi-tier strategy:
+
+    Tier 1: Agentic (LLM-driven) section & step extraction from DB blocks + topic filtering
+    Tier 0: Direct extraction from answer context (if blocks unavailable)
+    Tier 3: LLM extraction from filtered text (last resort)
     """
     blocks: list[dict] = []
     if document_id:
@@ -2620,24 +2743,42 @@ def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, conf
         finally:
             store.close()
 
-    # Tier 1: Agentic (LLM-driven) section & step extraction from DB blocks (with rule fallback)
+    # Tier 1: Agentic (LLM-driven) section & step extraction from DB blocks
     if blocks:
-        sec_data = _extract_sections_with_steps_agentic(blocks, llm=llm)
+        sec_data = _extract_sections_with_steps_agentic(blocks, llm=llm, target_topic=final_answer)
         if sec_data:
+            # Filter sections to the user's specific target topic agentically
+            selected_secs = _select_best_sections_agentic(sec_data, final_answer, llm=llm)
             all_steps: list[str] = []
-            for sec in sec_data:
-                # If document has multiple sub-sections (e.g. 1.1, 1.2, 1.3, 1.4), include section title prefix
-                prefix = f"[{sec['title']}] " if len(sec_data) > 1 else ""
+            for sec in selected_secs:
+                prefix = f"[{sec['title']}] " if len(selected_secs) > 1 else ""
                 for s in sec["steps"]:
                     all_steps.append(f"{prefix}{s}")
             if len(all_steps) >= 2:
                 all_steps = [_format_callout_headers(s) for s in all_steps]
-                logger.info("[Step Extraction] Tier 1 (_extract_sections_with_steps): %d sections, %d total steps", len(sec_data), len(all_steps))
+                logger.info("[Step Extraction] Tier 1 (_extract_sections_with_steps): Selected %d section(s), %d total steps", len(selected_secs), len(all_steps))
                 return all_steps
 
-    # Tier 3: LLM extraction (last resort)
+    # Tier 0: Direct extraction from answer context if blocks unavailable or Tier 1 returned no steps
+    if final_answer and len(final_answer.strip()) > 30:
+        ans_steps = []
+        if llm:
+            try:
+                ans_steps = _extract_checklist_steps_llm(final_answer, llm)
+            except Exception as e:
+                logger.warning("Tier 0 LLM answer step extraction failed: %s", e)
+        if not ans_steps:
+            lines = [line.strip() for line in final_answer.splitlines() if line.strip()]
+            for line in lines:
+                if re.match(r'^(?:\d+[\.\)]|\(\d+\)|Step\s+\d+[:\.]?|\[\d+\])\s*', line, re.IGNORECASE):
+                    ans_steps.append(line)
+        if len(ans_steps) >= 2:
+            formatted = [_format_callout_headers(s) for s in ans_steps]
+            logger.info("[Step Extraction] Tier 0 (Answer Context): Extracted %d steps directly from answer context", len(formatted))
+            return formatted
+
+    # Tier 3: LLM extraction from text (last resort)
     if blocks:
-        # Build filtered procedural text (skip preface/images)
         SKIP_PREFIXES = ("The image ", "The diagram ", "[logo]", "[figure]", "* **Logo")
         SKIP_SUBS = ("Published by", "Revision History", "Cost-free", "Guarantee", "HOW TO READ", "Preface")
         lines = []
@@ -3017,15 +3158,33 @@ def run_agent(
                             total_steps = len(steps)
                             step1 = steps[0]
 
+                            sel = state.get("selected_option") or {}
+                            doc_id = sel.get("document_id") or state.get("document_id")
+                            fname_val = sel.get("filename", "")
+
+                            cur_page = _find_exact_step_page(step1, blocks, fallback_page=state.get("start_page", 1))
+
                             state["stage"] = "active"
                             state["steps"] = steps
                             state["current_idx"] = 0
                             state["title"] = sec_title
+                            state["start_page"] = cur_page
+                            state["current_page"] = cur_page
                             store.set_interactive_state(session_id, state)
+
+                            step_tc = []
+                            if doc_id:
+                                import json as _json
+                                step_tc = [{
+                                    "name": "get_page_context",
+                                    "args": {"document_id": doc_id, "page": cur_page},
+                                    "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
+                                }]
 
                             answer = (
                                 f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF, wheel spindle is stopped, and lockout/tagout is applied before opening machine covers.\n\n"
                                 f"**[{sec_title}] Step 1 of {total_steps}:** {step1}\n\n"
+                                f"**Source:** Page {cur_page}\n\n"
                                 f"Let me know when Step 1 is complete or if you have any questions."
                             )
                             return {
@@ -3033,7 +3192,7 @@ def run_agent(
                                 "answer": answer,
                                 "question": "Is this step completed?",
                                 "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                "tool_calls": [],
+                                "tool_calls": step_tc,
                                 "execution_trace": [],
                                 "messages": [HumanMessage(message), AIMessage(content=answer)],
                                 "token_usage": _get_tu(answer),
@@ -3066,9 +3225,10 @@ def run_agent(
                                 state["end_page"] = end_page
                                 state["current_page"] = start_page
 
-                            # Re-extract steps fresh from DB blocks to bypass stale cached session state
-                            if doc_id:
-                                fresh_steps = _extract_steps_from_text_or_blocks(doc_id, "", config, llm)
+                            # Re-extract steps fresh ONLY if state["steps"] is missing or empty
+                            if doc_id and (not state.get("steps") or len(state.get("steps", [])) < 2):
+                                proc_ctx = state.get("title") or state.get("query") or ""
+                                fresh_steps = _extract_steps_from_text_or_blocks(doc_id, proc_ctx, config, llm)
                                 if fresh_steps and len(fresh_steps) >= 2:
                                     state["steps"] = fresh_steps
 
@@ -3077,13 +3237,25 @@ def run_agent(
                             step1 = steps[0] if steps else ""
                             title = state.get("title", "Procedure")
 
+                            cur_page = _find_exact_step_page(step1, blocks, fallback_page=state.get("start_page", 1))
+
                             cad_info = _find_associated_cad_diagram(title, config)
                             state["cad_info"] = cad_info
                             state["stage"] = "active"
                             state["current_idx"] = 0
+                            state["current_page"] = cur_page
                             store.set_interactive_state(session_id, state)
                             
-                            cur_page = _find_exact_step_page(step1, blocks, fallback_page=state.get("start_page", 5))
+                            fname_val = (state.get("selected_option") or {}).get("filename", "")
+                            step_tc = []
+                            if doc_id:
+                                import json as _json
+                                step_tc = [{
+                                    "name": "get_page_context",
+                                    "args": {"document_id": doc_id, "page": cur_page},
+                                    "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
+                                }]
+
                             if cad_info:
                                 cad_fname = cad_info.get("filename")
                                 answer = (
@@ -3097,7 +3269,7 @@ def run_agent(
                                     "answer": answer,
                                     "question": f"Would you like me to show the CAD diagram `{cad_fname}`?",
                                     "options": ["Show CAD Diagram", "No, proceed with Step 1"],
-                                    "tool_calls": [],
+                                    "tool_calls": step_tc,
                                     "execution_trace": list(_trace_sink),
                                     "messages": [HumanMessage(message), AIMessage(content=answer)],
                                     "token_usage": _get_tu(answer),
@@ -3115,7 +3287,7 @@ def run_agent(
                                     "answer": answer,
                                     "question": "Is this step completed?",
                                     "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                    "tool_calls": [],
+                                    "tool_calls": step_tc,
                                     "execution_trace": list(_trace_sink),
                                     "messages": [HumanMessage(message), AIMessage(content=answer)],
                                     "token_usage": _get_tu(answer),
@@ -3141,12 +3313,27 @@ def run_agent(
                         total_steps = len(steps)
                         cad_info = state.get("cad_info")
                         title = state.get("title", "Procedure")
+                        sel = state.get("selected_option") or {}
+                        doc_id = sel.get("document_id") or state.get("document_id")
+                        fname_val = sel.get("filename", "")
                         
                         if message == "Show CAD Diagram":
                             step_text = steps[current_idx]
+                            cur_page = _find_exact_step_page(step_text, blocks, fallback_page=state.get("current_page") or state.get("start_page", 1))
+                            state["current_page"] = cur_page
+                            store.set_interactive_state(session_id, state)
+                            step_tc = []
+                            if doc_id:
+                                import json as _json
+                                step_tc = [{
+                                    "name": "get_page_context",
+                                    "args": {"document_id": doc_id, "page": cur_page},
+                                    "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
+                                }]
                             answer = (
                                 f"Showing CAD diagram `{cad_info.get('filename')}`.\n\n"
                                 f"**Step {current_idx + 1} of {total_steps}:** {step_text}\n\n"
+                                f"**Source:** Page {cur_page}\n\n"
                                 "Let me know when this step is complete."
                             )
                             return {
@@ -3155,7 +3342,7 @@ def run_agent(
                                 "question": "Is this step completed?",
                                 "options": ["✅ Step Complete - Next", "Stop checklist"],
                                 "cad_diagrams": [cad_info],
-                                "tool_calls": [],
+                                "tool_calls": step_tc,
                                 "execution_trace": [],
                                 "messages": [HumanMessage(message), AIMessage(content=answer)],
                                 "token_usage": _get_tu(answer),
@@ -3164,8 +3351,20 @@ def run_agent(
                         
                         if message == "No, proceed with Step 1":
                             step_text = steps[current_idx]
+                            cur_page = _find_exact_step_page(step_text, blocks, fallback_page=state.get("current_page") or state.get("start_page", 1))
+                            state["current_page"] = cur_page
+                            store.set_interactive_state(session_id, state)
+                            step_tc = []
+                            if doc_id:
+                                import json as _json
+                                step_tc = [{
+                                    "name": "get_page_context",
+                                    "args": {"document_id": doc_id, "page": cur_page},
+                                    "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
+                                }]
                             answer = (
                                 f"**Step {current_idx + 1} of {total_steps}:** {step_text}\n\n"
+                                f"**Source:** Page {cur_page}\n\n"
                                 "Let me know when this step is complete."
                             )
                             return {
@@ -3173,7 +3372,7 @@ def run_agent(
                                 "answer": answer,
                                 "question": "Is this step completed?",
                                 "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                "tool_calls": [],
+                                "tool_calls": step_tc,
                                 "execution_trace": [],
                                 "messages": [HumanMessage(message), AIMessage(content=answer)],
                                 "token_usage": _get_tu(answer),
@@ -3197,11 +3396,20 @@ def run_agent(
                         if is_done:
                             next_idx = current_idx + 1
                             if next_idx < total_steps:
-                                state["current_idx"] = next_idx
-                                store.set_interactive_state(session_id, state)
-                                
                                 next_step = steps[next_idx]
-                                step_page = _find_exact_step_page(next_step, blocks, fallback_page=state.get("start_page", 5))
+                                last_page = state.get("current_page") or state.get("start_page", 1)
+                                step_page = _find_exact_step_page(next_step, blocks, fallback_page=last_page)
+                                state["current_idx"] = next_idx
+                                state["current_page"] = step_page
+                                store.set_interactive_state(session_id, state)
+                                step_tc = []
+                                if doc_id:
+                                    import json as _json
+                                    step_tc = [{
+                                        "name": "get_page_context",
+                                        "args": {"document_id": doc_id, "page": step_page},
+                                        "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": step_page})
+                                    }]
 
                                 answer = (
                                     f"**Step {next_idx + 1} of {total_steps}:** {next_step}\n\n"
@@ -3213,7 +3421,7 @@ def run_agent(
                                     "answer": answer,
                                     "question": "Is this step completed?",
                                     "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                    "tool_calls": [],
+                                    "tool_calls": step_tc,
                                     "execution_trace": list(_trace_sink),
                                     "messages": [HumanMessage(message), AIMessage(content=answer)],
                                     "token_usage": _get_tu(answer),
@@ -3724,9 +3932,28 @@ def run_agent(
                     }
                     store.set_interactive_state(session_id, state)
 
+                    overview = ""
+                    if llm:
+                        overview_prompt = (
+                            "You are a technical procedure assistant.\n"
+                            f"Write a concise 2-3 sentence high-level summary overview of the procedure for '{title}'.\n"
+                            "Summarize the main objective, safety requirements, and equipment involved.\n"
+                            "Do NOT list out numbered steps or individual step instructions.\n\n"
+                            f"Procedure Context:\n{(doc_text if doc_text.strip() else final_answer)[:6000]}"
+                        )
+                        try:
+                            overview_resp = llm.invoke(overview_prompt)
+                            overview = clean_message_content(getattr(overview_resp, "content", "").strip())
+                        except Exception:
+                            pass
+
+                    if not overview:
+                        overview = f"This procedure details the standard instructions and safety guidelines for **{title}**."
+
                     offer_answer = (
-                        f"{final_answer}\n\n"
-                        f"Here is the process for **{title}** from `{fname}`. "
+                        f"### Overview of {title}\n"
+                        f"{overview}\n\n"
+                        f"Here is the process for **{title}** from `{fname}` ({len(steps)} steps total). "
                         "We can guide you step-by-step. When you are ready, shall we start the process?"
                     )
                     return {

@@ -91,15 +91,13 @@ def _converter(dcfg: dict):
 
 
 def _with_list_marker(item, text: str) -> str:
-    """Prepend an enumerated list item's own marker ("(1)", "(2)", ...) to its
-    text. Docling parses this correctly (item.marker/item.enumerated, confirmed
-    live 11-Aug against the real Changeover manual's numbered steps) but our own
-    TextItem handling only ever read item.text -- silently dropping the numbering
-    every downstream numbered-step consumer (step_parser.py) depends on. Bulleted
-    (non-enumerated) list items are left as-is; no known consumer needs their
-    marker and this stays a scoped fix for the confirmed problem."""
+    """Prepend a list item's own marker ("(1)", "(2)", "1.", ...) to its
+    text. Docling parses this correctly (item.marker, confirmed
+    live against numbered steps) but our own TextItem handling only ever read item.text --
+    silently dropping the numbering every downstream numbered-step consumer
+    depends on."""
     from docling_core.types.doc import ListItem
-    if isinstance(item, ListItem) and getattr(item, "enumerated", False):
+    if isinstance(item, ListItem):
         marker = (getattr(item, "marker", "") or "").strip()
         if marker and not text.startswith(marker):
             return f"{marker} {text}"

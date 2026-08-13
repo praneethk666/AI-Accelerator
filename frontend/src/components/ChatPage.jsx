@@ -80,9 +80,13 @@ const fileTypeFromName = (filename) => {
 const buildViewableSources = (sources) => {
   console.log("buildViewableSources input sources:", sources);
   const result = (sources || [])
-    .map((s) => ({ ...s, fileType: fileTypeFromName(s.filename) }))
+    .map((s) => ({
+      ...s,
+      page: s.page != null && !isNaN(Number(s.page)) ? Number(s.page) : s.page,
+      fileType: fileTypeFromName(s.filename)
+    }))
     .filter((s) => {
-      if (!s.document_id) return false;
+      if (!s.document_id && !s.filename) return false;
       if (s.fileType === 'pdf') return s.page != null;
       if (s.fileType === 'ppt') return s.page != null;
       if (s.fileType === 'docx') return true;
@@ -93,7 +97,7 @@ const buildViewableSources = (sources) => {
     .filter((s, i, arr) => arr.findIndex((x) => {
       if ((x.filename || '').toLowerCase() !== (s.filename || '').toLowerCase()) return false;
       if (s.fileType === 'pdf' || s.fileType === 'ppt') {
-        return x.page === s.page;
+        return Number(x.page) === Number(s.page);
       }
       if (s.fileType === 'excel') {
         return x.sheet === s.sheet;
@@ -392,7 +396,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(false, true); loadFiles(); }, []);
+  useEffect(() => { loadSessions(true, true); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {
@@ -534,6 +538,14 @@ const ChatPage = () => {
           pollDirectIngest(msgId, docId, fname);
         }
       });
+
+      // Restore PageViewer panel for the active session if last assistant turn had viewable sources or CAD diagrams
+      const lastAss = [...deduped].reverse().find((m) => m.role === 'assistant');
+      if (lastAss) {
+        updatePageViewer({ tool_calls: lastAss.tool_calls || lastAss.metadata?.tool_calls || [], cad_diagrams: lastAss.cad_diagrams || lastAss.metadata?.cad_diagrams || [] });
+      } else {
+        setPageViewer(null);
+      }
 
       setSessionId(id);
       setAttachedFile(null);
@@ -2194,19 +2206,28 @@ const parseSources = (toolCalls, allFiles = []) => {
         }
       }
     } else if (call.name === 'get_page_context') {
-      const docId = call.args?.document_id;
-      const page = call.args?.page;
-      if (docId) {
-        const resolved = resolveDoc(docId);
-        if (resolved) {
-          sources.push({
-            document_id: resolved.document_id,
-            filename: resolved.filename,
-            page: page || 1,
-            score: 1.0,
-            snippet: `Fetched context of page ${page}`,
-          });
-        }
+      let docId = call.args?.document_id;
+      let page = call.args?.page;
+      let filename = null;
+
+      if (typeof call.result === 'string') {
+        try {
+          const parsed = JSON.parse(call.result);
+          if (parsed.document_id) docId = docId || parsed.document_id;
+          if (parsed.page != null) page = page != null ? page : parsed.page;
+          if (parsed.filename) filename = parsed.filename;
+        } catch {}
+      }
+
+      if (docId || filename) {
+        const resolved = resolveDoc(docId || filename);
+        sources.push({
+          document_id: resolved ? resolved.document_id : (docId || filename),
+          filename: resolved ? resolved.filename : (filename || 'Document'),
+          page: page != null && !isNaN(Number(page)) ? Number(page) : 1,
+          score: 1.0,
+          snippet: `Fetched context of page ${page || 1}`,
+        });
       }
     }
   }
@@ -2605,45 +2626,15 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
       </div>
     );
   }
-  // ── Compact historical step messages ─────────────────────────────────────
-  // When a session is re-loaded, guided-process step prompts that have already
-  // been answered are tagged status='historical'. Render them as a slim pill
-  // so the chat doesn't fill up with full-size "Is this step completed?" cards.
+  // Historical step identification
   const isHistoricalStep =
     !isUser &&
     msg.status === 'historical' &&
     msg.options &&
     msg.options.some(o => typeof o === 'string' && o.toLowerCase().includes('step complete'));
 
-  if (isHistoricalStep) {
-    // Extract step number from content like "Step 5 of 38: ..."
-    const stepMatch = (msg.content || '').match(/Step\s+(\d+)\s+(?:of\s+\d+)?/i);
-    const stepNum = stepMatch ? stepMatch[1] : null;
-    return (
-      <div className="py-0.5 flex justify-start">
-        <div className="max-w-full w-full">
-          <div className="flex items-center gap-2 px-1">
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-[#007a5a] bg-[#e6f7f0] border border-[#007a5a]/20 rounded-full px-2.5 py-0.5">
-              <CheckIcon className="h-3 w-3 stroke-[2.5]" />
-              {stepNum ? `Step ${stepNum} done` : 'Step done'}
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  // ── End compact historical step ──────────────────────────────────────────
-
-  // ── Compact historical user "Step Complete - Next" messages ──────────────
-  // Suppress the plain "Step Complete - Next" user messages in history too,
-  // since the ✓ pill above already represents that step being done.
-  if (isUser) {
-    const trimmed = (msg.content || '').trim();
-    if (trimmed === 'Step Complete - Next' || trimmed === 'Stop checklist') {
-      return null; // hide redundant user step-navigation messages
-    }
-  }
-  // ── End compact historical user step messages ─────────────────────────────
+  const stepMatch = isHistoricalStep ? (msg.content || '').match(/Step\s+(\d+)\s+(?:of\s+\d+)?/i) : null;
+  const stepNum = stepMatch ? stepMatch[1] : null;
 
   return (
     <div className={`py-2.5 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -2658,6 +2649,14 @@ const MessageRow = ({ msg, onApprove, onDecline, onClarify, loading, onViewPages
             <div className="flex gap-3">
               <SparklesIcon className="h-5 w-5 text-[#4a154b] flex-shrink-0 mt-1" />
               <div className="min-w-0 flex-1">
+                {isHistoricalStep && (
+                  <div className="mb-2">
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#007a5a] bg-[#e6f7f0] border border-[#007a5a]/20 rounded-full px-3 py-1">
+                      <CheckIcon className="h-3.5 w-3.5 stroke-[2.5]" />
+                      {stepNum ? `Step ${stepNum} Completed` : 'Step Completed'}
+                    </span>
+                  </div>
+                )}
                 {!msg.content && (
                   <div className="flex items-center text-[#4a154b] text-sm py-1 font-bold">
                     <span>

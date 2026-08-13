@@ -1468,7 +1468,7 @@ def agent_chat(req: AgentChatRequest, response: Response):
             store = get_conversation_store()
             store.save_turn(
                 req.session_id, "assistant",
-                result.get("question") or result.get("answer") or "",
+                result.get("answer") or result.get("question") or "",
                 metadata={
                     "status": "needs_clarification",
                     "question": result.get("question"),

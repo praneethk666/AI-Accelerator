@@ -1536,7 +1536,7 @@ def get_agent_session(session_id: str):
     with the same component."""
     from backend.storage.conversation_store import get_conversation_store
 
-    history = get_conversation_store().load_history(session_id, n=50)
+    history = get_conversation_store().load_history(session_id, n=500)
     out = []
     cached_options = None
     for h in history:

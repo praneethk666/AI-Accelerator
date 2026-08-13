@@ -334,7 +334,7 @@ class PostgresConversationStore:
             pg.close()
 
 
-    def load_history(self, session_id: str, n: int = 10) -> list[dict]:
+    def load_history(self, session_id: str, n: int = 500) -> list[dict]:
         pg = _get_store()
         try:
             rows = pg.conn.execute(

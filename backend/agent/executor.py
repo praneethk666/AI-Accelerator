@@ -2532,6 +2532,48 @@ def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int
 
     import re
 
+    # ── Section Page Range Detection ──
+    # Build list of (section_number, start_page) from DB blocks (skipping TOC lines)
+    sec_pages: list[tuple[str, int]] = []
+    for b in blocks:
+        ref = b.get("source_ref") or {}
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+        if not pg:
+            continue
+        try:
+            pg_int = int(pg)
+        except (ValueError, TypeError):
+            continue
+        raw_t = (b.get("text") or "").strip()
+        if not raw_t:
+            continue
+
+        # Skip Table of Contents (TOC) blocks
+        if "...." in raw_t or "..." in raw_t or re.search(r'[\.\s]{3,}\d+[-\s]*\d*$', raw_t):
+            continue
+
+        m = re.search(r'^\s*(\d+\.\d+)\b', raw_t)
+        if m:
+            s_num = m.group(1)
+            if not any(sp[0] == s_num for sp in sec_pages):
+                sec_pages.append((s_num, pg_int))
+
+    sec_pages.sort(key=lambda x: x[1])
+
+    min_page = fallback_page
+    max_page = 9999
+
+    sec_num_match = re.search(r'^\s*\*?\s*\[\s*(\d+\.\d+)', step_text)
+    if sec_num_match:
+        target_sec = sec_num_match.group(1)
+        for i, (s_num, s_pg) in enumerate(sec_pages):
+            if s_num == target_sec:
+                min_page = s_pg
+                if i + 1 < len(sec_pages):
+                    max_page = sec_pages[i + 1][1] - 1
+                break
+        fallback_page = min_page
+
     # Strip any leading section bracket prefix [1.1 Title] to access the actual step marker
     clean_for_step_num = re.sub(r'^\*?\s*\[.*?\]\s*\*?\s*', '', step_text.strip())
     step_num_match = re.search(
@@ -2559,7 +2601,7 @@ def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int
 
     step_snippet = clean_step[:60] if len(clean_step) >= 60 else clean_step
 
-    # Partition blocks: forward (page >= fallback_page) vs prior (page < fallback_page)
+    # Partition blocks: forward (min_page <= page <= max_page) vs prior/other pages
     forward_blocks = []
     prior_blocks = []
     for b in blocks:
@@ -2572,7 +2614,7 @@ def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int
         except (ValueError, TypeError):
             continue
 
-        if pg_int >= fallback_page:
+        if min_page <= pg_int <= max_page:
             forward_blocks.append((pg_int, b))
         else:
             prior_blocks.append((pg_int, b))
@@ -2663,6 +2705,9 @@ def _select_best_sections_agentic(sec_data: list[dict], target_topic: str, llm=N
         return sec_data
 
     topic_clean = target_topic.lower()
+    if any(w in topic_clean for w in ("all", "complete", "entire", "full", "setup", "changeover", "workhead", "work spindle")):
+        return sec_data
+
     import re
     topic_words = set(w for w in re.findall(r'\b\w{4,}\b', topic_clean) if w not in (
         "step", "steps", "procedure", "how", "with", "from", "that", "this", "have", "been",

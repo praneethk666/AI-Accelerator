@@ -273,6 +273,13 @@ const ChatPage = () => {
     });
   };
 
+  const handleChatScrollToTop = () => {
+    chatContainerRef.current?.scrollTo({
+      top: 0,
+      behavior: 'smooth',
+    });
+  };
+
   // Check scroll when messages change or loading changes
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -774,9 +781,9 @@ const ChatPage = () => {
 
     if (viewableSources.length > 0) {
       setPageViewer({ pages: viewableSources, activeIdx: 0 });
-    } else {
-      setPageViewer(null);
     }
+    // Note: If viewableSources is empty, we do NOT call setPageViewer(null)
+    // so that an already-open PDF viewer stays open continuously across steps.
   };
 
   const handleSend = async () => {
@@ -1564,13 +1571,22 @@ const ChatPage = () => {
         <div className="bg-transparent pb-6 px-4 pt-2 flex-shrink-0">
           <div className="max-w-4xl mx-auto relative">
             {(showChatScrollDown && !pageViewer) && (
-              <button
-                onClick={handleChatScrollToBottom}
-                className="absolute bottom-full mb-4 right-4 p-2.5 rounded-full bg-[#4a154b] text-white shadow-xl hover:bg-[#611f69] active:scale-95 transition-all flex items-center justify-center border border-[#592466] z-40"
-                title="Scroll to bottom"
-              >
-                <ChevronDownIcon className="h-4 w-4 stroke-[2.5]" />
-              </button>
+              <div className="absolute bottom-full mb-4 right-4 flex items-center gap-2 z-40">
+                <button
+                  onClick={handleChatScrollToTop}
+                  className="p-2.5 rounded-full bg-[#4a154b] text-white shadow-xl hover:bg-[#611f69] active:scale-95 transition-all flex items-center justify-center border border-[#592466]"
+                  title="Scroll to top (Step 1)"
+                >
+                  <ChevronUpIcon className="h-4 w-4 stroke-[2.5]" />
+                </button>
+                <button
+                  onClick={handleChatScrollToBottom}
+                  className="p-2.5 rounded-full bg-[#4a154b] text-white shadow-xl hover:bg-[#611f69] active:scale-95 transition-all flex items-center justify-center border border-[#592466]"
+                  title="Scroll to bottom"
+                >
+                  <ChevronDownIcon className="h-4 w-4 stroke-[2.5]" />
+                </button>
+              </div>
             )}
             {attachedFile && (
               <div className="mb-2.5 inline-flex items-center gap-2 bg-[#f9f0ff] border border-[#e6e6e6] rounded-full px-4 py-1.5 text-xs font-bold text-[#4a154b] shadow-sm">
@@ -2221,9 +2237,18 @@ const parseSources = (toolCalls, allFiles = []) => {
 
       if (docId || filename) {
         const resolved = resolveDoc(docId || filename);
+        let finalFilename = resolved ? resolved.filename : (filename || '');
+        if (!finalFilename && allFilesList.length > 0) {
+          const match = allFilesList.find(f => (f.filename || '').toLowerCase().endsWith('.pdf'));
+          if (match) finalFilename = match.filename;
+        }
+        if (!finalFilename && docId) {
+          finalFilename = String(docId).toLowerCase().endsWith('.pdf') ? docId : `${docId}.pdf`;
+        }
+
         sources.push({
           document_id: resolved ? resolved.document_id : (docId || filename),
-          filename: resolved ? resolved.filename : (filename || 'Document'),
+          filename: finalFilename || 'document.pdf',
           page: page != null && !isNaN(Number(page)) ? Number(page) : 1,
           score: 1.0,
           snippet: `Fetched context of page ${page || 1}`,

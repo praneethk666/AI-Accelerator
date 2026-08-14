@@ -66,31 +66,31 @@ The conversational query layer operates as a 2-node cyclic **LangGraph** state m
 
 ```mermaid
 graph TD
-    User([User Question]) --> InputGuard[1. Input Guardrail: PII Redaction & Injection Check]
-    InputGuard --> Agent[2. Conversational Agent Loop]
+    User(["User Question"]) --> InputGuard["1. Input Guardrail: PII Redaction & Injection Check"]
+    InputGuard --> Agent["2. Conversational Agent Loop"]
 
-    Agent -->|Select Action| ToolSelect{Tool Type?}
+    Agent -->|Select Action| ToolSelect{"Tool Type?"}
 
-    ToolSelect -->|Search Document Corpus| RAG[3. Multi-Stage Hybrid Retrieval & Reranking]
-    ToolSelect -->|Run SQL / Excel Script| Analytics[Data Analytics: sql_read / excel_tool]
-    ToolSelect -->|Write Action: ingest_document| WriteGate{User Confirmed?}
+    ToolSelect -->|"Search Document Corpus"| RAG["3. Multi-Stage Hybrid Retrieval & Reranking"]
+    ToolSelect -->|"Run SQL / Excel Script"| Analytics["Data Analytics: sql_read / excel_tool"]
+    ToolSelect -->|"Write Action: ingest_document"| WriteGate{"User Confirmed?"}
 
-    WriteGate -->|No| ApprovalCard[Return needs_approval Card to UI]
-    WriteGate -->|Yes| IngestExec[Execute Ingest Tool]
+    WriteGate -->|No| ApprovalCard["Return needs_approval Card to UI"]
+    WriteGate -->|Yes| IngestExec["Execute Ingest Tool"]
 
-    subgraph RAG Subsystem
-        RAG --> QueryPlan[Query Planner: Decompose & Acronym Protection]
-        QueryPlan --> HybridSearch[Hybrid Search: Dense ANN + Sparse BM25 + RRF]
-        HybridSearch --> JinaRerank[Jina Reranker v2 with Key Failover]
-        JinaRerank --> PageExpand[Page Context Expansion via Postgres]
+    subgraph RAG_Subsystem["RAG Subsystem"]
+        RAG --> QueryPlan["Query Planner: Decompose & Acronym Protection"]
+        QueryPlan --> HybridSearch["Hybrid Search: Dense ANN + Sparse BM25 + RRF"]
+        HybridSearch --> JinaRerank["Jina Reranker v2 with Key Failover"]
+        JinaRerank --> PageExpand["Page Context Expansion via Postgres"]
     end
 
-    PageExpand --> Synth[4. Grounded Answer Synthesis & LaTeX Math]
+    PageExpand --> Synth["4. Grounded Answer Synthesis & LaTeX Math"]
     Analytics --> Synth
     IngestExec --> Synth
 
-    Synth --> OutputGuard[5. Output Guardrail & PII Masking]
-    OutputGuard --> UIOut([Deliver Final Answer + Exact Citations [1], [2] to UI])
+    Synth --> OutputGuard["5. Output Guardrail & PII Masking"]
+    OutputGuard --> UIOut["Deliver Final Answer + Exact Citations [1], [2] to UI"]
 ```
 
 ### Retrieval & Ranking Mathematics

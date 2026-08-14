@@ -93,43 +93,71 @@ class RetrievalTool:
         seen_ids:   set[str]   = set()
         _t0_total = time.perf_counter()
 
-        for query in sub_questions:
+        method = retrieval_cfg.get("method", "hybrid_rerank")
+        if method in ("hybrid_rerank", "enriched") and len(sub_questions) > 1:
+            primary_q = state.get("standalone_query") or state.get("query") or sub_questions[0]
             try:
-                result = _retrieve_one(
-                    query=query,
+                batch_res = _retrieve_multi_query_rerank(
+                    sub_questions=sub_questions,
+                    primary_query=primary_q,
                     retrieval_cfg=retrieval_cfg,
                     full_config=config,
                     filters={**hard_filters, **soft_filters} or None,
                 )
-                if soft_filters and not result["chunks"]:
-                    logger.info(
-                        "RetrievalTool: soft filter %s returned 0 for %r — retrying without it",
-                        soft_filters, query[:50],
-                    )
-                    result = _retrieve_one(
-                        query=query, retrieval_cfg=retrieval_cfg, full_config=config,
+                if soft_filters and not batch_res["chunks"]:
+                    batch_res = _retrieve_multi_query_rerank(
+                        sub_questions=sub_questions,
+                        primary_query=primary_q,
+                        retrieval_cfg=retrieval_cfg,
+                        full_config=config,
                         filters=(hard_filters or None),
                     )
-
-                new_chunk_ids = []
-                for chunk in result["chunks"]:
-                    cid = chunk["chunk_id"]
-                    if cid not in seen_ids:
-                        seen_ids.add(cid)
-                        all_chunks.append(chunk)
-                        new_chunk_ids.append(str(cid))
-
+                all_chunks = batch_res["chunks"]
                 logger.info(
-                    "RetrievalTool q=%r method=%s n=%d new_ids=%s %.1fms",
-                    query[:60], result["method"],
-                    len(result["chunks"]), new_chunk_ids, result["latency_ms"],
+                    "🔎 [Retrieval] Unified multi-query batch (%d sub-questions) method=%s retrieved=%d chunks (%.1fms)",
+                    len(sub_questions), batch_res["method"], len(all_chunks), batch_res["latency_ms"]
                 )
-
             except Exception as exc:
-                logger.error("RetrievalTool failed for %r: %s", query[:60], exc)
-                errors: list = state["errors"] or []
-                errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
+                logger.error("Unified retrieval failed: %s", exc)
+                errors: list = state.get("errors") or []
+                errors.append({"tool": "retrieval", "query": primary_q, "error": str(exc)})
                 state["errors"] = errors
+        else:
+            for query in sub_questions:
+                try:
+                    result = _retrieve_one(
+                        query=query,
+                        retrieval_cfg=retrieval_cfg,
+                        full_config=config,
+                        filters={**hard_filters, **soft_filters} or None,
+                    )
+                    if soft_filters and not result["chunks"]:
+                        logger.info(
+                            "RetrievalTool: soft filter %s returned 0 for %r — retrying without it",
+                            soft_filters, query[:50],
+                        )
+                        result = _retrieve_one(
+                            query=query, retrieval_cfg=retrieval_cfg, full_config=config,
+                            filters=(hard_filters or None),
+                        )
+
+                    for chunk in result["chunks"]:
+                        cid = chunk["chunk_id"]
+                        if cid not in seen_ids:
+                            seen_ids.add(cid)
+                            all_chunks.append(chunk)
+
+                    logger.info(
+                        "🔎 [Retrieval] q=%r method=%s retrieved=%d chunks (%.1fms)",
+                        query[:60], result["method"],
+                        len(result["chunks"]), result["latency_ms"],
+                    )
+
+                except Exception as exc:
+                    logger.error("RetrievalTool failed for %r: %s", query[:60], exc)
+                    errors: list = state.get("errors") or []
+                    errors.append({"tool": "retrieval", "query": query, "error": str(exc)})
+                    state["errors"] = errors
 
         # ── RBAC post-filter ─────────────────────────────────────────────────────────
         # Drop chunks whose allowed_roles list is set and doesn't intersect with
@@ -392,10 +420,115 @@ def _hybrid_rerank(query, cfg, full_config, filters):
             c["_score"] = float(score)
             result.append(c)
         return result
-    except Exception:
-        logger.info("[Reranker] Rate limited or API key error — using standard hybrid RRF reranker.")
+    except Exception as exc:
+        logger.info("⚠️  [Reranker] Jina API unavailable or all keys exhausted (%s) — falling back to local hybrid RRF reranker.", exc)
         fallback_limit = cfg.get("top_n", 20)
         return candidates[:fallback_limit]
+
+
+def _retrieve_multi_query_rerank(
+    sub_questions: list[str],
+    primary_query: str,
+    retrieval_cfg: dict,
+    full_config: dict,
+    filters: Optional[dict],
+) -> dict:
+    """Unified Multi-Query Batch Reranker:
+    1. Gathers hybrid dense+sparse candidates across all sub-questions.
+    2. Deduplicates chunks by chunk_id, preserving the highest RRF fusion score.
+    3. Caps unique candidate pool to reranker_max_pairs (default 20).
+    4. Executes a SINGLE Jina Reranker API call for the unified batch.
+    5. Returns top rerank_top_k chunks rescored by cross-encoder.
+    """
+    start = time.perf_counter()
+    candidate_k = retrieval_cfg.get("candidate_k", 80)
+    rerank_top_k = retrieval_cfg.get("rerank_top_k", 5)
+
+    # 1. Gather hybrid candidates across all sub-questions in parallel (Scatter-Gather)
+    import concurrent.futures
+
+    candidate_map: dict[str, Chunk] = {}
+
+    def _fetch_sub_candidates(q: str) -> list[Chunk]:
+        try:
+            return _hybrid(q, retrieval_cfg, full_config, filters, fuse_top_k=candidate_k)
+        except Exception as exc:
+            logger.warning("Sub-query %r hybrid candidate search failed: %s", q[:50], exc)
+            return []
+
+    if len(sub_questions) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sub_questions), 4)) as executor:
+            futures = [executor.submit(_fetch_sub_candidates, q) for q in sub_questions]
+            for future in concurrent.futures.as_completed(futures):
+                chunks = future.result()
+                for c in chunks:
+                    cid = str(c["chunk_id"])
+                    if cid not in candidate_map or (c.get("_score") or 0.0) > (candidate_map[cid].get("_score") or 0.0):
+                        candidate_map[cid] = c
+    else:
+        for q in sub_questions:
+            chunks = _fetch_sub_candidates(q)
+            for c in chunks:
+                cid = str(c["chunk_id"])
+                if cid not in candidate_map or (c.get("_score") or 0.0) > (candidate_map[cid].get("_score") or 0.0):
+                    candidate_map[cid] = c
+
+    candidates = sorted(candidate_map.values(), key=lambda c: float(c.get("_score") or 0.0), reverse=True)
+    if not candidates:
+        return {
+            "chunks": [],
+            "latency_ms": round((time.perf_counter() - start) * 1000, 2),
+            "method": "hybrid_rerank_empty",
+        }
+
+    # 2. Enforce degradation guardrail
+    g_cfg = full_config.get("guardrails", {})
+    deg_cfg = g_cfg.get("degradation", {})
+    max_pairs = deg_cfg.get("reranker_max_pairs", 20)
+    if max_pairs is not None:
+        candidates = candidates[:max_pairs]
+
+    max_tokens = deg_cfg.get("reranker_max_tokens_per_pair")
+    pairs = []
+    for c in candidates:
+        text = c.get("text") or ""
+        if max_tokens is not None:
+            char_limit = max_tokens * 4
+            if len(text) > char_limit:
+                text = text[:char_limit]
+        pairs.append((primary_query, text))
+
+    try:
+        reranker = get_reranker(full_config)
+        scores = reranker.predict(pairs)
+        ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+
+        min_score = retrieval_cfg.get("rerank_min_score")
+        if min_score is not None:
+            ranked = [(s, c) for s, c in ranked if s >= min_score]
+
+        result = []
+        for score, chunk in ranked[:rerank_top_k]:
+            c = dict(chunk)
+            c["_score"] = float(score)
+            result.append(c)
+
+        return {
+            "chunks": result,
+            "latency_ms": round((time.perf_counter() - start) * 1000, 2),
+            "method": "hybrid_rerank_batch",
+        }
+    except Exception as exc:
+        logger.info(
+            "⚠️  [Reranker] Jina API unavailable or all keys exhausted (%s) — falling back to local hybrid RRF reranker.",
+            exc,
+        )
+        fallback_limit = retrieval_cfg.get("top_n", 20)
+        return {
+            "chunks": candidates[:fallback_limit],
+            "latency_ms": round((time.perf_counter() - start) * 1000, 2),
+            "method": "hybrid_rrf_fallback",
+        }
 
 
 

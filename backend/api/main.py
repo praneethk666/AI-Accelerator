@@ -52,10 +52,16 @@ for _logger_name in _noisy_loggers:
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
 
 class EndpointFilter(logging.Filter):
-    """Filter out noisy background polling endpoints (/progress, /health) from Uvicorn access logs."""
+    """Filter out noisy background polling endpoints (/progress, /health, /pages/.../image, /pdf-info) from Uvicorn access logs."""
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
-        return not ("/progress" in msg or "/health" in msg)
+        return not (
+            "/progress" in msg
+            or "/health" in msg
+            or "/pages/" in msg
+            or "/image" in msg
+            or "/pdf-info" in msg
+        )
 
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 

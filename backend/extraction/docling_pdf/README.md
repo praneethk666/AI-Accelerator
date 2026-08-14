@@ -1,29 +1,75 @@
-# Docling PDF Extraction Module
+# IBM Docling PDF Extraction & Table Recovery Module
 
-The Docling PDF Extraction module implements a unified, high-fidelity parser for PDF documents (supporting digital, scanned, or mixed formats).
+The **Docling PDF Module** (`backend/extraction/docling_pdf/`) is the unified PDF extraction engine for AI-Accelerator. It handles digital, scanned, and mixed PDFs through an intelligent per-page routing architecture combining IBM Docling layout parsing, TableFormer table structure recovery, and VLM OCR rescue.
 
-## Dependencies
+---
 
-* **docling**: IBM/MIT Document Ingestion Engine. Used for parsing document layout hierarchies, reading order, and table cell matrices.
-* **docling.datamodel**: Handles configuration mapping (`PdfPipelineOptions`, `AcceleratorOptions`, `AcceleratorDevice`) for hardware acceleration (CPU, CUDA, MPS).
-* **PyMuPDF (`fitz`)**: Handles page coordinate conversions and structural bounding box crops.
-* **backend.extraction.vision_ocr (`route_and_rescue`)**: Directs VLM transcription rescue loops for garbled/scanned pages.
-* **backend.extraction.table_reconcile (`reconcile_tables`)**: Merges split tables that span page boundaries.
+## 1. Key Capabilities & Features
 
-## Ingest Processing Logic
+- **Hybrid Page-by-Page Routing** ([`tool.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/extraction/docling_pdf/tool.py), [`docling_extract.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/extraction/docling_pdf/docling_extract.py)):
+  - *Digital Pages*: Fast native layout analysis with Docling (running with OCR disabled for speed).
+  - *Scanned / Degraded Pages*: Routed to VLM OCR rescue (`vision_ocr.py`) to transcribe degraded scans, complex schematics, and mixed layouts with zero character corruption.
+- **TableFormer Table Recovery**:
+  - Automatically reconstructs structured rows, headers, and merged cells from complex PDF tables into clean JSON matrices (`table_data`) and Markdown strings.
+- **Multi-Page Table Stitching**:
+  - Reconciles and stitches tables spanning page boundaries back into cohesive unified tabular datasets.
+- **64-Step Procedure Extraction**:
+  - Extracts end-to-end sequential step-by-step operating procedures, safety guidelines, and maintenance protocols, tracking exact page and bounding box citations for every action.
+- **Inline Figure Captioning**:
+  - Cropped diagrams and figure regions are saved to disk (`uploads/images/`) and registered as `image_caption` blocks, bypassing redundant downstream vision processing.
 
-The entrypoint is `DoclingPDFTool::run()`:
+---
 
-1. **Converter Cache Initialization (`_converter`)**:
-   * Loads docling model singletons (layout classification and TableFormer models).
-   * Configures thread limits and target execution devices (`device: cpu|cuda|mps|auto`).
-2. **Structural Document Conversion**:
-   * Parses the PDF into a hierarchical `DoclingDocument`.
-   * Filters out page headers and page footers (`page_header`, `page_footer`) to prevent indexing noise.
-   * Maps headings (`section_header`, `title`) and tables into standard `NormalizedBlock` schemas in logical reading order.
-3. **VLM Rescue Routing (`route_and_rescue`)**:
-   * Inspects extracted blocks. If pages are scanned (no text layer) or garbled, the router bypasses native parses and runs a VLM-based page transcription.
-4. **Table Reconciliation (`reconcile_tables`)**:
-   * Scans sequential tables. If a table spans multiple pages (where continuation rows inherit the header layout from the previous page), it stitches them back into a single structured block.
-5. **Ingestion Metadata Overrides**:
-   * Overrides `state["page_profiles"] = []` to prevent the downstream `VisionEnrichmentTool` from reprocessing figures, as Docling captures and captions illustrations directly.
+## 2. Dependencies & Integrations
+
+- **docling / docling-core**: IBM Docling document parsing engine and TableFormer.
+- **fitz (PyMuPDF)**: Fast bitmap rendering and vector geometry analysis.
+- **backend.extraction.vision_ocr**: Multimodal VLM OCR rescue.
+- **backend.extraction.table_reconcile**: Multi-page table stitching algorithms.
+
+---
+
+## 3. Architecture & Data Flow
+
+```mermaid
+graph TD
+    PDF[Input PDF Document] --> Classify[Categorize: Detect Digital / Scanned / Mixed]
+    Classify --> DoclingTool[DoclingPDFTool]
+
+    DoclingTool --> PageRouter{Per-Page Inspection}
+    PageRouter -->|Clean Digital Text| DoclingEngine[Docling Layout AI + TableFormer]
+    PageRouter -->|Scanned / Complex| VLMRescue[VLM OCR Rescue via Gemini / NVIDIA]
+
+    DoclingEngine --> TableCheck{Table Spans Pages?}
+    TableCheck -->|Yes| Stitcher[Table Reconcile Engine]
+    TableCheck -->|No| BlockGen[NormalizedBlock Builder]
+    Stitcher --> BlockGen
+    VLMRescue --> BlockGen
+
+    BlockGen --> CacheBlocks[(Write Blocks to Postgres)]
+    CacheBlocks --> Out[state['blocks']]
+```
+
+---
+
+## 4. Configuration & Testing
+
+### Configuration Blueprint (`config/global.yaml`)
+```yaml
+extraction:
+  deskew: true
+  stitch_tables: true
+  docling:
+    do_ocr: false
+    do_table_structure: true
+    images_scale: 2.0
+    page_rescue: true
+    max_vlm_pages: 60
+    mode: local                       # local | remote server
+```
+
+### Verification & Unit Tests
+```powershell
+# Test Docling and scanned PDF extraction flows
+pytest tests/test_docling_scanned.py
+```

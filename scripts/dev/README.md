@@ -1,13 +1,15 @@
-# Dev / R&D scripts
+# Developer Research & Benchmarking Tools
 
-One-off tools used to make engineering decisions (which OCR engine, which table
-extraction approach) — not part of the product pipeline. Each is self-contained;
-run with `--help` or read its docstring for usage. Kept for re-running a bake-off
-if a new OCR engine or model shows up; not needed to run the pipeline itself.
+The **Dev Scripts Module** (`scripts/dev/`) contains research tools, model bake-off benchmarks, and layout comparison utilities.
 
-- `make_scanned.py` — rasterize a digital PDF into a scanned (image-only) one, for OCR testing.
-- `ocr_bakeoff.py` — score PaddleOCR / Docling(RapidOCR) / a VLM against a digital "ground truth" twin.
-- `ocr_compare.py` — run one OCR engine over a scanned PDF, emit per-page metrics.
-- `ocr_diff.py` — compare scanned OCR output against the digital twin's native text.
-- `table_compare.py` — Docling TableFormer vs a VLM, head-to-head on the same table.
-- `vlm_ocr_test.py` — test a vision model as page-OCR against the native text layer.
+---
+
+## 1. Benchmarking Utilities
+
+| Script | Purpose |
+|---|---|
+| `ocr_bakeoff.py` | Benchmarks PaddleOCR, Surya, and Multimodal VLMs against ground-truth texts to evaluate Character Error Rates (CER). |
+| `ocr_compare.py` / `ocr_diff.py` | Generates visual diffs and accuracy reports comparing OCR engine outputs. |
+| `table_compare.py` | Compares IBM Docling TableFormer against multimodal VLMs for structured table recovery accuracy. |
+| `make_scanned.py` | Converts clean digital PDFs into synthetic scanned bitmaps with simulated skew and noise to test OCR resilience. |
+| `vlm_ocr_test.py` | Evaluates prompt variations across multimodal vision models for technical drawing transcription. |

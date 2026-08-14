@@ -1,35 +1,78 @@
-# React UI Frontend
+# React UI Frontend Subsystem
 
-The React frontend provides a responsive user interface for document ingestion, real-time logging, and multi-turn agent chats.
+The **Frontend Subsystem** (`frontend/`) is a modern React 18 single-page application (SPA) built with **Vite** and **Tailwind CSS**. It provides an interactive document ingestion dashboard, a conversational agent chat interface with side-by-side citation previews, and dynamic configuration controls.
 
-## Technology Stack
+---
 
-* **Vite**: High-performance development server and bundle builder.
-* **React**: Component-based UI library.
-* **React Router**: Controls routing between pages.
-* **Tailwind CSS / PostCSS**: Modern styling framework.
-* **lucide-react**: UI icons.
+## 1. Key Capabilities & Features
 
-## Page Layouts & Logic
+- **Conversational Document Intelligence** ([`ChatPage.jsx`](file:///d:/AI-Acc-updated/AI-Accelerator/frontend/src/components/ChatPage.jsx)):
+  - Multi-turn conversational interface with streaming markdown rendering.
+  - **Clickable Inline Citations**: Clicking citations `[1]`, `[2]` opens a synchronized side-panel preview displaying high-resolution page crops, structured table matrices, or persistent PDF views.
+  - **Tool-Call Execution Badges**: Real-time visualization of agent reasoning steps (e.g. `search_documents`, `get_page_context`, `sql_read`, `excel_tool`).
+  - **Human-in-the-Loop Write Approval Cards**: Renders interactive approval prompts when the agent requests write actions (e.g. `ingest_document`), allowing users to approve or decline.
+  - **Real-Time Token & Multi-Currency Cost Display**: Displays per-turn and session token counts with an instant currency toggle between **USD ($)** and **INR (₹)**.
+  - **Sidebar Session History**: Historical conversation thread list retrieved from `GET /agent/sessions` with creation timestamps and deletion actions.
+- **Document Ingestion Dashboard** ([`IngestionPage.jsx`](file:///d:/AI-Acc-updated/AI-Accelerator/frontend/src/components/IngestionPage.jsx)):
+  - Drag-and-drop file upload supporting PDFs, Word documents, Excel workbooks, PowerPoint presentations, and images.
+  - Real-time polling progress bar tracking pipeline stages (`categorize → extract → vision → chunk → enrich → embed → index`).
+  - Diagnostic process logging console rendering live error and step telemetry.
+- **Dynamic Configuration & Hyperparameters** ([`SettingsPage.jsx`](file:///d:/AI-Acc-updated/AI-Accelerator/frontend/src/components/SettingsPage.jsx)):
+  - Model provider selector (OpenAI, NVIDIA NIM, Google Gemini, Ollama) and live prompt template editor.
 
-### 1. Ingestion Dashboard (`components/IngestionPage.jsx`)
-* **File Ingest**: Uses a file dropzone supporting PDFs, Word files, Excel files, PowerPoint files, and images.
-* **Progress Tracking**: Polls the backend API using `GET /files/{id}` to fetch document status and logs.
-* **Process Logging**: Renders logs from active background steps (e.g. classification, extraction, embedding).
+---
 
-### 2. Chat Panel (`components/ChatPage.jsx`)
-* **Conversational Agent**: Chat interface with the document agent.
-* **Inline Citations**: Renders clickable citation links. Clicking a citation opens a preview panel showing the referenced table data or page crop.
-* **Tool-Call Badges**: Displays badges when the agent calls tools (e.g. `search_documents`, `sql_read`).
-* **Action Approvals**: Renders approval cards for write actions. When the agent requests permission to run `ingest_document`, it displays an interactive prompt asking the user to confirm the upload.
-* **Sidebar History**: Lists historical conversation threads retrieved via `GET /agent/sessions`, allowing users to open or delete history.
+## 2. Technology Stack
 
-### 3. Configuration Panel (`components/SettingsPage.jsx`)
-* **LLM / VLM Model Routing**: Select models and providers for different steps.
-* **Prompt Customization**: Text areas to view and modify system prompts and instructions.
-* **Hyperparameters**: Inputs to adjust parameters like chunk size, overlap, temperature, and retrieval strategies.
+- **React 18**: Component architecture and state hooks.
+- **Vite**: Ultra-fast development server and production bundler.
+- **Tailwind CSS / PostCSS**: Modern utility-first responsive styling.
+- **React Router**: Client-side routing across `/chat`, `/ingest`, and `/settings`.
+- **lucide-react**: Clean vector iconography.
+
+---
+
+## 3. Architecture & Component Hierarchy
+
+```mermaid
+graph TD
+    App[App.jsx & Router] --> Sidebar[Navigation & Session Sidebar]
+    App --> MainArea[Active Page View]
+
+    Sidebar -->|Select Session| Chat[ChatPage.jsx]
+    
+    MainArea --> Chat
+    MainArea --> Ingest[IngestionPage.jsx]
+    MainArea --> Settings[SettingsPage.jsx]
+
+    subgraph ChatPage Features
+        Chat --> ChatHistory[Multi-Turn Message Feed]
+        Chat --> PreviewPanel[Side-Panel Citation Preview: PDF / Image / Table]
+        Chat --> ApprovalCard[Write Approval Modal Card]
+        Chat --> CostToggle[USD / INR Cost Bar]
+    end
+
+    subgraph IngestionPage Features
+        Ingest --> Dropzone[Drag & Drop Multi-Format Dropzone]
+        Ingest --> ProgressBar[Live Polling Progress Tracker]
+        Ingest --> LogConsole[Terminal Step Log Stream]
+    end
 ```
 
-## Integration & API Client
+---
 
-All communications with the backend FastAPI service are routed through `frontend/src/api.jsx` using standard fetch requests.
+## 4. Running & Building
+
+```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start Vite local development server
+npm run dev
+
+# Build production bundle
+npm run build
+```

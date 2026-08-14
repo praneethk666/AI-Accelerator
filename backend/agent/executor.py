@@ -608,7 +608,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 "step": "Input Guardrail", "type": "guardrail", "status": "SKIPPED",
                 "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Guardrails disabled"
             }
-            logger.info("🛡️  [STEP: Input Guardrail] Disabled -> SKIPPED (%.1fms)", dur_ms)
+            logger.info("🛡️  [Input Guardrail] Skipped (disabled)")
             _append_trace(trace_item)
             return {
                 "guard_blocked": False, "guard_evidences": [], "guard_risk_score": 0,
@@ -622,7 +622,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 "step": "Input Guardrail", "type": "guardrail", "status": "SKIPPED",
                 "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Rollout excluded"
             }
-            logger.info("🛡️  [STEP: Input Guardrail] Rollout excluded -> SKIPPED (%.1fms)", dur_ms)
+            logger.info("🛡️  [Input Guardrail] Skipped (rollout excluded)")
             _append_trace(trace_item)
             return {
                 "guard_blocked": False, "guard_evidences": [], "guard_risk_score": 0,
@@ -673,10 +673,10 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         dur_ms = round((time.time() - t0) * 1000, 2)
         is_blocked = policy_decision == PolicyDecision.BLOCK or should_block_session
 
-        logger.info(
-            "🛡️  [STEP: Input Guardrail] Risk Score: %s | Policy: %s | Status: %s | Duration: %.1fms",
-            decision.risk_score, policy_decision.value.upper(), "BLOCKED" if is_blocked else "PASS", dur_ms
-        )
+        if is_blocked:
+            logger.info("🛡️  [Input Guardrail] Blocked")
+        else:
+            logger.info("🛡️  [Input Guardrail] Passed")
 
         trace_item = {
             "step": "Input Guardrail", "type": "guardrail",
@@ -1008,7 +1008,7 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
                 "step": "Output Guardrail", "type": "guardrail", "status": "SKIPPED",
                 "risk_score": 0, "policy": "allow", "duration_ms": dur_ms, "details": "Guardrails disabled"
             }
-            logger.info("🛡️  [STEP: Output Guardrail] Disabled -> SKIPPED (%.1fms)", dur_ms)
+            logger.info("🛡️  [Output Guardrail] Skipped (disabled)")
             _append_trace(trace_item)
             return {
                 "safe_answer": raw_answer,
@@ -1070,10 +1070,10 @@ def _build_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentTool], 
         max_score = max(scores) if scores else 0
         dur_ms = round((time.time() - t0) * 1000, 2)
 
-        logger.info(
-            "🛡️  [STEP: Output Guardrail] Risk Score: %s | Policy: %s | Status: %s | Duration: %.1fms",
-            decision.risk_score, policy_decision.value.upper(), "BLOCKED" if blocked else "PASS", dur_ms
-        )
+        if blocked:
+            logger.info("🛡️  [Output Guardrail] Blocked")
+        else:
+            logger.info("🛡️  [Output Guardrail] Passed")
 
         trace_item = {
             "step": "Output Guardrail", "type": "guardrail",
@@ -3562,13 +3562,69 @@ def _get_page_content_from_db(document_id: str, page: int | str, config: dict) -
     return ""
 
 
+PROCE_CLASSIFIER_PROMPT = (
+    "You are a strict procedure classification judge for industrial machinery and technical manuals.\n"
+    "Your task is to determine whether the user is asking to execute/follow an actionable, "
+    "step-by-step physical/machine operational procedure (e.g. maintenance, cleaning, setup, assembly, "
+    "disassembly, part replacement, calibration, wiring adjustments) based on their query and the retrieved manual excerpts.\n\n"
+    "CLASSIFICATION RULES:\n"
+    "1. Output 'YES' if the retrieved content contains sequential operational steps and the user query "
+    "   wants to perform or follow this procedure.\n"
+    "2. Output 'NO' if the user query is asking for informational explanation (e.g. explaining what an alarm/error code means, "
+    "   component definitions, safety specs, dimensions, troubleshooting theory) even if numbered points appear in the text.\n\n"
+    "Output strictly 'YES' or 'NO' with no extra punctuation or commentary."
+)
+
+
+def _has_procedural_step_markers(text: str) -> bool:
+    """Fast structural pre-check: does the text contain sequential step markers or procedural action keywords?"""
+    if not text:
+        return False
+    import re
+    patterns = (
+        r'\bstep\s*\d+',                         # "Step 1", "Step 2"
+        r'\(\s*1\s*\).*?\(\s*2\s*\)',            # "(1)...(2)"
+        r'^\s*1\.\s+.*?\n\s*2\.\s+',             # "1. ...\n 2. ..."
+        r'\b1\.\s+.*?\b2\.\s+',                  # "1. ... 2. ..."
+        r'\b1\.\d+\b.*?\b1\.\d+\b',              # "1.1 ... 1.2"
+        r'\b(procedure|checklist|how to|steps to|instructions)\b',
+        r'\b(clean|changeover|replace|install|assemble|disassemble|dismantle|calibrate|lubricate|maintenance|setup)\b',
+    )
+    return any(re.search(p, text, re.IGNORECASE | re.DOTALL) for p in patterns)
+
+
+def _classify_procedure_intent_llm(query: str, snippet: str, llm) -> bool:
+    """Use a micro-LLM call (gpt-4o-mini, max_tokens=10) to dynamically determine if the query and chunks constitute an actionable procedure."""
+    if not query or not snippet or not llm:
+        return False
+    try:
+        classifier_messages = [
+            SystemMessage(PROCE_CLASSIFIER_PROMPT),
+            HumanMessage(f"USER QUERY:\n{query}\n\nRETRIEVED MANUAL EXCERPT:\n{snippet[:2000]}")
+        ]
+        try:
+            resp = llm.invoke(classifier_messages, config={"max_tokens": 10, "temperature": 0.0})
+        except TypeError:
+            resp = llm.invoke(classifier_messages)
+        decision = getattr(resp, "content", "").strip().upper()
+        logger.info("🧠 [PROC CLASSIFIER] Query: %r | Decision: %r", query[:60], decision)
+        return decision.startswith("YES")
+    except Exception as e:
+        logger.warning("Procedure classifier micro-LLM call failed: %s", e)
+        return False
+
+
 def _is_new_query(msg: str) -> bool:
     """Check if incoming user message is a new question vs a button click / continuation in guided assistant mode."""
     msg_lo = msg.strip().lower()
+    # Numbered menu selection (e.g. "1", "1.", "1. Title", "2")
+    import re
+    if re.match(r'^\d+(\.|\s|$)', msg_lo):
+        return False
     # Button clicks and step completion choices in guided process UI
     if any(tok in msg_lo for tok in (
         "start", "guided", "yes", "no", "next", "complete", "stop", "cancel",
-        "proceed", "show cad", "option", "thanks", "done", "step complete"
+        "proceed", "show cad", "option", "thanks", "done", "step complete", "continue"
     )):
         return False
     # If text is a new query (starts with question words or contains > 3 words)
@@ -3611,14 +3667,34 @@ def run_agent(
                     store.add_context_doc(session_id, active_document_id)
                 except Exception:
                     pass
+
+            state = store.get_interactive_state(session_id) or {}
+            mode = state.get("mode")
+
+            # Auto-register doc_id from active state or cached procedure
+            _state_doc = (state.get("selected_option") or {}).get("document_id") or state.get("document_id")
+            if _state_doc:
+                try:
+                    store.add_context_doc(session_id, _state_doc)
+                except Exception:
+                    pass
+
+            _cached_proc = store.get_procedure_cache(session_id) if not mode else None
+            if _cached_proc and _cached_proc.get("document_id"):
+                try:
+                    store.add_context_doc(session_id, _cached_proc.get("document_id"))
+                except Exception:
+                    pass
+
             # Load current session context doc list for use later in the pre-search interceptor
             try:
                 context_docs = store.get_context_docs(session_id) or []
             except Exception:
                 context_docs = []
 
-            state = store.get_interactive_state(session_id) or {}
-            mode = state.get("mode")
+            for _did in (_state_doc, _cached_proc.get("document_id") if _cached_proc else None, active_document_id):
+                if _did and _did not in context_docs:
+                    context_docs.append(_did)
 
             # ── Context Search Confirmation Handler ──────────────────────────────
             # Handles the case where a scoped search returned no answer and we asked
@@ -3731,10 +3807,12 @@ def run_agent(
                         proc_decision = getattr(proc_resp, "content", "").strip()
                         logger.info("[PROC AGENT] Decision: %r", proc_decision[:80])
 
-                        # ── ACTION:SKIP → fall through to main agent ──
+                        # ── ACTION:SKIP → fall through to manual context search ──
                         if proc_decision.startswith("ACTION:SKIP"):
-                            logger.info("[PROC AGENT] Falling through to main agent")
-                            # Do nothing — fall through
+                            logger.info("[PROC AGENT] Falling through to context manual search")
+                            if cached_doc_id and cached_doc_id not in context_docs:
+                                context_docs.append(cached_doc_id)
+                            # fall through to context pre-search interceptor
 
                         # ── ACTION:RESUME → restore state from cache ──
                         elif proc_decision.startswith("ACTION:RESUME"):
@@ -3914,7 +3992,7 @@ def run_agent(
 
 
 
-            if mode == "guided_assistant" and (state.get("stage") in ("active", "disambiguation", "overview", "section_disambiguation", "procedure_offer") or not _is_new_query(message)):
+            if mode == "guided_assistant" and (state.get("stage") in ("active", "disambiguation", "overview", "section_disambiguation", "procedure_offer", "trouble_global_search_pending") or not _is_new_query(message)):
                 with _using_trace_sink() as _trace_sink, usage.using_sink() as sink:
                     def _get_tu(ans_str: str) -> dict:
                         tu = sink.totals(config=config)
@@ -4333,16 +4411,21 @@ def run_agent(
                             
                     elif stage == "trouble_global_search_pending":
                         msg_clean = message.strip().lower()
-                        if "yes" in msg_clean:
+                        _yes_words = ("yes", "search globally", "search global", "✅", "sure", "ok", "proceed", "yep", "y")
+                        _no_words = ("no", "that's fine", "stop", "❌", "nope", "don't")
+                        if any(w in msg_clean for w in _yes_words):
                             state["stage"] = "active"
                             store.set_interactive_state(session_id, state)
                             
                             from backend.retrieval.search_documents import SearchDocumentsTool as _SDT
                             _global_result = _SDT().run(
-                                query=state.get("trouble_query", ""),
-                                document_scope=[]
+                                query=state.get("trouble_query", message),
+                                document_scope=[],
+                                session_id=session_id
                             )
-                            _global_answer = _global_result.get("answer", "")
+                            _global_answer = (_global_result.get("answer") or "").strip()
+                            if not _global_answer:
+                                _global_answer = "I could not find relevant information across the manuals."
                             
                             current_step_idx = state.get("current_step_idx", state.get("current_idx", 0))
                             sections = state.get("sections", [])
@@ -4374,7 +4457,7 @@ def run_agent(
                             total_sec_steps = len(sections[current_sec_idx].get("steps", [])) if current_sec_idx < len(sections) else 0
                             
                             answer = (
-                                f"Okay, I'll restrict my answers to the current manual.\n\n"
+                                f"Understood, keeping answers restricted to the current manual.\n\n"
                                 f"*(Still on **Step {current_step_idx + 1} of {total_sec_steps}**)*\n"
                                 "Let me know when you have completed this step or if you need more help."
                             )
@@ -4663,7 +4746,11 @@ def run_agent(
                             }
 
                             
-                        is_done = any(w in msg_clean for w in ("yes", "completed", "ok", "next", "proceed", "done"))
+                        is_question = any(msg_clean.startswith(w) for w in ("how", "what", "which", "why", "where", "when", "can", "tell", "explain", "is", "are", "do", "does", "h=")) or "?" in message
+                        is_done = not is_question and (
+                            any(w in msg_clean for w in ("✅", "step complete", "next step", "next", "proceed", "done with this step", "step done", "completed step"))
+                            or msg_clean in ("yes", "done", "ok", "next", "completed")
+                        )
                         if is_done:
                             next_step_idx = current_step_idx + 1
                             if next_step_idx < total_sec_steps:
@@ -4782,19 +4869,103 @@ def run_agent(
                                         "trace_id": None,
                                     }
                         else:
-                            # Stuck Technician Troubleshooting Sub-Loop
+                            # === PROCEDURE AGENT: Live Structured JSON & Context Memory Handler ===
                             sel = state.get("selected_option") or {}
-                            doc_id = sel.get("document_id")
+                            doc_id = sel.get("document_id") or state.get("document_id")
+                            fname_val = sel.get("filename") or state.get("filename") or ""
+
+                            # 1. Build Structured Procedure JSON & Progress Memory Context
+                            proc_lines = []
+                            for i, sec in enumerate(sections):
+                                s_title = sec.get("title", f"Section {i+1}")
+                                s_steps = sec.get("steps", [])
+                                if s_steps:
+                                    proc_lines.append(f"\n{s_title} ({len(s_steps)} steps):")
+                                    for si, st in enumerate(s_steps):
+                                        step_tag = ""
+                                        if i < current_sec_idx or (i == current_sec_idx and si < current_step_idx):
+                                            step_tag = " [COMPLETED]"
+                                        elif i == current_sec_idx and si == current_step_idx:
+                                            step_tag = " [CURRENT ACTIVE STEP]"
+                                        else:
+                                            step_tag = " [PENDING]"
+                                        proc_lines.append(f"  Step {si+1}: {st.replace(chr(10), ' ').strip()}{step_tag}")
+                                else:
+                                    proc_lines.append(f"\n{s_title} (steps pending)")
+                            proc_context = "\n".join(proc_lines)
+
+                            current_sec_name = sections[current_sec_idx].get("title", f"Section {current_sec_idx+1}") if current_sec_idx < len(sections) else "Unknown"
+                            pending_sections = [s.get("title", f"Section {si+1}") for si, s in enumerate(sections) if si > current_sec_idx]
+                            pending_sec_str = ", ".join(pending_sections) if pending_sections else "None (this is the final section)"
+
+                            proc_agent_system = (
+                                "You are a Procedure Context Agent assisting a technician during an active machine procedure.\n"
+                                "You have direct access to the live structured procedure JSON and context memory below.\n\n"
+                                f"PROCEDURE: {title}\n"
+                                f"SOURCE: {fname_val}\n\n"
+                                "SECTIONS AND STEPS:\n"
+                                f"{proc_context}\n\n"
+                                "CURRENT PROGRESS & MEMORY STATE:\n"
+                                f"- Active Section: '{current_sec_name}' (Section {current_sec_idx + 1} of {len(sections)})\n"
+                                f"- Current Step in Progress: Step {current_step_idx + 1} of {total_sec_steps}\n"
+                                f"- Steps Completed in this section: {current_step_idx} step(s)\n"
+                                f"- Steps Remaining in this section: {max(0, total_sec_steps - current_step_idx - 1)} step(s)\n"
+                                f"- Pending Future Sections: {pending_sec_str}\n\n"
+                                "RESPONSE RULES — follow strictly:\n"
+                                "1. If the user asks about progress, status, completed steps, remaining steps, or pending sections "
+                                "   (e.g. 'how many steps are completed?', 'what have we done so far?', 'how many steps left?', 'which section are we on?'):\n"
+                                "   Answer clearly and concisely directly using the progress and memory state above. Do not output an ACTION token.\n"
+                                "2. If the user asks about specific steps, tool requirements, safety warnings, or clarification on procedure instructions:\n"
+                                "   Answer clearly and accurately using the structured steps above. Do not output an ACTION token.\n"
+                                "3. If the user asks a question about general machine specifications, components, troubleshooting, or topics NOT covered in this procedure:\n"
+                                "   Output strictly the token: ACTION:SEARCH\n\n"
+                                "CRITICAL: Output ONLY the direct answer OR the exact token 'ACTION:SEARCH'. Never mix ACTION:SEARCH with text."
+                            )
+
+                            proc_agent_messages = [
+                                SystemMessage(proc_agent_system),
+                                HumanMessage(message)
+                            ]
+
+                            proc_ans = ""
+                            try:
+                                if llm:
+                                    proc_resp = llm.invoke(proc_agent_messages)
+                                    proc_ans = getattr(proc_resp, "content", "").strip()
+                            except Exception as e:
+                                logger.warning("Active procedure agent LLM failed: %s", e)
+                                proc_ans = "ACTION:SEARCH"
+
+                            # If procedure agent answered from memory / structured JSON
+                            if proc_ans and not proc_ans.startswith("ACTION:SEARCH"):
+                                answer = (
+                                    f"{proc_ans}\n\n"
+                                    f"*(Still on **Step {current_step_idx + 1} of {total_sec_steps}**)*\n"
+                                    "Let me know when you have completed this step or if you need more help."
+                                )
+                                return {
+                                    "status": "needs_clarification",
+                                    "answer": answer,
+                                    "question": "Is this step completed?",
+                                    "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                    "tool_calls": [],
+                                    "execution_trace": list(_trace_sink),
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": _get_tu(answer),
+                                    "trace_id": None,
+                                }
+
+                            # 2. Fallback: Current Manual PDF Scoped Search
                             from backend.retrieval.search_documents import SearchDocumentsTool as _SDT
                             _scoped_answer = ""
                             try:
                                 if doc_id:
-                                    sdt_query = f"The technician is on Step {current_step_idx + 1} ('{steps[current_step_idx]}') and asks: {message}"
                                     _scoped_result = _SDT().run(
-                                        query=sdt_query,
-                                        document_scope=[doc_id]
+                                        query=message,
+                                        document_scope=[doc_id],
+                                        session_id=session_id
                                     )
-                                    _scoped_answer = _scoped_result.get("answer", "")
+                                    _scoped_answer = (_scoped_result.get("answer") or "").strip()
                             except Exception as e:
                                 logger.warning(f"Stuck Technician SDT failed: {e}")
                                 _scoped_answer = ""
@@ -4802,7 +4973,7 @@ def run_agent(
                             _refusal_phrases = (
                                 "could not find", "cannot find", "no information", "not found",
                                 "does not contain", "not available", "no mention", "unable to find",
-                                "nothing relevant"
+                                "nothing relevant", "not provided", "i don't have"
                             )
                             _is_refusal = (
                                 not _scoped_answer
@@ -4814,8 +4985,9 @@ def run_agent(
                                 state["stage"] = "trouble_global_search_pending"
                                 state["trouble_query"] = message
                                 store.set_interactive_state(session_id, state)
+                                _manual_title = _clean_title(fname_val) if fname_val else "your current manual"
                                 answer = (
-                                    "I could not find information about this in your current manual. "
+                                    f"I could not find information about this in **{_manual_title}**. "
                                     "Would you like me to search all manuals globally?"
                                 )
                                 return {
@@ -4951,13 +5123,14 @@ def run_agent(
                 # No answer in context — ask user for permission to search globally
                 logger.info("⚡ [CONTEXT AGENT] No answer in context (%d docs), asking user for global search", len(context_docs))
                 _ctx_fnames = _get_filenames_for_ids(context_docs, config)
-                _ctx_label  = ", ".join(_ctx_fnames[:3]) or "your current documents"
-                if len(_ctx_fnames) > 3:
-                    _ctx_label += f" and {len(_ctx_fnames) - 3} more"
+                _clean_names = [_clean_title(f) for f in _ctx_fnames if f]
+                _ctx_label = ", ".join(_clean_names[:3]) or "your current manual"
+                if len(_clean_names) > 3:
+                    _ctx_label += f" and {len(_clean_names) - 3} more"
 
                 _cq = (
-                    f"I couldn't find information about this in your current context "
-                    f"({_ctx_label}). Would you like me to search globally across all manuals?"
+                    f"I couldn't find information about this in **{_ctx_label}**. "
+                    "Would you like me to search all manuals globally?"
                 )
 
                 # Persist state so we can re-run the original question on user approval
@@ -5200,8 +5373,8 @@ def run_agent(
                             search_answers.append(ans)
 
         unique_answers = list(set(search_answers))
-        if unique_answers:
-            # Rescue the most recent unique search answer even if other tools were called
+        if not answer.strip() and unique_answers:
+            # Rescue the most recent unique search answer if LLM produced no text
             answer = unique_answers[-1]
             logger.info("Recovered answer from prior tool result (fast-path fallback)")
         # else: no search answers -> fall through to slow-path LLM synthesis below
@@ -5255,8 +5428,30 @@ def run_agent(
     if final_answer is None or not final_state.get("guard_blocked"):
         final_answer = final_answer or answer
 
+    # ── Evaluate if search results contain an actionable procedure ──
+    tool_snippets = []
+    for m in final_state.get("messages", []):
+        if isinstance(m, ToolMessage) and m.content:
+            try:
+                td = json.loads(m.content)
+                if isinstance(td, dict):
+                    if td.get("answer"):
+                        tool_snippets.append(td["answer"])
+                    for src in (td.get("sources") or td.get("passages") or []):
+                        if isinstance(src, dict) and src.get("text"):
+                            tool_snippets.append(src["text"])
+            except Exception:
+                tool_snippets.append(m.content[:500])
+
+    combined_context = (message or "") + "\n" + (final_answer or "") + "\n" + "\n".join(tool_snippets)
+
+    # Fast structural marker pre-check + Dynamic Micro-LLM Intent Classification
+    has_step_markers = _has_procedural_step_markers(combined_context)
+    is_procedural = False
+    if has_step_markers and llm:
+        is_procedural = _classify_procedure_intent_llm(message, combined_context, llm)
+
     # Check if search results contained multiple distinct files for a procedural query
-    is_procedural = any(w in message.lower() for w in ("clean", "maintain", "changeover", "repair", "replace", "install", "operate", "fix", "procedure", "how to"))
     if session_id and is_procedural and not final_state.get("guard_blocked"):
         try:
             # Find search results in tool messages
@@ -5308,8 +5503,7 @@ def run_agent(
             logger.warning("Failed to construct disambiguation menu: %s", e)
 
     # ── Single-file procedural offering — Phase 1: lightweight first offer (0 DB reads, 0 LLM calls) ──
-    is_procedural_ans = any(w in final_answer.lower() for w in ("step", "1.", "first", "procedure", "checklist"))
-    if session_id and final_answer and not final_state.get("guard_blocked") and final_state.get("status") != "needs_clarification" and is_procedural_ans:
+    if session_id and final_answer and not final_state.get("guard_blocked") and final_state.get("status") != "needs_clarification" and is_procedural:
         try:
             from backend.storage.conversation_store import get_conversation_store
             store = get_conversation_store()

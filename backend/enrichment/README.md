@@ -1,46 +1,66 @@
-# Enrichment Module
+# Chunk Enrichment Subsystem
 
-The Enrichment module stamps context tags and summaries onto text chunks using an LLM to improve metadata indexing and search relevance.
+The **Enrichment Module** (`backend/enrichment/`) generates domain summaries and keyword tags for text chunks using structured LLM prompts, significantly boosting metadata filtering and dense/sparse search recall.
 
-## Core Dependencies
+---
 
-* **backend.core.llm_client (`get_llm_for`)**: Connects to the configured text model provider (Groq, OpenAI, or Google AI Studio).
-* **re / collections.Counter**: Implements offline fallback TF-IDF keyword counting.
+## 1. Key Capabilities & Features
 
-## Execution Flow & Logic
+- **Batched LLM Prompt Execution** ([`enrich_chunks_tool.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/enrichment/enrich_chunks_tool.py)):
+  - Groups chunks into batches (size 10–15) to process multiple passages per single LLM call, reducing API roundtrips and staying within rate limits.
+- **Dynamic Completion Token Budget**:
+  - Dynamically scales completion token limits:
+    $$\text{max\_tokens} = 160 \times \text{batch\_size} + 256$$
+  - Prevents truncated JSON responses across large batches.
+- **Pacing Delay**:
+  - Integrates minimum-interval pacing (`min_interval_s: 0.3s`–`2.0s`) to prevent HTTP 429 rate limit exceptions.
+- **Offline TF-IDF Keyword Fallback**:
+  - Automatically falls back to local TF-IDF frequency term extraction if external LLM APIs fail or time out.
 
-The enrichment process runs in `EnrichChunksTool::run()`:
+---
+
+## 2. Dependencies & Integrations
+
+- **backend.core.llm_client**: LLM completions for OpenAI GPT-4o-mini, Google Gemini, or Groq.
+- **re & collections.Counter**: Offline TF-IDF keyword extraction.
+
+---
+
+## 3. Architecture & Data Flow
 
 ```mermaid
-sequenceDiagram
-    participant Ch as Chunks
-    participant E as EnrichChunksTool
-    participant LLM as LLM API (Groq/Gemini)
+graph TD
+    ChunksIn[Raw Chunks from chunk_tool] --> Batcher[Group Chunks into Batches Size=15]
+    Batcher --> DynamicBudget[Compute Dynamic Token Budget: 160 * Batch + 256]
+    DynamicBudget --> LLMCall[Send Batch Prompt to LLM Provider]
 
-    E->>E: Group Chunks into Batches (Size = 5/10)
-    E->>E: Calculate max_tokens budget (160 * Batch + 256)
-    E->>LLM: Send Batch with Prompt
-    alt Success
-        LLM-->>E: Return JSON Array of {summary, keywords}
-        E->>Ch: Stamp tags on Chunks
-    else Rate Limit (429) or Failure
-        E->>E: Retry Batch once
-        alt Still Fails
-            E->>E: Fallback to TF-IDF Frequency Keywords
-        end
-    end
+    LLMCall --> ResponseCheck{LLM Call Succeeded?}
+    ResponseCheck -->|Yes| ParseJSON[Parse JSON Array of summary and keywords]
+    ResponseCheck -->|No / 429 Error| Fallback[Local TF-IDF Keyword Extractor]
+
+    ParseJSON --> StampTags[Stamp tags['summary'] and tags['keywords'] on Chunks]
+    Fallback --> StampTags
+
+    StampTags --> StateOut[state['chunks'] -> embed step]
 ```
 
-### Key Mechanisms
+---
 
-1. **Batching Prompt Execution**:
-   * Chunks are grouped into batches (default size: 5 or 10). A single prompt asks the LLM to process the batch and return a JSON array containing `summary` and `keywords` objects.
-   * This reduces API round-trips and stays within rate limits.
-2. **Dynamic completion budget (`max_tokens`)**:
-   * The tool sets `max_tokens` dynamically:
-     $$\text{budget} = 160 \times \text{batch\_size} + 256$$
-   * This prevents output JSON truncation.
-3. **Pacing Delay (`min_interval_s`)**:
-   * The module sleeps for `min_interval_s` (default: 2.0s) between API calls to avoid rate limits on free-tier services like Groq.
-4. **Offline Keyword Fallback**:
-   * If LLM services are offline or fail, the system falls back to calculating TF-IDF scores for words in the chunk (excluding stopwords in `_STOPWORDS`) to extract key terms.
+## 4. Configuration & Testing
+
+### Configuration Blueprint (`config/global.yaml`)
+```yaml
+enrichment:
+  summarize: true
+  keyword_count: 6
+  min_interval_s: 0.3
+  batch_size: 15
+  provider: openai
+  model: gpt-4o-mini
+```
+
+### Verification & Unit Tests
+```powershell
+# Run enrichment unit tests
+pytest tests/test_enrichment.py
+```

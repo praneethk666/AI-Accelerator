@@ -16,7 +16,7 @@ class _ScriptedLLM:
         self.bound_tools = tools
         return self
 
-    def invoke(self, messages):
+    def invoke(self, messages, *args, **kwargs):
         self.invocations.append(list(messages))
         if self._responses:
             return self._responses.pop(0)
@@ -82,6 +82,7 @@ def test_guided_procedure_flow():
     llm1 = _ScriptedLLM([
         AIMessage(content="", tool_calls=[{"name": "search_documents", "args": {"query": "how to clean the machine"}, "id": "call_1", "type": "tool_call"}]),
         AIMessage(content="Here is cleaning details."),
+        AIMessage(content="YES"), # Mock procedure classifier invoke
     ])
     
     with patch("backend.storage.conversation_store.get_conversation_store", return_value=mock_store):
@@ -109,6 +110,7 @@ def test_guided_procedure_flow():
     # The handler will intercept, load selected document content, run overview LLM, and offer confirmation.
     llm2 = _ScriptedLLM([
         AIMessage(content="This is an overview of the wheel mounting cleaning procedure."), # Mock overview invoke
+        AIMessage(content="1"), # Mock start page classifier invoke
         AIMessage(content='["Step 1: Turn off power", "Step 2: Clean the wheel flange"]'), # Mock steps extraction invoke
     ])
     
@@ -173,8 +175,14 @@ def test_guided_procedure_flow():
     llm_trouble = _ScriptedLLM([
         AIMessage(content="The main power breaker is located on the back panel of the machine enclosure.")
     ])
+    mock_sdt = MagicMock()
+    mock_sdt.return_value.run.return_value = {
+        "answer": "The main power breaker is located on the back panel of the machine enclosure.",
+        "sources": []
+    }
     with patch("backend.storage.conversation_store.get_conversation_store", return_value=mock_store), \
-         patch("backend.storage.postgres_store.PostgresStore") as mock_pg_cls:
+         patch("backend.storage.postgres_store.PostgresStore") as mock_pg_cls, \
+         patch("backend.retrieval.search_documents.SearchDocumentsTool", mock_sdt):
          
         mock_pg = MagicMock()
         mock_pg.get_blocks.return_value = [{"text": "Main power breaker is on back panel.", "source_ref": {"page": 1}}]

@@ -1,31 +1,66 @@
-# CAD Extraction Module
+# CAD & Circuit Schematic Extraction Module
 
-The CAD Extraction module parses engineering sheets, blueprints, and schematic diagrams (both PDF format and images) into structured region blocks.
+The **CAD Extraction Module** (`backend/extraction/cad/`) extracts structured engineering metadata, drawings, BOM tables, wire lists, and annotations from mechanical blueprints and electrical circuit schematics.
 
-## Dependencies
+---
 
-* **PyMuPDF (`fitz`)**: Used to open, render, and inspect dimensions of PDF drawings.
-* **backend.core.vision_client (`describe_image`)**: Connects to multimodal vision models (Gemini, OpenAI, or local vLLM endpoints).
-* **backend.extraction.large_format**: Handles grid-tiling logic for oversized drawings.
+## 1. Key Capabilities & Features
 
-## Step-by-Step Logic
+- **Dual-Domain Prompting** ([`drawing_prompt.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/extraction/cad/drawing_prompt.py)):
+  - `cad_route` (Mechanical): Extracts title block metadata (drawing number, revision, scale, material), drawing views, section views, parts list tables (BOM), dimensions, tolerances, and notes.
+  - `circuit_route` (Electrical): Captures circuit components, reference designators (`R1`, `C4`, `U2`), net names (`5V_RAIL`, `GND`), connector types, pin assignments, and wire lists.
+- **Large-Format High-DPI Tiling**:
+  - Automatically splits oversized sheets (A2, A3, ANSI-D, ANSI-E) into overlapping high-resolution tiles, passes each tile through the multimodal vision model, and merges coordinates back to page scale.
+- **Degenerate Box & Sliver Filtering**:
+  - Filters out collapsed bounding boxes and artifact slivers (`_is_degenerate_sliver()`) to prevent corrupted layout geometry.
+- **Single-Pass Execution**:
+  - Produces pre-captioned blocks with `pending_vision=False`, bypassing redundant downstream captioning steps.
 
-The pipeline entrypoint is `CADExtractionTool::run()`:
+---
 
-1. **Route Resolution**:
-   * Evaluates the active routing profile:
-     * `cad_route` (mechanical blueprints) -> Selects mechanical prompt structures.
-     * `circuit_route` (electrical/PCB schematics) -> Selects electrical block and wiring prompts.
-2. **Large-Format Tiling**:
-   * If a drawing sheet exceeds standard paper sizes (A2, A3, E-size, or custom blueprints), a normal VLM resize will shrink text labels, making part numbers and designators unreadable.
-   * Oversized sheets are rendered at a high resolution (default: 300 DPI) and split into a grid of overlapping tiles (`large_format` module). Each tile is transcribed individually by the VLM.
-3. **Region Identification Prompting**:
-   * For normal sheets, it sends the full page rendering to the VLM, requesting a structured JSON array containing recognized sections:
-     * `title_block`: Project name, author, scale, drawings IDs.
-     * `table`: Parts tables, revision blocks, wiring lists.
-     * `notes`: Drawing legends, reference notes.
-4. **JSON Array Recovery (`_region_blocks` / `_balanced_objects`)**:
-   * Standard VLM endpoints can hit token constraints and return truncated JSON arrays for complex blueprints.
-   * The tool uses regular expression parsers (`_balanced_objects`) to isolate and extract complete JSON structures from within a broken/truncated array, salvaging extracted sections instead of failing the page.
-5. **Ingestion Safeguards**:
-   * The tool returns `pending_vision: False` for all generated blocks, informing the downstream vision pipeline that visual transcription is already completed.
+## 2. Dependencies & Integrations
+
+- **fitz (PyMuPDF)**: High-DPI page rendering to PNG byte buffers.
+- **backend.core.vision_client (`describe_image`)**: Connects to Google Gemini (e.g. Gemini 3.5 Flash) or NVIDIA NIM vision models.
+- **backend.extraction.large_format**: Tiling and bounding-box re-projection engine.
+
+---
+
+## 3. Architecture & Data Flow
+
+```mermaid
+graph TD
+    CAD[CAD PDF / Blueprint Page] --> Detect{Is Large Format?}
+    Detect -->|Yes A2/A3/ANSI-D| Tile[Render 200 DPI & Tile Sheet]
+    Detect -->|No Standard Size| Render[Render Full Page at 150-200 DPI]
+
+    Tile --> VisionLLM[VLM Region Extraction Prompt]
+    Render --> VisionLLM
+
+    VisionLLM --> ParseJSON[Parse Region JSON Schema]
+    ParseJSON --> CleanSlivers[Filter Degenerate Sliver BBoxes]
+    CleanSlivers --> OutBlocks[NormalizedBlock: TitleBlock, BOM, Views, Notes]
+    OutBlocks --> CADChunk[cad_chunk_tool LLM Chunking]
+```
+
+---
+
+## 4. Configuration & Testing
+
+### Configuration Blueprint (`config/global.yaml`)
+```yaml
+extraction:
+  cad:
+    max_pages: 0                      # 0 = unlimited
+    vision:
+      provider: google
+      model: gemini-3.5-flash
+      dpi: 200
+      timeout_s: 150
+```
+
+### Verification
+```powershell
+# Run extraction test suite
+pytest tests/test_smoke.py
+```

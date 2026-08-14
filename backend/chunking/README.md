@@ -1,26 +1,75 @@
-# Chunking Module
+# Chunking Subsystem
 
-The Chunking module breaks down parsed page elements (`NormalizedBlock[]`) into structured, token-bounded sequences (`Chunk[]`) optimized for embedding and retrieval.
+The **Chunking Module** (`backend/chunking/`) partitions parsed document blocks (`NormalizedBlock[]`) into structured, token-bounded retrieval units (`Chunk[]`) optimized for vector embedding and hybrid retrieval.
 
-## Core Dependencies
+---
 
-* **tiktoken**: Used to count exact tokens (using the `cl100k_base` encoding).
-* **chonkie**: Used to perform semantic-aware boundary splits if the semantic strategy is enabled.
-* **re**: Implements clean-up heuristics for raw OCR text.
+## 1. Key Capabilities & Features
 
-## Ingest Processing Logic
+- **Token Sliding Window & Boundary Protection** ([`chunk_tool.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/chunking/chunk_tool.py)):
+  - Splits running text passages into chunks of `chunking.size` (default: 400 tokens) with `chunking.overlap` (default: 50 tokens).
+  - Merges heading blocks into subsequent text blocks to retain hierarchical context.
+  - Merges callout headers (`NOTE`, `WARNING`, `IMPORTANT`, `CAUTION`, `DANGER`) with their descriptive bodies.
+- **Semantic Boundary Chunking (Chonkie)**:
+  - Integrates `chonkie.SemanticChunker` (using local embeddings like `minishlab/potion-base-32M`) to split text at natural semantic topic transitions.
+- **Atomic Element Protection & Large Table Partitioning**:
+  - Tables and image captions are treated as atomic units.
+  - When tables exceed maximum chunk size, `_split_table_rows()` partitions table rows while prepending original column headers to every resulting sub-table chunk.
+- **Memory Blowup Defense (Dot-Leader Collapsing)**:
+  - Collapses repeating character sequences (e.g. TOC dot-leaders `..........`) that would otherwise cause quadratic memory explosions ($O(N^2)$ self-attention) during transformer embedding.
+- **Unified CAD Chunking** ([`cad_chunk_tool.py`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/chunking/cad_chunk_tool.py)):
+  - Executes single-pass LLM chunking and tag enrichment tailored for CAD drawings and electrical circuit schematics.
 
-The entrypoint is `ChunkTool::run()`. It processes blocks as follows:
+---
 
-### 1. Block Extraction
-The tool loops through `state["blocks"]`. Blocks of type `heading` are merged with the subsequent `text` block to keep structural context inside the passage.
+## 2. Dependencies & Integrations
 
-### 2. Character Collapsing (`_collapse_repeated_chars`)
-To protect local embedding models from memory exhaustion (OOM), the chunker cleans up repeating character patterns:
-* **The Problem**: Table-of-contents dot-leaders (e.g. `Section 1.1 ...................... Page 5`) can generate thousands of repeating dot/space characters during OCR. These large, unsplittable sequences cause quadratic memory scaling during self-attention calculations in the embedding model.
-* **The Solution**: Regular expressions collapse any pattern of 1-3 characters that repeats more than 9 times down to just 3 repetitions.
+- **tiktoken**: Exact token count evaluation via `cl100k_base` encoding.
+- **chonkie**: Semantic boundary chunking engine.
+- **backend.core.schemas**: `NormalizedBlock` and `Chunk` data contracts.
 
-### 3. Splitting Strategies
-* **Token Sliding Window**: Splits prose text into segments of `chunking.size` (default: 400) tokens with a `chunking.overlap` (default: 50) overlap.
-* **Semantic Split (Chonkie)**: When `strategy: semantic` is configured, it instantiates `chonkie.SemanticChunker` to split text at semantic topic transitions.
-* **Atomic Elements**: Blocks of type `table` and `image_caption` are never split. If a table exceeds the maximum token length, `_split_table_rows` partitions it by row and prepends the column headers to each sub-table chunk.
+---
+
+## 3. Architecture & Data Flow
+
+```mermaid
+graph TD
+    Blocks[NormalizedBlock List] --> TypeCheck{Block Type?}
+    
+    TypeCheck -->|Heading / Callout| MergeHead[Merge into Subsequent Text Block]
+    TypeCheck -->|Text Block| TextClean[Dot-Leader Collapsing & Token Counting]
+    TypeCheck -->|Table Block| TableCheck{Table > Size?}
+    TypeCheck -->|Image Caption| Atomic[Preserve as Single Atomic Chunk]
+    
+    MergeHead --> TextClean
+    TextClean --> Splitter{Strategy: Sliding Window vs Chonkie Semantic}
+    Splitter --> ChunksOut[Token-Bounded Text Chunks]
+
+    TableCheck -->|No| Atomic
+    TableCheck -->|Yes| RowSplit[Split Rows + Prepend Header to Each Chunk]
+    RowSplit --> ChunksOut
+    Atomic --> ChunksOut
+
+    ChunksOut --> Enrich[state['chunks'] -> enrich_chunks step]
+```
+
+---
+
+## 4. Configuration & Testing
+
+### Configuration Blueprint (`config/global.yaml`)
+```yaml
+chunking:
+  strategy: semantic                  # semantic | sliding_window
+  size: 400
+  overlap: 50
+  section_aware: true
+  split_large_tables: true
+  chunking_model: minishlab/potion-base-32M
+```
+
+### Verification & Unit Tests
+```powershell
+# Run chunking unit tests
+pytest tests/test_chunking.py
+```

@@ -72,22 +72,45 @@ def test_jina_reranker_key_rotation():
         assert used_key in keys
 
 
-def test_jina_reranker_env_key_rotation():
-    keys = ["env_key1_123456", "env_key2_123456", "env_key3_123456", "env_key4_123456"]
-    comma_keys = ",".join(keys)
-    client = JinaRerankerAPIClient("jina-model", api_key="${JINA_API_KEY}")
+def test_jina_reranker_failover_on_429():
+    keys = ["key1_fail", "key2_success"]
+    client = JinaRerankerAPIClient("jina-model", api_key=", ".join(keys))
 
-    mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "results": [
-            {"index": 0, "relevance_score": 0.8}
-        ]
+    mock_fail = MagicMock()
+    mock_fail.status_code = 429
+    mock_fail.text = "Rate limit exceeded"
+
+    mock_ok = MagicMock()
+    mock_ok.status_code = 200
+    mock_ok.json.return_value = {
+        "results": [{"index": 0, "relevance_score": 0.88}]
     }
 
-    with patch.dict("os.environ", {"JINA_API_KEY": comma_keys}):
-        with patch("requests.post", return_value=mock_response) as mock_post:
-            scores = client.predict([("query", "doc1")])
-            auth_header = mock_post.call_args[1]["headers"]["Authorization"]
-            used_key = auth_header.replace("Bearer ", "")
-            assert used_key in keys
+    with patch("requests.post", side_effect=[mock_fail, mock_ok]) as mock_post:
+        scores = client.predict([("query", "doc1")])
+        assert scores == [0.88]
+        assert mock_post.call_count == 2
+        # First attempt used key1, second attempt used key2
+        first_call_key = mock_post.call_args_list[0][1]["headers"]["Authorization"]
+        second_call_key = mock_post.call_args_list[1][1]["headers"]["Authorization"]
+        assert first_call_key == "Bearer key1_fail"
+        assert second_call_key == "Bearer key2_success"
+
+
+def test_jina_reranker_all_keys_exhausted():
+    keys = ["key1_fail", "key2_fail"]
+    client = JinaRerankerAPIClient("jina-model", api_key=", ".join(keys))
+
+    mock_fail1 = MagicMock()
+    mock_fail1.status_code = 429
+    mock_fail1.text = "Rate limit exceeded"
+
+    mock_fail2 = MagicMock()
+    mock_fail2.status_code = 429
+    mock_fail2.text = "Rate limit exceeded"
+
+    with patch("requests.post", side_effect=[mock_fail1, mock_fail2]):
+        with pytest.raises(RuntimeError, match="All Jina API keys exhausted or rate-limited"):
+            client.predict([("query", "doc1")])
+
 

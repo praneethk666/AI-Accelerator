@@ -41,7 +41,7 @@ class _FakeSearchTool:
 
     def run(self, **kwargs):
         self.calls.append(kwargs)
-        return {"answer": "42", "citations": []}
+        return {"answer": "The warranty period is 42 months.", "citations": []}
 
 
 class _FakeIngestTool:
@@ -178,6 +178,7 @@ def test_request_clarification_pauses_for_user_choice():
 
 def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
     search = _FakeSearchTool()
+    search.run = lambda **kw: {"answer": "", "citations": []}
     # The model never stops asking for the same tool — must not hang forever.
     llm = _ScriptedLLM([_tool_call_message("search_documents", {"query": "x"}) for _ in range(10)])
 
@@ -188,7 +189,7 @@ def test_iteration_cap_terminates_a_runaway_tool_calling_loop():
         llm=llm,
     )
 
-    assert len(llm.invocations) == 3  # stopped at the cap, not exhausted the script
+    assert len(llm.invocations) == 4  # 3 iterations at the cap + 1 fallback synthesis call
     assert result["status"] == "done"  # cap hit outside the tools node -> no pending_approval
 
 

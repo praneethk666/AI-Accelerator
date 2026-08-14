@@ -697,7 +697,7 @@ const ChatPage = () => {
       },
     ]);
 
-    const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
+    const activeDocId = contextFile?.document_id || pageViewer?.docId || pageViewer?.pages?.[pageViewer?.activeIdx || 0]?.document_id || fileId || null;
     try {
       const res = await sendAgentChat(optionText, reqSession, false, null, controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
@@ -780,7 +780,8 @@ const ChatPage = () => {
     const viewableSources = buildViewableSources(allSources);
 
     if (viewableSources.length > 0) {
-      setPageViewer({ pages: viewableSources, activeIdx: 0 });
+      const firstDocId = viewableSources[0]?.document_id || null;
+      setPageViewer({ pages: viewableSources, activeIdx: 0, docId: firstDocId });
     }
     // Note: If viewableSources is empty, we do NOT call setPageViewer(null)
     // so that an already-open PDF viewer stays open continuously across steps.
@@ -851,7 +852,7 @@ const ChatPage = () => {
     ]);
 
     try {
-      const activeDocId = contextFile?.document_id || pageViewer?.docId || fileId || null;
+      const activeDocId = contextFile?.document_id || pageViewer?.docId || pageViewer?.pages?.[pageViewer?.activeIdx || 0]?.document_id || fileId || null;
       const res = await sendAgentChat(sentText, reqSession, false, null, controller.signal, activeDocId);
       if (sessionIdRef.current !== reqSession) {
         setSessionLoading(reqSession, false);

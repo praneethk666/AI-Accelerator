@@ -582,6 +582,7 @@ def test_document_scope_passed_as_filter_to_keyword_index():
 def test_multiple_sub_questions_each_trigger_retrieval():
     """One retrieval call per sub_question — 2 questions = 2 VectorStore calls."""
     state = sample_query_state()
+    state["query"] = "question one"
     state["sub_questions"] = ["question one", "question two"]
     config = make_config(method="naive")
 
@@ -597,6 +598,7 @@ def test_multiple_sub_questions_each_trigger_retrieval():
 def test_multiple_sub_questions_partial_failure_continues():
     """First sub_question fails, second succeeds — output has second question's chunks."""
     state = sample_query_state()
+    state["query"] = "good question"
     state["sub_questions"] = ["bad question", "good question"]
     config = make_config(method="naive")
 
@@ -748,4 +750,63 @@ def test_fallback_disabled_via_config():
 
         RetrievalTool().run(state, config)
 
-    mock_expand.assert_not_called()
+    mock_expand.assert_not_called()
+
+
+def test_unified_multi_query_rerank_batches_deduplicated_candidates():
+    """Multi-query hybrid_rerank gathers candidates across all sub-questions, deduplicates, and sends a single batch to reranker."""
+    state = sample_query_state()
+    state["query"] = "main user query"
+    state["sub_questions"] = ["sub question one", "sub question two"]
+    config = make_config(method="hybrid_rerank")
+    config["guardrails"] = {"degradation": {"reranker_max_pairs": 40}}
+
+    chunk1 = {"chunk_id": "c1", "text": "chunk 1 text", "document_id": "doc1", "source_ref": {"page": 1}}
+    chunk2 = {"chunk_id": "c2", "text": "chunk 2 text", "document_id": "doc1", "source_ref": {"page": 2}}
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_emb, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=[chunk1, chunk2]), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=[]), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker:
+
+        mock_emb.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        # Reranker scores c2 higher (0.9) than c1 (0.4)
+        mock_reranker.return_value.predict.side_effect = lambda pairs: [0.9 if "chunk 2" in p[1] else 0.4 for p in pairs]
+
+        result = RetrievalTool().run(state, config)
+
+    # Reranker called exactly once with deduplicated batch (c1 and c2)
+    assert mock_reranker.return_value.predict.call_count == 1
+    call_pairs = mock_reranker.return_value.predict.call_args[0][0]
+    assert len(call_pairs) == 2
+    # Ensure c2 is ranked first due to higher cross-encoder score
+    retrieved = result["retrieved_chunks"]
+    assert len(retrieved) == 2
+    assert retrieved[0]["chunk_id"] == "c2"
+    assert retrieved[0]["_score"] == 0.9
+    assert retrieved[1]["chunk_id"] == "c1"
+    assert retrieved[1]["_score"] == 0.4
+
+
+def test_unified_multi_query_fallback_on_reranker_error():
+    """If reranker throws an exception during unified batch, it seamlessly falls back to RRF candidates."""
+    state = sample_query_state()
+    state["query"] = "main user query"
+    state["sub_questions"] = ["sub question one", "sub question two"]
+    config = make_config(method="hybrid_rerank")
+
+    chunk1 = {"chunk_id": "c1", "text": "chunk 1 text", "document_id": "doc1", "source_ref": {"page": 1}}
+
+    with patch("backend.retrieval.retrieval.get_dense_model") as mock_emb, \
+         patch("backend.retrieval.retrieval.VectorStore.search", return_value=[chunk1]), \
+         patch("backend.retrieval.retrieval.KeywordIndex.search", return_value=[]), \
+         patch("backend.retrieval.retrieval.get_reranker") as mock_reranker:
+
+        mock_emb.return_value.encode.return_value.tolist.return_value = [0.0] * 1024
+        mock_reranker.return_value.predict.side_effect = RuntimeError("All Jina API keys exhausted")
+
+        result = RetrievalTool().run(state, config)
+
+    # Fallback to RRF chunk1 without crashing
+    assert len(result["retrieved_chunks"]) == 1
+    assert result["retrieved_chunks"][0]["chunk_id"] == "c1"

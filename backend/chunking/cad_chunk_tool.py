@@ -120,10 +120,24 @@ def _normalize_structured_data(s_data: dict | None) -> dict | None:
     return {"headers": ["Field", "Value"], "rows": rows} if rows else None
 
 
+def _combine_text_and_table_data(text: str, table_data: dict | None) -> str:
+    """Format and append structured table_data rows directly into chunk text."""
+    text = (text or "").strip()
+    if isinstance(table_data, dict) and table_data.get("rows"):
+        headers = table_data.get("headers") or []
+        rows = table_data.get("rows") or []
+        h_str = " | ".join(str(h) for h in headers) if headers else ""
+        r_str = "\n".join(" | ".join(str(v) for v in row) for row in rows)
+        table_str = f"Table Data:\n{h_str}\n{r_str}" if h_str else f"Table Data:\n{r_str}"
+        if table_str not in text and r_str[:30] not in text:
+            text = f"{text}\n\n{table_str}" if text else table_str
+    return text or "[drawing]"
+
+
 def _make_single_block_chunk(block: dict, document_id: str | None, doc_type: str) -> dict:
     """Fallback: convert a single block directly into a chunk with frequency keywords."""
-    text = (block.get("text") or "").strip()
     td = _table_data_from_block(block)
+    text = _combine_text_and_table_data(block.get("text"), td)
     tags: dict = {
         "doc_type": doc_type,
         "document_type": doc_type,
@@ -274,11 +288,13 @@ def _chunk_page_with_llm(
                 image_path = ip
                 break
 
+        full_text = _combine_text_and_table_data(chunk_text, table_data)
+
         chunks.append({
             "chunk_id": str(uuid.uuid4()),
             "document_id": document_id,
-            "text": chunk_text,
-            "token_count": max(1, len(chunk_text.split())),
+            "text": full_text,
+            "token_count": max(1, len(full_text.split())),
             "tags": tags,
             "table_data": table_data,
             "image_path": image_path,
@@ -329,9 +345,16 @@ class CADChunkTool:
         for page, page_blocks in sorted(pages.items()):
             if llm is not None:
                 try:
-                    page_chunks = _chunk_page_with_llm(
-                        page, page_blocks, llm, config, document_id, doc_type
-                    )
+                    # Batch page blocks into chunks of max 10 blocks to prevent LLM timeout on dense sheets
+                    BATCH_SIZE = 10
+                    page_chunks = []
+                    for b_start in range(0, len(page_blocks), BATCH_SIZE):
+                        block_batch = page_blocks[b_start : b_start + BATCH_SIZE]
+                        batch_res = _chunk_page_with_llm(
+                            page, block_batch, llm, config, document_id, doc_type
+                        )
+                        page_chunks.extend(batch_res)
+
                     logger.info(
                         "cad_chunk_llm: page %d -> %d LLM chunks (%d source blocks)",
                         page, len(page_chunks), len(page_blocks),

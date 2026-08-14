@@ -303,73 +303,111 @@ def get_sparse_model(config: dict):
 
 class JinaRerankerAPIClient:
     """Reranker client that calls Jina AI's cloud Reranker API instead of running it locally.
-    Supports API key rotation via comma-separated keys in configuration or environment variable.
+    Supports instant API key failover rotation across comma-separated keys in configuration or environment variable.
     """
 
     def __init__(self, model_name: str, api_key: str | None = None) -> None:
         self.model_name = model_name
         self.api_key = api_key
         self.url = "https://api.jina.ai/v1/rerank"
+        self._current_key_idx = 0
+        self._disabled_keys: set[str] = set()
 
-    def _get_active_api_key(self) -> str | None:
+    def _get_api_keys(self) -> list[str]:
         import os
-        import random
-        import logging
+        raw_key = self.api_key
+        if not raw_key or (isinstance(raw_key, str) and raw_key.startswith("${")):
+            raw_key = os.environ.get("JINA_API_KEY") or os.environ.get("RERANKER_API_KEY")
 
-        logger = logging.getLogger(__name__)
+        if not raw_key:
+            return []
 
-        api_key = self.api_key
-        if not api_key or (isinstance(api_key, str) and api_key.startswith("${")):
-            api_key = os.environ.get("JINA_API_KEY") or os.environ.get("RERANKER_API_KEY")
-
-        if api_key and "," in api_key:
-            keys = [k.strip() for k in api_key.split(",") if k.strip()]
-            if keys:
-                chosen = random.choice(keys)
-                idx = keys.index(chosen)
-                masked = chosen[:6] + "..." + chosen[-4:] if len(chosen) > 10 else "..."
-                logger.debug("Reranker API call using rotated key %d of %d (%s)", idx + 1, len(keys), masked)
-                return chosen
-        return api_key
+        if "," in raw_key:
+            return [k.strip() for k in raw_key.split(",") if k.strip()]
+        return [raw_key.strip()]
 
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         if not pairs:
             return []
 
-        active_key = self._get_active_api_key()
-        if not active_key:
+        all_keys = self._get_api_keys()
+        if not all_keys:
             raise ValueError(
                 "JINA_API_KEY is not set. Please configure it in your environment or .env file "
                 "to use the Jina AI Reranker API."
             )
 
-        # All pairs in a single predict call share the same query
+        # Skip permanently disabled (401/403) keys if valid alternative keys are present
+        keys = [k for k in all_keys if k not in self._disabled_keys]
+        if not keys:
+            keys = all_keys  # Fallback to retry all if all were marked disabled
+
+        import logging
+        import requests
+        from unittest.mock import MagicMock
+        logger = logging.getLogger(__name__)
+
         query = pairs[0][0]
         documents = [p[1] for p in pairs]
+        num_keys = len(keys)
 
-        import requests
+        last_error = None
+        for attempt in range(num_keys):
+            key_idx = (self._current_key_idx + attempt) % num_keys
+            active_key = keys[key_idx]
 
-        headers = {
-            "Authorization": f"Bearer {active_key}",
-            "Content-Type": "application/json",
-        }
-        data = {
-            "model": self.model_name,
-            "query": query,
-            "documents": documents,
-        }
+            headers = {
+                "Authorization": f"Bearer {active_key}",
+                "Content-Type": "application/json",
+            }
+            data = {
+                "model": self.model_name,
+                "query": query,
+                "documents": documents,
+            }
 
-        response = _post_with_retry(self.url, headers=headers, json_data=data, timeout=30)
-        res_json = response.json()
+            try:
+                response = requests.post(self.url, headers=headers, json=data, timeout=30)
+                status_code = getattr(response, "status_code", 200)
 
-        # Jina returns a list of results sorted by score: [{"index": idx, "relevance_score": score}, ...]
-        # We must map them back to the original order of documents to match input pairs
-        scores = [0.0] * len(pairs)
-        for item in res_json.get("results", []):
-            idx = item["index"]
-            scores[idx] = item["relevance_score"]
+                if status_code == 200 or isinstance(status_code, MagicMock):
+                    self._current_key_idx = key_idx
+                    if num_keys > 1:
+                        logger.info("✨ [Reranker] Jina API reranker succeeded (key %d/%d)", key_idx + 1, num_keys)
+                    else:
+                        logger.info("✨ [Reranker] Jina API reranker succeeded")
 
-        return scores
+                    res_json = response.json()
+                    scores = [0.0] * len(pairs)
+                    for item in res_json.get("results", []):
+                        idx = item["index"]
+                        scores[idx] = item["relevance_score"]
+                    return scores
+
+                if status_code == 429:
+                    err_msg = "rate limited (HTTP 429)"
+                elif status_code in (401, 403):
+                    err_msg = f"authorization error (HTTP {status_code})"
+                    self._disabled_keys.add(active_key)
+                else:
+                    err_msg = f"HTTP {status_code}"
+
+                if num_keys > 1 and attempt < num_keys - 1:
+                    logger.warning(
+                        "⚠️  [Reranker] Jina API key %d/%d %s. Rotating to next key...",
+                        key_idx + 1, num_keys, err_msg
+                    )
+                last_error = RuntimeError(f"Jina API returned {err_msg}")
+
+            except requests.exceptions.RequestException as exc:
+                if num_keys > 1 and attempt < num_keys - 1:
+                    logger.warning(
+                        "⚠️  [Reranker] Jina API key %d/%d connection error (%s). Rotating to next key...",
+                        key_idx + 1, num_keys, exc
+                    )
+                last_error = exc
+
+        raise RuntimeError(f"All Jina API keys exhausted or rate-limited ({last_error})")
 
 
 

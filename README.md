@@ -238,7 +238,7 @@ AI-Accelerator/
 | **React Frontend UI** | [`frontend/README.md`](file:///d:/AI-Acc-updated/AI-Accelerator/frontend/README.md) | React 18, ChatPage with citation previews, Ingestion dashboard, Cost toggle (USD/INR). |
 | **Operational Scripts** | [`scripts/README.md`](file:///d:/AI-Acc-updated/AI-Accelerator/scripts/README.md) | CLI utilities, Terminal agent chat, DB resets, Live Jina tests. |
 | **Automated Tests** | [`tests/README.md`](file:///d:/AI-Acc-updated/AI-Accelerator/tests/README.md) | Comprehensive 32-file pytest test catalog and execution instructions. |
-| **Knowledge Vault** | [`obsidian_vault/README.md`](file:///d:/AI-Acc-updated/AI-Accelerator/obsidian_vault/README.md) | Master architectural notes and deep-dive design records. |
+
 
 ---
 

@@ -93,6 +93,40 @@ graph TD
     OutputGuard --> UIOut["Deliver Final Answer + Exact Citations [1], [2] to UI"]
 ```
 
+### Simple 4-Tier Agent Decision Flowchart
+
+When a user asks a question, the assistant follows a 4-tier decision hierarchy starting with in-session procedure memory and escalating only as needed:
+
+```mermaid
+graph TD
+    Start(["User asks a question"]) --> CheckProc{"Is a Guided Procedure Active?"}
+    
+    CheckProc -->|"YES"| Tier1["1. Check Procedure Memory<br/>(All Steps, Completed Steps, Current Step, Sections)"]
+    CheckProc -->|"NO (Normal Chat)"| Tier4_Global["4. Global Search across All Manuals"]
+    
+    Tier1 --> CheckMem{"Is answer in Memory?<br/>(Progress, Steps, Tools, Safety)"}
+    
+    CheckMem -->|"YES"| AnsMem["Instant Answer from Memory (0ms)<br/>'You finished 2 of 21 steps. Still on Step 3.'"]
+    CheckMem -->|"NO"| Tier2["2. Search Current Manual PDF Only<br/>(SearchDocumentsTool for this machine)"]
+    
+    Tier2 --> CheckManual{"Found in Manual?"}
+    
+    CheckManual -->|"YES"| AnsManual["Answer from Current Manual<br/>(Keeps you on your current step)"]
+    CheckManual -->|"NO"| Tier3["3. Ask Permission<br/>'Not in this manual. Search all manuals globally?'"]
+    
+    Tier3 -->|"User clicks Yes"| Tier4_Global
+    Tier3 -->|"User clicks No"| StayStep["Stay on Current Step"]
+```
+
+### Quick Examples: How the Agent Decides
+
+| What You Ask | What the Agent Does | Where it Gets the Answer | Latency |
+|---|---|---|---|
+| *"How many steps are completed?"* | Reads session memory | **Tier 1**: Procedure Memory | Instant (`0ms` search) |
+| *"Why do I open the front door in Step 3?"* | Reads procedure step details | **Tier 1**: Procedure Memory | Instant (`0ms` search) |
+| *"Where is the main air pressure gauge?"* | Searches the active machine manual | **Tier 2**: Current Manual PDF | ~2 seconds |
+| *"What is the alarm code for another machine?"* | Prompts: *"Not in this manual. Search all manuals globally?"* | **Tier 3 & 4**: Global Search | After user confirmation |
+
 ### Retrieval & Ranking Mathematics
 
 1. **Reciprocal Rank Fusion (RRF)**: Merges dense vector and sparse BM25 rankings without requiring score normalization:
@@ -111,28 +145,11 @@ graph TD
 
 ## 4. 3-Stage AI Safety Guardrails & Indian PII Engine
 
-The [`backend/guardrails/`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/guardrails/README.md) subsystem protects against adversarial attacks, data contamination, and regulatory PII leaks:
+The [`backend/guardrails/`](file:///d:/AI-Acc-updated/AI-Accelerator/backend/guardrails/README.md) subsystem protects against adversarial attacks, data contamination, and regulatory PII leaks across three distinct checkpoints:
 
-```mermaid
-graph LR
-    subgraph Checkpoint 1: InputGuard
-        Q[User Query] --> Cap[Character Cap: 2000]
-        Cap --> NFKC[NFKC Unicode Normalization]
-        NFKC --> PII_In[Indian PII Redaction]
-        PII_In --> InjScan[Prompt Injection & Jailbreak Regex]
-    end
-
-    subgraph Checkpoint 2: RetrievalGuard
-        Chunks[Retrieved Chunks] --> CScan[Async Chunk Injection Scanner]
-        CScan --> Scope[Tenant & Document Scoping Filter]
-    end
-
-    subgraph Checkpoint 3: OutputGuard
-        RawAns[Raw LLM Answer] --> Ground[Groundedness Scoring]
-        Ground --> PII_Out[GSTIN / PAN / Aadhaar Masking]
-        PII_Out --> SafeAns[Final Sanitized Answer]
-    end
-```
+1. **Input Guardrail**: Enforces query length limits (2000 chars), applies NFKC Unicode normalization, scans for prompt injections and jailbreaks, and redacts Indian PII.
+2. **Retrieval Guardrail**: Scans retrieved chunks asynchronously for indirect payload injections and enforces tenant/document scoping boundaries.
+3. **Output Guardrail**: Assesses groundedness against source passages and masks PII before response delivery.
 
 ### Indian & Global PII Detection Ordering
 To prevent regex collisions and substring corruption, PII patterns execute in strict order:

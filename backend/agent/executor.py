@@ -465,6 +465,23 @@ _SCOPE_RESET_PHRASES = {
 }
 
 
+def _get_filenames_for_ids(doc_ids: list[str], config: dict) -> list[str]:
+    """Look up human-readable filenames for a list of document IDs."""
+    if not doc_ids:
+        return []
+    try:
+        from backend.storage.postgres_store import PostgresStore
+        pg = PostgresStore(config=config)
+        try:
+            docs = pg.list_documents()
+        finally:
+            pg.conn.close()
+        id_to_name = {str(d["document_id"]): d.get("filename", "") for d in docs}
+        return [id_to_name[did] for did in doc_ids if did in id_to_name and id_to_name[did]]
+    except Exception:
+        return []
+
+
 def _resolve_turn_document_scope(
     message: str, session_id: str, viewer_doc_id: str | None, config: dict
 ) -> tuple[list[str] | str | None, str | None, bool]:
@@ -1748,6 +1765,266 @@ def _format_callout_headers(text: str) -> str:
     return text.strip()
 
 
+def _scan_pages_for_sections(blocks: list[dict], llm=None) -> list[dict]:
+    """Scan document blocks page-by-page to detect sub-section headings.
+
+    Phase 1: fast regex pass (0 LLM calls).
+    Phase 2: If regex finds nothing, send each page to LLM one-by-one for confirmation.
+
+    Returns list of {"title": "...", "page_start": N, "page_end": M, "steps": []}.
+    """
+    if not blocks:
+        return []
+
+    # ── Fast regex pass ──────────────────────────────────────────────────────
+    sections_found: list[dict] = []
+    seen_nums: set[str] = set()
+
+    for b in blocks:
+        ref = b.get("source_ref") or {}
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide") or 1
+        try:
+            pg_int = int(pg)
+        except (ValueError, TypeError):
+            pg_int = 1
+
+        raw_t = (b.get("text") or "").strip()
+        if not raw_t or "..." in raw_t:
+            continue
+
+        m = re.search(r'^\s*(\d+\.\d+)\s+([A-Za-z0-9\s\-\(\)\/\,\:\.]{3,80})', raw_t)
+        if m:
+            sec_num = m.group(1)
+            title_part = m.group(2).strip().split("\n")[0].strip()
+            full_title = re.sub(r'\s+', ' ', f"{sec_num} {title_part}").strip()
+            if sec_num not in seen_nums:
+                seen_nums.add(sec_num)
+                sections_found.append({
+                    "title": full_title,
+                    "sec_num": sec_num,
+                    "page_start": pg_int,
+                    "page_end": pg_int,
+                    "steps": []
+                })
+
+    # ── LLM fallback: only when regex found nothing ───────────────────────────
+    if not sections_found and llm and blocks:
+        pages_by_num: dict[int, list[str]] = {}
+        for b in blocks:
+            ref = b.get("source_ref") or {}
+            pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+            if not pg:
+                continue
+            try:
+                pg_int = int(pg)
+            except (ValueError, TypeError):
+                continue
+            raw_t = (b.get("text") or "").strip()
+            if raw_t:
+                pages_by_num.setdefault(pg_int, []).append(raw_t)
+
+        for pg_int in sorted(pages_by_num.keys()):
+            page_text = "\n".join(pages_by_num[pg_int])[:3000]
+            if not page_text:
+                continue
+            try:
+                resp = llm.invoke(
+                    "Does the following page contain a new section header "
+                    "(e.g. '1.1 Changing the Tailstock Position', 'Section A', 'Chapter 2')?\n"
+                    "If YES, reply with ONLY the section number and title (e.g. '1.1 Changing the Tailstock Position').\n"
+                    "If NO, reply with exactly: none\n\n"
+                    f"PAGE TEXT:\n{page_text}"
+                )
+                ans = (getattr(resp, "content", "") or "").strip()
+                if ans.lower() == "none" or not ans:
+                    continue
+                m2 = re.match(r'^(\d+\.\d+)\s+(.+)$', ans)
+                sec_num = m2.group(1) if m2 else ans[:20]
+                if sec_num not in seen_nums:
+                    seen_nums.add(sec_num)
+                    sections_found.append({
+                        "title": ans[:100].strip(),
+                        "sec_num": sec_num,
+                        "page_start": pg_int,
+                        "page_end": pg_int,
+                        "steps": []
+                    })
+            except Exception as e:
+                logger.warning("LLM page scan error on page %d: %s", pg_int, e)
+
+    if not sections_found:
+        return []
+
+    sections_found.sort(key=lambda x: x["page_start"])
+
+    # Compute page_end for each section
+    for i, sec in enumerate(sections_found):
+        if i + 1 < len(sections_found):
+            sec["page_end"] = max(sec["page_start"], sections_found[i + 1]["page_start"] - 1)
+        else:
+            sec["page_end"] = sec["page_start"] + 10
+
+    return sections_found
+
+
+def _extract_heading_sections_fast(blocks: list[dict]) -> list[dict]:
+    """Fast extraction of section titles, step estimates, and page bounds from DB blocks (0 LLM calls)."""
+    if not blocks:
+        return []
+
+    sections_found: list[dict] = []
+    seen_nums = set()
+
+    for b in blocks:
+        ref = b.get("source_ref") or {}
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide") or 1
+        try:
+            pg_int = int(pg)
+        except (ValueError, TypeError):
+            pg_int = 1
+
+        raw_t = (b.get("text") or "").strip()
+        if not raw_t or "..." in raw_t:
+            continue
+
+        # Match headers like "1.1 Changing the Tailstock Position" or "Section 1.1 ..."
+        m = re.search(r'^\s*(\d+\.\d+)\s+([A-Za-z0-9\s\-\(\)\/\,\:\.]+)', raw_t)
+        if m:
+            sec_num = m.group(1)
+            sec_title_raw = m.group(2).strip()
+            title_line = f"{sec_num} {sec_title_raw}".split("\n")[0].strip()
+            title_line = re.sub(r'\s+', ' ', title_line)
+            if sec_num not in seen_nums and len(title_line) < 120 and len(title_line) > 5:
+                seen_nums.add(sec_num)
+                sections_found.append({
+                    "title": title_line,
+                    "sec_num": sec_num,
+                    "page_start": pg_int,
+                    "page_end": pg_int,
+                    "steps": []
+                })
+
+    if not sections_found:
+        # Fallback: check rule-based section parser
+        rule_secs = _extract_sections_with_steps(blocks)
+        if rule_secs:
+            for s in rule_secs:
+                st_count = len(s.get("steps", []))
+                sections_found.append({
+                    "title": s["title"],
+                    "page_start": 1,
+                    "page_end": 999,
+                    "step_count": st_count,
+                    "steps": s.get("steps", [])
+                })
+        return sections_found
+
+    sections_found.sort(key=lambda x: x["page_start"])
+
+    # Calculate page_end and count steps in range
+    for i, sec in enumerate(sections_found):
+        if i + 1 < len(sections_found):
+            sec["page_end"] = max(sec["page_start"], sections_found[i + 1]["page_start"] - 1)
+        else:
+            sec["page_end"] = sec["page_start"] + 10
+
+        p_start = sec["page_start"]
+        p_end = sec["page_end"]
+        sec_blocks = []
+        for b in blocks:
+            ref = b.get("source_ref") or {}
+            pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+            if pg:
+                try:
+                    p_num = int(pg)
+                    if p_start <= p_num <= p_end:
+                        sec_blocks.append(b)
+                except (ValueError, TypeError):
+                    pass
+
+        step_matches = 0
+        for sb in sec_blocks:
+            t = (sb.get("text") or "").strip()
+            if re.search(r'^\s*\d+\.\d+\s+[A-Za-z]', t):
+                continue
+            if re.search(r'^\s*(?:\(\d+\)|\b\d+[\.\-]|Step\s+\d+)', t, re.MULTILINE | re.IGNORECASE):
+                step_matches += 1
+        sec["step_count"] = max(step_matches, 1)
+
+    return sections_found
+
+
+def _extract_single_section_json_jit(doc_id: str, sec_title: str, page_start: int, page_end: int, config: dict, llm) -> list[str]:
+    """Lazy Just-In-Time (JIT) extraction of steps for a single section using page-bounded DB blocks."""
+    blocks: list[dict] = []
+    if doc_id:
+        try:
+            from backend.storage.postgres_store import PostgresStore
+            store_pg = PostgresStore(config=config)
+            try:
+                blocks = store_pg.get_blocks(doc_id)
+            finally:
+                store_pg.close()
+        except Exception as e:
+            logger.warning("JIT block fetch failed for doc_id=%s: %s", doc_id, e)
+
+    sec_blocks = []
+    if blocks:
+        for b in blocks:
+            ref = b.get("source_ref") or {}
+            pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+            if pg:
+                try:
+                    pg_int = int(pg)
+                    if page_start <= pg_int <= page_end:
+                        sec_blocks.append(b)
+                except (ValueError, TypeError):
+                    pass
+
+    # Do NOT fall back to arbitrary blocks — that bleeds into other sections
+    if not sec_blocks:
+        logger.warning("JIT: no blocks found for section '%s' pages %d-%d", sec_title, page_start, page_end)
+        return []
+
+    raw_texts = [b.get("text", "").strip() for b in sec_blocks if b.get("text", "").strip()]
+    sec_text = "\n\n".join(raw_texts)[:40000]
+
+    if not sec_text or not llm:
+        return []
+
+    prompt = (
+        "You are an expert technical procedure extraction assistant.\n"
+        f"Extract ONLY the procedural action steps that belong to section '{sec_title}'.\n\n"
+        "STRICT BOUNDARY RULE — THIS IS CRITICAL:\n"
+        f"  - ONLY extract steps that are part of section '{sec_title}'.\n"
+        "  - If you see a heading like '1.2', '1.3', 'Section 2', or any new section header, STOP IMMEDIATELY.\n"
+        "  - Do NOT include any steps from the next section, even if they appear in the same text block.\n\n"
+        "RULES FOR EACH STEP:\n"
+        "1. Extract actual action steps that the technician must perform. They may be numbered (e.g. (1), (2)...) OR unnumbered sequential sentences.\n"
+        "2. If steps are numbered, each numbered item is ONE step — never merge them. If unnumbered, extract each distinct action sentence as a separate step.\n"
+        "3. YOU MUST RETAIN ALL NOTES AND CAUTIONS: Never drop or delete 'NOTE', '📌 NOTE', 'IMPORTANT', or 'CAUTION' text! Instead, append the entire note text to the END of the preceding action step. NEVER extract them as their own separate step.\n"
+        "4. Do NOT extract section titles, introductory paragraphs, or torque specification tables as steps.\n"
+        "5. Return ONLY a valid JSON array of step strings, nothing else:\n"
+        "   [\"(1) Action 1...\", \"Unnumbered action 2...<NOTE> Watch out for X\"]\n\n"
+        f"TEXT FOR SECTION '{sec_title}' (Pages {page_start}-{page_end}):\n{sec_text}"
+    )
+
+    try:
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", "").strip()
+        raw_steps = _extract_json_array(content)
+        clean_steps = []
+        for st in raw_steps:
+            st_clean = st.strip()
+            if st_clean:
+                clean_steps.append(_format_callout_headers(st_clean))
+        return clean_steps
+    except Exception as e:
+        logger.warning("JIT section extraction failed for '%s': %s", sec_title, e)
+        return []
+
+
+
 def _extract_sections_with_steps_agentic(blocks: list[dict], llm=None, target_topic: str = "") -> list[dict]:
     """Agentic (LLM-driven) extraction of procedural sections and steps.
 
@@ -1787,15 +2064,15 @@ def _extract_sections_with_steps_agentic(blocks: list[dict], llm=None, target_to
                     f"{topic_instruction}\n"
                     "STRICT RULES FOR ACTION STEPS:\n"
                     "1. Extract ONLY actual procedural ACTION steps (things the technician must DO).\n"
-                    "2. INCLUDE ALL EXPLANATORY SENTENCES: Include all trailing explanation sentences belonging to a step (e.g. Step (14) must include 'When a protector such as portable plug and electromagnetic lock is provided, this operation is not necessary when the power supply is set to ON.', Step (16) must include 'If the screen is already the operation screen, this operation is not necessary.', Step (21) and (23) must include their full second sentences). Do NOT cut off a step at the first period.\n"
-                    "3. PRESERVE ALL <IMPORTANT> AND <NOTE> CALLOUT HEADINGS & DETAILS: Do NOT extract <IMPORTANT>, <NOTE>, or <WARNING> callouts as standalone numbered steps. Instead, ATTACH all warning and note callouts directly under the action step they belong to. PRESERVE THE CALLOUT HEADERS (e.g. '<IMPORTANT>', '<NOTE>') AND ALL DETAILS. If a step has multiple callout boxes (such as Step (2) having two <IMPORTANT> boxes on Page 6), INCLUDE ALL OF THEM formatted with their header titles intact (e.g. '\\n\\n<IMPORTANT>\\nBe sure to clean inside...').\n"
-                    "4. Group steps into their respective sections (e.g. '1. Cleaning up the Wheel Mounting Section' or '1.1 Replacing the Workpiece Holder').\n"
-                    "5. COMBINE SUB-ACTIONS: If a step has sub-actions (e.g. Step (8) with Example Part No. 7 key-press steps like 'Press [MODE]', 'Press [→]', 'Press [SET]'), COMBINE all sub-instructions into Step (8). Do NOT split sub-instructions into separate standalone steps.\n"
+                    "2. INCLUDE ALL EXPLANATORY SENTENCES: Include all trailing explanation sentences belonging to a step. Do NOT cut off a step at the first period.\n"
+                    "3. RETAIN AND ATTACH ALL NOTES (DO NOT DELETE THEM!): You MUST preserve all 'NOTE', '📌 NOTE', 'CAUTION', and 'IMPORTANT' blocks. Do NOT delete them. Do NOT extract them as standalone steps. You MUST append them directly to the END of the preceding action step they belong to.\n"
+                    "4. Group steps into their respective sections (e.g. '1.1 Changing the Tailstock Position' or '1.2 Setting the Tailstock Spindle Position').\n"
+                    "5. PRESERVE EVERY INDIVIDUAL NUMBERED STEP: Extract EVERY numbered step (1), (2), (3)... as an individual action item. Do NOT combine multiple distinct numbered steps together into a single item.\n"
                     "6. Return ONLY valid JSON in this exact structure:\n"
                     "{\n"
                     '  "sections": [\n'
                     '    {\n'
-                    '      "title": "1. Section Title",\n'
+                    '      "title": "1.1 Section Title",\n'
                     '      "steps": [\n'
                     '        "Action step 1 full sentence...",\n'
                     '        "Action step 2 full sentence..."\n'
@@ -2162,7 +2439,7 @@ def _extract_sections_with_steps(blocks: list[dict]) -> list[dict]:
                         steps = []  # reset — start fresh from initial (1)
                     if found_start or n > 1 or not steps:
                         found_start = True
-                        steps.append(body)
+                        steps.append(t.strip())
                 elif found_start and steps:
                     t_clean = t.strip()
                     # Preserve <IMPORTANT> / <NOTE> callout blocks with header formatting under parent step
@@ -2197,7 +2474,35 @@ def _extract_sections_with_steps(blocks: list[dict]) -> list[dict]:
         m = re.match(r'^(\d+)\.(\d+)', s["title"])
         return (int(m.group(1)), int(m.group(2))) if m else (999, 999)
 
-    return sorted(sections, key=_key)
+    sorted_sections = sorted(sections, key=_key)
+
+    # Pass 3: Merge continuous procedures that were falsely split by bold sub-headers
+    merged_sections = []
+    for sec in sorted_sections:
+        if not merged_sections:
+            merged_sections.append(sec)
+            continue
+            
+        prev_sec = merged_sections[-1]
+        
+        if prev_sec["steps"] and sec["steps"]:
+            last_parsed = _parse_step(prev_sec["steps"][-1])
+            first_parsed = _parse_step(sec["steps"][0])
+            
+            if last_parsed and first_parsed:
+                last_num = last_parsed[0]
+                first_num = first_parsed[0]
+                
+                if first_num == last_num + 1:
+                    if "Procedure" in prev_sec["title"] and "Procedure" not in sec["title"]:
+                        prev_sec["title"] = sec["title"]
+                        
+                    prev_sec["steps"].extend(sec["steps"])
+                    continue
+                    
+        merged_sections.append(sec)
+        
+    return merged_sections
 
 
 
@@ -2698,14 +3003,15 @@ def _find_exact_step_page(step_text: str, blocks: list[dict], fallback_page: int
 
 
 def _select_best_sections_agentic(sec_data: list[dict], target_topic: str, llm=None) -> list[dict]:
-    """Agentically filter extracted document sections down to the specific section matching target_topic."""
+    """Agentically filter extracted document sections down to target_topic, or retain all sections for full procedures."""
     if not sec_data:
         return []
-    if len(sec_data) == 1 or not target_topic or len(target_topic.strip()) < 3:
+    if len(sec_data) <= 1 or not target_topic or len(target_topic.strip()) < 3:
         return sec_data
 
+    # If target topic asks for overview, full procedure, changeover, or general manual steps, retain ALL sections
     topic_clean = target_topic.lower()
-    if any(w in topic_clean for w in ("all", "complete", "entire", "full", "setup", "changeover", "workhead", "work spindle")):
+    if any(w in topic_clean for w in ("overview", "full", "complete", "all", "entire", "setup", "changeover", "workhead", "work spindle", "procedure", "checklist", "manual", "guide")):
         return sec_data
 
     import re
@@ -2717,7 +3023,7 @@ def _select_best_sections_agentic(sec_data: list[dict], target_topic: str, llm=N
     if not topic_words:
         return sec_data
 
-    # First find maximum match score across all sections
+    # Find match score across all sections
     scores = []
     for sec in sec_data:
         title = sec.get("title", "").lower()
@@ -2731,51 +3037,246 @@ def _select_best_sections_agentic(sec_data: list[dict], target_topic: str, llm=N
 
     matched_secs = []
     for sec, score in zip(sec_data, scores):
-        if max_score > 0 and score >= max(1, max_score * 0.4):
+        if max_score > 0 and score >= max(1, max_score * 0.3):
             matched_secs.append(sec)
 
+    # If matching preserved most sections or user wants complete coverage, return all sections
+    if matched_secs and len(matched_secs) >= max(2, int(len(sec_data) * 0.5)):
+        return sec_data
     if matched_secs:
         logger.info("🤖 [Agentic Section Selection] Matched target topic '%s' to %d section(s): %s",
                     target_topic[:50], len(matched_secs), [s['title'] for s in matched_secs])
         return matched_secs
 
-    # LLM fallback for section selection if keyword matching is ambiguous
-    if llm and len(sec_data) > 1:
-        try:
-            sec_summaries = "\n".join([f"{idx+1}. {s['title']} ({len(s['steps'])} steps)" for idx, s in enumerate(sec_data)])
-            sel_prompt = (
-                f"The user requested instructions for topic: '{target_topic[:200]}'.\n"
-                f"Which of the following document section(s) best match this specific procedure?\n\n"
-                f"{sec_summaries}\n\n"
-                f"Return ONLY a JSON array of 1-based section indices that apply (e.g. [2])."
-            )
-            res = llm.invoke(sel_prompt)
-            content = getattr(res, "content", "").strip()
-            indices = _extract_json_array(content)
-            valid_indices = []
-            for idx_str in indices:
-                try:
-                    idx_val = int(idx_str) - 1
-                    if 0 <= idx_val < len(sec_data):
-                        valid_indices.append(idx_val)
-                except Exception:
-                    pass
-            if valid_indices:
-                selected = [sec_data[i] for i in valid_indices]
-                logger.info("🤖 [Agentic Section Selection] LLM selected sections: %s", [s['title'] for s in selected])
-                return selected
-        except Exception as e:
-            logger.warning("LLM section selection failed: %s", e)
-
     return sec_data
 
 
-def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, config: dict, llm) -> list[str]:
-    """Extract procedural steps using an agentic multi-tier strategy:
+def _extract_page_steps_llm(text: str, page_num: int, llm) -> list[str]:
+    """Extract procedural steps from a single page's text using LLM."""
+    if not text.strip():
+        return []
 
-    Tier 1: Agentic (LLM-driven) section & step extraction from DB blocks + topic filtering
-    Tier 0: Direct extraction from answer context (if blocks unavailable)
-    Tier 3: LLM extraction from filtered text (last resort)
+    logger.info("Sending Page %d to LLM for step extraction...", page_num)
+
+    prompt = (
+        "You are a precise technical procedure extraction assistant for industrial machinery manuals.\n"
+        "Extract ONLY the procedural action steps present on this specific page.\n\n"
+        "STRICT RULES:\n"
+        "1. PRESERVE STEP NUMBERS: If steps are numbered (e.g. (1), (2), (3)... or 1., 2., 3...), ALWAYS keep the step number prefix (e.g. '(14)') at the start of each step string!\n"
+        "2. ONE NUMBER = ONE STEP: Each numbered item (e.g. '(14) Operate the machine...') must remain a SINGLE step. Do NOT split a single numbered step into multiple steps.\n"
+        "3. STRICT NOTE PLACEMENT: Notes (<IMPORTANT>, <NOTE>, <CAUTION>) MUST be attached to the step they physically follow in the source text! For example, if an <IMPORTANT> note appears physically after step (2) and before step (3), you MUST append it to the end of the step (2) string. Do NOT attach it to step (1)! Format notes with double newlines and bold text like this: '\\n\\n**IMPORTANT:** Note text here.' (Do NOT use < > brackets in the bold header).\n"
+        "4. DO NOT HALLUCINATE OR INVENT STEPS: Do NOT include title headers, preface warnings, or unnumbered introductory statements like 'Read the operation manual' unless it is an explicit action step.\n"
+        "5. Return ONLY a valid JSON array of strings, with no markdown fences or explanation:\n"
+        "   [\"(1) First step text...\", \"(2) Second step text...\\n\\n**IMPORTANT:**\\nNote text here.\"]\n\n"
+        f"PAGE {page_num} TEXT:\n{text}\n"
+    )
+
+    try:
+        response = llm.invoke(prompt)
+        content = clean_message_content(response.content)
+        import json
+        m = re.search(r'\[.*\]', content, re.DOTALL)
+        if m:
+            data = json.loads(m.group(0))
+            if isinstance(data, list):
+                return [str(s).strip() for s in data if str(s).strip()]
+    except Exception as e:
+        logger.warning("LLM page %d step extraction failed: %s", page_num, e)
+
+    return []
+
+
+def _detect_procedure_start_page_llm(blocks: list[dict], procedure_title: str, llm) -> int:
+    """Use a single LLM call to classify which page the procedure Step 1 begins on.
+
+    Reads a condensed preview of each page from pages 1 to 20, and asks the LLM
+    to identify the exact start page where actual action steps begin.
+    """
+    if not blocks:
+        return 1
+
+    SKIP_SUBS = (
+        "HOW TO READ", "Handing Over", "Cost-free Repairs", "Revision History",
+        "Published by", "brand identity", "company's logo", "Table of Contents"
+    )
+
+    page_map: dict[int, list[str]] = {}
+    for b in blocks:
+        raw = (b.get("text") or "").strip()
+        if not raw or any(s in raw for s in SKIP_SUBS):
+            continue
+        ref = b.get("source_ref") or {}
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+        try:
+            pg_num = int(pg) if pg is not None else None
+        except (ValueError, TypeError):
+            pg_num = None
+        if pg_num is not None:
+            if pg_num not in page_map:
+                page_map[pg_num] = []
+            page_map[pg_num].append(raw)
+
+    if not page_map:
+        return 1
+
+    sorted_pages = sorted(page_map.keys())
+
+    if llm:
+        candidate_pages = [p for p in sorted_pages if p <= 20]
+
+        page_snippets = []
+        for p in candidate_pages:
+            full_p_text = " ".join(page_map[p])
+            snippet = full_p_text[:250].replace("\n", " ")
+            page_snippets.append(f"Page {p}: {snippet}")
+
+        previews_text = "\n".join(page_snippets)
+
+        prompt = (
+            "You are an industrial technical manual classifier.\n"
+            f"Goal: Find the page where the procedure for '{procedure_title}' starts its actual action steps.\n\n"
+            "Here are snippets from the first pages:\n"
+            f"{previews_text}\n\n"
+            "RULES:\n"
+            "1. Identify the first page where actual action steps (e.g. '(1)', '1.', 'Remove...', 'Loosen...') begin.\n"
+            "2. Do NOT select the cover/title page or introduction pages.\n"
+            "3. Return ONLY the integer page number (e.g. 6). No words, no explanation."
+        )
+
+        try:
+            resp = llm.invoke(prompt)
+            content = clean_message_content(resp.content).strip()
+            m = re.search(r'\b\d+\b', content)
+            if m:
+                detected_page = int(m.group(0))
+                if detected_page in page_map:
+                    logger.info("[Start Page Classifier] LLM identified procedure start page: %d (for '%s')", detected_page, procedure_title)
+                    return detected_page
+        except Exception as e:
+            logger.warning("[Start Page Classifier] LLM start page detection failed: %s", e)
+
+    # Fallback heuristic: find first page with (1) or 1.
+    for p in sorted_pages:
+        p_text = "\n".join(page_map[p])
+        if re.search(r'^\s*(?:\(1\)|1\.)\s+[A-Z]', p_text, re.MULTILINE) or "(1)" in p_text:
+            logger.info("[Start Page Classifier] Heuristic fallback identified start page: %d", p)
+            return p
+
+    return 1
+
+
+def _extract_all_steps_page_by_page_agentic(blocks: list[dict], llm, start_page: int = 1) -> list[str]:
+    """Iterate through document blocks page-by-page and use LLM to extract all steps.
+
+    Args:
+        blocks: All document blocks from Postgres.
+        llm: LLM client.
+        start_page: First page to read (derived from Qdrant retrieval min-page or LLM classifier).
+                    Pages before this are skipped — avoids cover/preface hallucinations.
+    """
+    if not blocks or not llm:
+        return []
+
+    SKIP_SUBS = (
+        "HOW TO READ", "Handing Over", "Cost-free Repairs", "Revision History",
+        "Published by", "brand identity", "company's logo", "Table of Contents"
+    )
+
+    page_map: dict[int, list[str]] = {}
+    fallback_texts: list[str] = []
+
+    for b in blocks:
+        raw = b.get("text", "").strip()
+        if not raw:
+            continue
+        if any(s in raw for s in SKIP_SUBS):
+            continue
+
+        ref = b.get("source_ref") or {}
+        pg = ref.get("page") or ref.get("sheet") or ref.get("slide")
+        try:
+            pg_num = int(pg) if pg is not None else None
+        except (ValueError, TypeError):
+            pg_num = None
+
+        if pg_num is not None:
+            if pg_num not in page_map:
+                page_map[pg_num] = []
+            page_map[pg_num].append(raw)
+        else:
+            fallback_texts.append(raw)
+
+    all_extracted_steps: list[str] = []
+
+    if page_map:
+        sorted_pages = sorted(page_map.keys())
+        consecutive_empty = 0
+        found_any_steps = False
+        for p in sorted_pages:
+            # Skip pages before start_page (preface, cover, TOC)
+            if p < start_page:
+                logger.info("Skipping Page %d (before procedure start page %d)", p, start_page)
+                continue
+            p_text = "\n\n".join(page_map[p])
+            if len(p_text.strip()) < 20:
+                continue
+            steps = _extract_page_steps_llm(p_text, p, llm)
+            if steps:
+                all_extracted_steps.extend(steps)
+                found_any_steps = True
+                consecutive_empty = 0
+            else:
+                if found_any_steps:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        logger.info("Page %d: 2 consecutive empty pages after steps found — stopping early.", p)
+                        break
+    elif fallback_texts:
+        full_text = "\n\n".join(fallback_texts)
+        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
+        for idx, chunk in enumerate(chunks, 1):
+            steps = _extract_page_steps_llm(chunk, idx, llm)
+            if steps:
+                all_extracted_steps.extend(steps)
+
+    # Deduplicate and sort by step number if steps have numbers (1..N)
+    PAREN_NUM_RE = re.compile(r'^(?:\((\d+)\)|\b(\d+)\.|\b(\d+-\d+)\.|Step\s+(\d+)[:\.]?|\[(\d+)\])', re.IGNORECASE)
+    seen_nums: set[int] = set()
+    deduped_steps: list[str] = []
+
+    for s in all_extracted_steps:
+        m = PAREN_NUM_RE.match(s)
+        if m:
+            n_str = m.group(1) or m.group(2) or m.group(4) or m.group(5)
+            if n_str and n_str.isdigit():
+                n_val = int(n_str)
+                if n_val in seen_nums:
+                    continue
+                seen_nums.add(n_val)
+        deduped_steps.append(s)
+
+    if seen_nums:
+        def _sort_key(s: str) -> int:
+            m = PAREN_NUM_RE.match(s)
+            if m:
+                n_str = m.group(1) or m.group(2) or m.group(4) or m.group(5)
+                if n_str and n_str.isdigit():
+                    return int(n_str)
+            return 9999
+        deduped_steps.sort(key=_sort_key)
+
+    return deduped_steps
+
+
+def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, config: dict, llm, start_page: int = 1) -> list[str]:
+    """Extract procedural steps using an agentic multi-tier strategy.
+
+    Args:
+        start_page: First page to read from. Can be overridden by LLM start page classifier.
+
+    Tier 1: Page-by-Page Agentic LLM extraction from DB blocks (with LLM start page classification)
+    Tier 2: Rule-based section & step extraction from DB blocks
+    Tier 3: LLM extraction from text
     """
     blocks: list[dict] = []
     if document_id:
@@ -2788,11 +3289,54 @@ def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, conf
         finally:
             store.close()
 
-    # Tier 1: Agentic (LLM-driven) section & step extraction from DB blocks
+    # Tier 1: Page-by-Page Agentic LLM Extraction (with Option B LLM Start Page Classifier)
+    if blocks and llm:
+        try:
+            classified_start = _detect_procedure_start_page_llm(blocks, final_answer, llm)
+            actual_start_page = max(start_page, classified_start) if start_page > 1 else classified_start
+            logger.info("[Step Extraction] Using procedure start page: %d (classified=%d, requested=%d)", actual_start_page, classified_start, start_page)
+            page_steps = _extract_all_steps_page_by_page_agentic(blocks, llm, start_page=actual_start_page)
+            if page_steps and len(page_steps) >= 2:
+                formatted = [_format_callout_headers(s) for s in page_steps]
+                logger.info("[Step Extraction] Tier 1 (Page-by-Page Agentic LLM): Extracted %d steps from page %d+", len(formatted), actual_start_page)
+                return formatted
+        except Exception as e:
+            logger.warning("Page-by-page agentic step extraction failed: %s", e)
+
+    # Tier 2: Rule-based section & step extraction from DB blocks
     if blocks:
+        sec_data = _extract_sections_with_steps(blocks)
+        if sec_data:
+            selected_secs = _select_best_sections_agentic(sec_data, final_answer, llm=llm) if final_answer else sec_data
+            all_steps: list[str] = []
+            for sec in selected_secs:
+                prefix = f"[{sec['title']}] " if len(selected_secs) > 1 else ""
+                for s in sec["steps"]:
+                    all_steps.append(f"{prefix}{s}")
+            if len(all_steps) >= 2:
+                formatted = [_format_callout_headers(s) for s in all_steps]
+                logger.info("[Step Extraction] Tier 2 (Rule-based Sections): Extracted %d steps", len(formatted))
+                return formatted
+
+    # Tier 2: LLM checklist extraction from text (answer or blocks text)
+    text_source = final_answer if (final_answer and len(final_answer.strip()) > 30) else ""
+    if not text_source and blocks:
+        text_source = "\n".join(b.get("text", "") for b in blocks[:50] if b.get("text"))
+
+    if text_source and llm:
+        try:
+            ans_steps = _extract_checklist_steps_llm(text_source, llm)
+            if ans_steps and len(ans_steps) >= 2:
+                formatted = [_format_callout_headers(s) for s in ans_steps]
+                logger.info("[Step Extraction] Tier 2 (LLM Checklist): Extracted %d steps", len(formatted))
+                return formatted
+        except Exception as e:
+            logger.warning("Tier 2 LLM step extraction failed: %s", e)
+
+    # Tier 3: Agentic section & step extraction for un-structured blocks
+    if blocks and llm:
         sec_data = _extract_sections_with_steps_agentic(blocks, llm=llm, target_topic=final_answer)
         if sec_data:
-            # Filter sections to the user's specific target topic agentically
             selected_secs = _select_best_sections_agentic(sec_data, final_answer, llm=llm)
             all_steps: list[str] = []
             for sec in selected_secs:
@@ -2800,27 +3344,9 @@ def _extract_steps_from_text_or_blocks(document_id: str, final_answer: str, conf
                 for s in sec["steps"]:
                     all_steps.append(f"{prefix}{s}")
             if len(all_steps) >= 2:
-                all_steps = [_format_callout_headers(s) for s in all_steps]
-                logger.info("[Step Extraction] Tier 1 (_extract_sections_with_steps): Selected %d section(s), %d total steps", len(selected_secs), len(all_steps))
-                return all_steps
-
-    # Tier 0: Direct extraction from answer context if blocks unavailable or Tier 1 returned no steps
-    if final_answer and len(final_answer.strip()) > 30:
-        ans_steps = []
-        if llm:
-            try:
-                ans_steps = _extract_checklist_steps_llm(final_answer, llm)
-            except Exception as e:
-                logger.warning("Tier 0 LLM answer step extraction failed: %s", e)
-        if not ans_steps:
-            lines = [line.strip() for line in final_answer.splitlines() if line.strip()]
-            for line in lines:
-                if re.match(r'^(?:\d+[\.\)]|\(\d+\)|Step\s+\d+[:\.]?|\[\d+\])\s*', line, re.IGNORECASE):
-                    ans_steps.append(line)
-        if len(ans_steps) >= 2:
-            formatted = [_format_callout_headers(s) for s in ans_steps]
-            logger.info("[Step Extraction] Tier 0 (Answer Context): Extracted %d steps directly from answer context", len(formatted))
-            return formatted
+                formatted = [_format_callout_headers(s) for s in all_steps]
+                logger.info("[Step Extraction] Tier 3 (Agentic Sections): Extracted %d steps", len(formatted))
+                return formatted
 
     # Tier 3: LLM extraction from text (last resort)
     if blocks:
@@ -2890,9 +3416,9 @@ def _clean_title(filename: str) -> str:
     import os
     name = os.path.splitext(filename)[0]
     import re
-    name = re.sub(r'^\d{8}_[A-Za-z0-9]+_\d{2}_', '', name)
-    name = re.sub(r'^\d+_\d+_\d+_', '', name)
-    name = re.sub(r'^[A-Za-z0-9]+_\d+_', '', name)
+    name = re.sub(r'^\d{8}_[A-Za-z0-9]+_\d{2}_(?:[A-Z0-9]{5,10}_)?', '', name)
+    name = re.sub(r'^\d+_\d+_\d+_(?:[A-Z0-9]{5,10}_)?', '', name)
+    name = re.sub(r'^[A-Za-z0-9]+_\d+_(?:[A-Z0-9]{5,10}_)?', '', name)
     name = name.replace('_', ' ').replace('-', ' ').strip()
     return name.title()
 
@@ -3073,21 +3599,328 @@ def run_agent(
         llm = get_llm_for(config, agent_cfg)
 
     # --- Interactive Guided Assistant Mode Handler ---
+    context_docs: list[str] = []  # Session-scoped document context list
     if session_id:
         try:
             from backend.storage.conversation_store import get_conversation_store
             store = get_conversation_store()
+
+            # === Register active_document_id into session context (cumulative, never cleared) ===
+            if active_document_id:
+                try:
+                    store.add_context_doc(session_id, active_document_id)
+                except Exception:
+                    pass
+            # Load current session context doc list for use later in the pre-search interceptor
+            try:
+                context_docs = store.get_context_docs(session_id) or []
+            except Exception:
+                context_docs = []
+
             state = store.get_interactive_state(session_id) or {}
             mode = state.get("mode")
-            
-            if mode == "guided_assistant" and (state.get("stage") in ("active", "section_disambiguation") or not _is_new_query(message)):
+
+            # ── Context Search Confirmation Handler ──────────────────────────────
+            # Handles the case where a scoped search returned no answer and we asked
+            # the user: "Search globally?" The user's reply (Yes/No) lands here.
+            if mode == "context_search":
+                _msg_lower = message.strip().lower()
+                _orig_q = state.get("original_message", message)
+                _yes_words = ("yes", "search globally", "search global", "✅", "sure", "ok", "proceed")
+                _no_words  = ("no", "that's fine", "stop", "❌", "nope", "don't")
+                if any(w in _msg_lower for w in _yes_words):
+                    # User approved global search: clear context_search state, override message
+                    store.set_interactive_state(session_id, None)
+                    message = _orig_q
+                    context_docs = []  # skip the context pre-search interceptor
+                    # fall through to normal main LLM graph
+                elif any(w in _msg_lower for w in _no_words):
+                    # User declined — return polite refusal
+                    store.set_interactive_state(session_id, None)
+                    _no_ans = "Understood! I'll keep my answers limited to your current context. Feel free to ask anything else about those documents."
+                    return {
+                        "status": "done",
+                        "answer": _no_ans,
+                        "tool_calls": [],
+                        "execution_trace": [],
+                        "messages": [HumanMessage(message), AIMessage(content=_no_ans)],
+                        "token_usage": {"total_tokens": 30, "input_tokens": 10, "output_tokens": 20},
+                        "trace_id": None,
+                    }
+            # ── End Context Search Confirmation Handler ──────────────────────────
+
+            # ── Procedure Context Agent ────────────────────────────────────────
+            # When there is a cached procedure but no active guided session,
+            # route the message through a dedicated secondary LLM agent that has
+            # the full procedure context in its system prompt. It decides what to
+            # do — resume, explain a section, summarise, answer a procedure Q, or
+            # signal ACTION:SKIP to fall through to the main search agent.
+            if not mode:
+                try:
+                    cache = store.get_procedure_cache(session_id)
+                    if cache:
+                        cached_sections = cache.get("sections", [])
+                        cached_title    = cache.get("title", "Procedure")
+                        cached_fname    = cache.get("filename", "")
+                        cached_doc_id   = cache.get("document_id")
+                        stopped_sec     = cache.get("stopped_at_sec", 0)
+                        stopped_step    = cache.get("stopped_at_step", 0)
+
+                        # ── Build procedure context block for system prompt ──
+                        proc_lines = []
+                        for i, sec in enumerate(cached_sections):
+                            s_title = sec.get("title", f"Section {i+1}")
+                            s_steps = sec.get("steps", [])
+                            if s_steps:
+                                proc_lines.append(f"\n{s_title} ({len(s_steps)} steps):")
+                                for si, st in enumerate(s_steps):
+                                    proc_lines.append(f"  Step {si+1}: {st.replace(chr(10), ' ').strip()}")
+                            else:
+                                proc_lines.append(f"\n{s_title} (steps not yet loaded)")
+                        proc_context = "\n".join(proc_lines)
+
+                        stopped_sec_title = (
+                            cached_sections[stopped_sec].get("title", f"Section {stopped_sec+1}")
+                            if stopped_sec < len(cached_sections) else "Unknown"
+                        )
+                        stopped_sec_total = len(
+                            cached_sections[stopped_sec].get("steps", [])
+                            if stopped_sec < len(cached_sections) else []
+                        )
+
+                        proc_agent_system = (
+                            "You are a Procedure Context Agent for a technical manual assistant.\n"
+                            "The user has been working on a guided procedure in this chat session.\n\n"
+                            f"PROCEDURE: {cached_title}\n"
+                            f"SOURCE: {cached_fname}\n\n"
+                            "SECTIONS AND STEPS:\n"
+                            f"{proc_context}\n\n"
+                            f"CURRENT PROGRESS: Stopped at '{stopped_sec_title}', "
+                            f"Step {stopped_step} of {stopped_sec_total}.\n\n"
+                            "YOUR JOB: Respond ONLY to questions or messages related to this procedure.\n\n"
+                            "RESPONSE RULES — follow exactly:\n"
+                            "1. If the user wants to resume / continue / proceed / go back to the procedure, OR says '▶️ Resume Procedure': "
+                            "   reply with exactly the token: ACTION:RESUME\n"
+                            "2. If the user asks about a specific section (e.g. 'explain 1.2', 'steps in section 1.3', "
+                            "   'what is 1.4 about'): reply with exactly: ACTION:EXPLAIN:<section_number> "
+                            "   (e.g. ACTION:EXPLAIN:1.2)\n"
+                            "3. If the user asks to see all sections, an overview, or a list of what's in the procedure: "
+                            "   reply with exactly: ACTION:LIST\n"
+                            "4. If the user asks a general question about the procedure (e.g. what tools are needed, "
+                            "   what does a specific step mean, safety concerns) — answer it directly and concisely "
+                            "   using the steps listed above. Do not output an ACTION token.\n"
+                            "5. If the user's message has NOTHING to do with this procedure (e.g. a completely "
+                            "   different topic, a new search question, a greeting): "
+                            "   reply with exactly the token: ACTION:SKIP\n\n"
+                            "CRITICAL: Output ONLY one of the ACTION tokens OR a direct prose answer. "
+                            "Never mix an ACTION token with prose."
+                        )
+
+                        # ── Build message list: system + last 10 history turns + current ──
+                        clean_hist = [
+                            m for m in (conversation_history or [])
+                            if isinstance(m, (HumanMessage, AIMessage))
+                            and not getattr(m, "tool_calls", None)
+                        ]
+                        proc_agent_messages: list = [SystemMessage(proc_agent_system)]
+                        proc_agent_messages += clean_hist[-10:]
+                        proc_agent_messages.append(HumanMessage(message))
+
+                        logger.info("[PROC AGENT] Invoking procedure context agent for session %s", session_id)
+                        proc_resp = llm.invoke(proc_agent_messages)
+                        proc_decision = getattr(proc_resp, "content", "").strip()
+                        logger.info("[PROC AGENT] Decision: %r", proc_decision[:80])
+
+                        # ── ACTION:SKIP → fall through to main agent ──
+                        if proc_decision.startswith("ACTION:SKIP"):
+                            logger.info("[PROC AGENT] Falling through to main agent")
+                            # Do nothing — fall through
+
+                        # ── ACTION:RESUME → restore state from cache ──
+                        elif proc_decision.startswith("ACTION:RESUME"):
+                            cur_sec = cached_sections[stopped_sec] if stopped_sec < len(cached_sections) else {}
+                            cur_steps = cur_sec.get("steps", [])
+                            sec_title = cur_sec.get("title", f"Section {stopped_sec + 1}")
+                            total_steps = len(cur_steps)
+
+                            # JIT-extract steps if this section hasn't been loaded yet
+                            if not cur_steps and cached_doc_id:
+                                p_start = cur_sec.get("page_start", 1)
+                                p_end   = cur_sec.get("page_end", 999)
+                                cur_steps = _extract_single_section_json_jit(
+                                    cached_doc_id, sec_title, p_start, p_end, config, llm
+                                )
+                                cached_sections[stopped_sec]["steps"] = cur_steps
+                                total_steps = len(cur_steps)
+
+                            # Rollover if current section is fully completed
+                            if stopped_step >= total_steps and total_steps > 0:
+                                stopped_sec += 1
+                                stopped_step = 0
+                                if stopped_sec < len(cached_sections):
+                                    cur_sec = cached_sections[stopped_sec]
+                                    sec_title = cur_sec.get("title", f"Section {stopped_sec + 1}")
+                                    cur_steps = cur_sec.get("steps", [])
+                                    if not cur_steps and cached_doc_id:
+                                        p_start = cur_sec.get("page_start", 1)
+                                        p_end   = cur_sec.get("page_end", 999)
+                                        cur_steps = _extract_single_section_json_jit(
+                                            cached_doc_id, sec_title, p_start, p_end, config, llm
+                                        )
+                                        cached_sections[stopped_sec]["steps"] = cur_steps
+                                    total_steps = len(cur_steps)
+                                else:
+                                    # Procedure is fully complete
+                                    store.set_interactive_state(session_id, None)
+                                    store.set_procedure_cache(session_id, None)
+                                    answer = f"🎉 **{cached_title}** is completely finished!\n\nLet me know if you need help with anything else."
+                                    return {
+                                        "status": "done",
+                                        "answer": answer,
+                                        "tool_calls": [],
+                                        "execution_trace": [],
+                                        "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                        "token_usage": {"total_tokens": 50, "input_tokens": 20, "output_tokens": 30},
+                                        "trace_id": None,
+                                    }
+
+                            # Restore full interactive session state
+                            resume_state = {
+                                "mode": "guided_assistant",
+                                "stage": "active",
+                                "title": cached_title,
+                                "document_id": cached_doc_id,
+                                "sections": cached_sections,
+                                "selected_option": {
+                                    "document_id": cached_doc_id,
+                                    "filename": cached_fname,
+                                    "title": cached_title,
+                                },
+                                "current_sec_idx":  stopped_sec,
+                                "current_step_idx": stopped_step,
+                                "current_idx":      stopped_step,
+                                "steps":            cur_steps,
+                                "start_page":       cur_sec.get("page_start", 1),
+                                "current_page":     cur_sec.get("page_start", 1),
+                            }
+                            store.set_interactive_state(session_id, resume_state)
+
+                            step_text = cur_steps[stopped_step] if stopped_step < total_steps else ""
+                            step_page = cur_sec.get("page_start", 1)
+                            import json as _json
+                            step_tc = [{
+                                "name": "get_page_context",
+                                "args": {"document_id": cached_doc_id, "page": step_page},
+                                "result": _json.dumps({"document_id": cached_doc_id, "filename": cached_fname, "page": step_page})
+                            }] if cached_doc_id else []
+
+                            answer = (
+                                f"▶️ **Resuming: {cached_title}**\n\n"
+                                f"**[{sec_title}] Step {stopped_step + 1} of {total_steps}:** {step_text}\n\n"
+                                f"**Source:** Page {step_page}\n\n"
+                                "Let me know when this step is complete."
+                            )
+                            return {
+                                "status": "needs_clarification",
+                                "answer": answer,
+                                "question": "Is this step completed?",
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                "tool_calls": step_tc,
+                                "execution_trace": [],
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": {"total_tokens": 80, "input_tokens": 50, "output_tokens": 30},
+                                "trace_id": None,
+                            }
+
+                        # ── ACTION:EXPLAIN:<num> → show section steps from cache ──
+                        elif proc_decision.startswith("ACTION:EXPLAIN:"):
+                            sec_num = proc_decision.split("ACTION:EXPLAIN:", 1)[-1].strip()
+                            matched = next(
+                                (s for s in cached_sections if s.get("title", "").startswith(sec_num)),
+                                None
+                            )
+                            if matched:
+                                sec_title  = matched.get("title", sec_num)
+                                sec_steps  = matched.get("steps", [])
+                                # JIT-extract if not loaded
+                                if not sec_steps and cached_doc_id:
+                                    p_start = matched.get("page_start", 1)
+                                    p_end   = matched.get("page_end", 999)
+                                    sec_steps = _extract_single_section_json_jit(
+                                        cached_doc_id, sec_title, p_start, p_end, config, llm
+                                    )
+                                    matched["steps"] = sec_steps
+
+                                step_lines = []
+                                for idx, st in enumerate(sec_steps):
+                                    st_flat = st.replace("\n", " ").strip()
+                                    step_lines.append(f"**{idx+1}.** {st_flat}")
+                                steps_text = "\n\n".join(step_lines) if step_lines else "_No steps extracted yet._"
+                                answer = (
+                                    f"### {sec_title} ({len(sec_steps)} Steps)\n\n"
+                                    f"{steps_text}\n\n"
+                                    f"*(From: {cached_fname})*"
+                                )
+                                return {
+                                    "status": "done",
+                                    "answer": answer,
+                                    "tool_calls": [],
+                                    "execution_trace": [],
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": {"total_tokens": 60, "input_tokens": 20, "output_tokens": 40},
+                                    "trace_id": None,
+                                }
+                            # section not found — fall through to main agent
+
+                        # ── ACTION:LIST → show all sections overview ──
+                        elif proc_decision.startswith("ACTION:LIST"):
+                            sec_lines = []
+                            for i, sec in enumerate(cached_sections):
+                                s_title  = sec.get("title", f"Section {i+1}")
+                                s_steps  = sec.get("steps", [])
+                                n_label  = f"{len(s_steps)} steps" if s_steps else "not yet loaded"
+                                status   = "✅" if i < stopped_sec else ("🔄" if i == stopped_sec else "⏳")
+                                sec_lines.append(f"{status} **{s_title}** — {n_label}")
+                            answer = (
+                                f"## {cached_title}\n\n"
+                                + "\n\n".join(sec_lines)
+                                + f"\n\n*(Source: {cached_fname})*"
+                            )
+                            return {
+                                "status": "done",
+                                "answer": answer,
+                                "tool_calls": [],
+                                "execution_trace": [],
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": {"total_tokens": 50, "input_tokens": 15, "output_tokens": 35},
+                                "trace_id": None,
+                            }
+
+                        # ── Direct prose answer from LLM ──
+                        elif proc_decision and not proc_decision.startswith("ACTION:"):
+                            return {
+                                "status": "done",
+                                "answer": proc_decision,
+                                "tool_calls": [],
+                                "execution_trace": [],
+                                "messages": [HumanMessage(message), AIMessage(content=proc_decision)],
+                                "token_usage": {"total_tokens": 80, "input_tokens": 40, "output_tokens": 40},
+                                "trace_id": None,
+                            }
+
+                except Exception as proc_agent_err:
+                    logger.warning("[PROC AGENT] Failed, falling through to main agent: %s", proc_agent_err)
+            # ── End Procedure Context Agent ────────────────────────────────────
+
+
+
+            if mode == "guided_assistant" and (state.get("stage") in ("active", "disambiguation", "overview", "section_disambiguation", "procedure_offer") or not _is_new_query(message)):
                 with _using_trace_sink() as _trace_sink, usage.using_sink() as sink:
                     def _get_tu(ans_str: str) -> dict:
                         tu = sink.totals(config=config)
+                        # No longer generating fake tokens. If LLM was not used, it returns 0.
                         if tu.get("total_tokens", 0) == 0:
-                            in_t = max(15, len(message.split()) * 3)
-                            out_t = max(15, len(ans_str.split()) * 3)
-                            tu = {"total_tokens": in_t + out_t, "input_tokens": in_t, "output_tokens": out_t}
+                            tu = {"total_tokens": 0, "input_tokens": 0, "output_tokens": 0}
                         return tu
 
                     msg_lower = message.strip().lower()
@@ -3098,17 +3931,142 @@ def run_agent(
                     existing_steps = state.get("steps") or []
                     blocks = None
                     if doc_id:
-                        from backend.storage.postgres_store import PostgresStore
-                        store_pg = PostgresStore(config=config)
                         try:
-                            blocks = store_pg.get_blocks(doc_id)
-                        except Exception:
-                            pass
-                        finally:
-                            store_pg.close()
+                            from backend.storage.postgres_store import PostgresStore
+                            store_pg = PostgresStore(config=config)
+                            try:
+                                blocks = store_pg.get_blocks(doc_id)
+                            finally:
+                                store_pg.close()
+                        except Exception as e:
+                            logger.warning("PostgresStore block fetch skipped in interactive handler: %s", e)
+                            blocks = None
 
                     stage = state.get("stage")
-                    if stage == "disambiguation":
+
+                    # ── Phase 1: First offer → directly to section discovery ──────────────
+                    if stage == "procedure_offer":
+                        msg_clean = message.strip().lower()
+                        is_continue = any(w in msg_clean for w in ("continue", "yes", "start", "proceed", "yep", "y", "ok", "sure"))
+                        if is_continue:
+                            doc_id = state.get("document_id") or (state.get("selected_option") or {}).get("document_id")
+                            title = state.get("title", "Procedure")
+
+                            # Scan all blocks for sub-section headings (fast regex, LLM fallback only)
+                            sections: list[dict] = []
+                            all_blocks_for_scan: list[dict] = []
+                            if doc_id:
+                                try:
+                                    from backend.storage.postgres_store import PostgresStore
+                                    store_pg2 = PostgresStore(config=config)
+                                    try:
+                                        all_blocks_for_scan = store_pg2.get_blocks(doc_id)
+                                    finally:
+                                        store_pg2.close()
+                                except Exception as e:
+                                    logger.warning("Block fetch for section discovery failed: %s", e)
+
+                            if all_blocks_for_scan:
+                                sections = _scan_pages_for_sections(all_blocks_for_scan, llm=llm)
+
+                            has_sections = len(sections) > 1
+
+                            if has_sections:
+                                # Multi-section: show section names, transition to overview for JIT extraction
+                                state["stage"] = "overview"
+                                state["sections"] = sections
+                                state["current_sec_idx"] = 0
+                                state["current_step_idx"] = 0
+                                state["current_idx"] = 0
+                                state["steps"] = []
+                                store.set_interactive_state(session_id, state)
+
+                                sec_list_lines = "\n".join(
+                                    f"{i+1}. **{sec['title']}**"
+                                    for i, sec in enumerate(sections)
+                                )
+                                first_sec_title = sections[0]["title"]
+                                answer = (
+                                    f"I found **{len(sections)} sections** in this procedure:\n\n"
+                                    f"{sec_list_lines}\n\n"
+                                    f"Shall we proceed with **{first_sec_title}**?"
+                                )
+                                return {
+                                    "status": "needs_clarification",
+                                    "answer": answer,
+                                    "question": "Shall we proceed with Section 1?",
+                                    "options": ["Proceed to Section 1", "Stop"],
+                                    "tool_calls": [],
+                                    "execution_trace": list(_trace_sink),
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": _get_tu(answer),
+                                    "trace_id": None,
+                                }
+                            else:
+                                # Flat procedure (no sub-sections): page-by-page LLM extraction → active
+                                proc_start_page = state.get("retrieval_min_page", 1)
+                                p_end = 999
+                                flat_steps: list[str] = []
+                                if doc_id:
+                                    flat_steps = _extract_steps_from_text_or_blocks(doc_id, title, config, llm, start_page=proc_start_page)
+
+                                step1 = flat_steps[0] if flat_steps else "No steps found."
+                                cur_page = _find_exact_step_page(step1, all_blocks_for_scan, fallback_page=proc_start_page) if step1 and all_blocks_for_scan else proc_start_page
+                                p_start = cur_page
+
+                                flat_section = [{"title": title, "page_start": p_start, "page_end": p_end, "steps": flat_steps}]
+                                state["stage"] = "active"
+                                state["sections"] = flat_section
+                                state["current_sec_idx"] = 0
+                                state["current_step_idx"] = 0
+                                state["current_idx"] = 0
+                                state["steps"] = flat_steps
+                                state["current_page"] = p_start
+                                state["start_page"] = p_start
+                                store.set_interactive_state(session_id, state)
+
+                                fname_val2 = (state.get("selected_option") or {}).get("filename", "")
+                                step_tc = []
+                                if doc_id:
+                                    import json as _json2
+                                    step_tc = [{
+                                        "name": "get_page_context",
+                                        "args": {"document_id": doc_id, "page": p_start},
+                                        "result": _json2.dumps({"document_id": doc_id, "filename": fname_val2, "page": p_start})
+                                    }]
+
+                                answer = (
+                                    f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF before proceeding.\n\n"
+                                    f"**[{title}] Step 1 of {len(flat_steps)}:** {step1}\n\n"
+                                    f"**Source:** Page {p_start}\n\n"
+                                    "Let me know when Step 1 is complete."
+                                )
+                                return {
+                                    "status": "needs_clarification",
+                                    "answer": answer,
+                                    "question": "Is this step completed?",
+                                    "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                    "tool_calls": step_tc,
+                                    "execution_trace": list(_trace_sink),
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": _get_tu(answer),
+                                    "trace_id": None,
+                                }
+                        else:
+                            store.set_interactive_state(session_id, None)
+                            answer = "No problem! Let me know if you need anything else."
+                            return {
+                                "status": "done",
+                                "answer": answer,
+                                "tool_calls": [],
+                                "execution_trace": list(_trace_sink),
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": _get_tu(answer),
+                                "trace_id": None,
+                            }
+
+                    # ── Existing stages ──────────────────────────────────────────────────
+                    elif stage == "disambiguation":
                         opts = state.get("disambiguation_options", [])
                         sel = _find_selected_disambiguation(message, opts)
                         if sel:
@@ -3128,21 +4086,42 @@ def run_agent(
                             overview_resp = llm.invoke(overview_prompt)
                             overview = getattr(overview_resp, "content", "").strip()
                             
-                            steps = _extract_steps_from_text_or_blocks(doc_id, "", config, llm)
+                            steps = _extract_steps_from_text_or_blocks(doc_id, "", config, llm, start_page=state.get("retrieval_min_page", 1))
+                            sections = [{"title": title, "steps": steps}] if steps else []
+                            if blocks:
+                                try:
+                                    sec_extracted = _extract_sections_with_steps(blocks)
+                                    if sec_extracted:
+                                        sections = sec_extracted
+                                except Exception:
+                                    pass
+
+                            total_steps = sum(len(sec.get("steps", [])) for sec in sections) if sections else len(steps)
+                            first_sec_steps = sections[0].get("steps", []) if sections else steps
                             
-                            if len(steps) >= 2:
+                            if len(steps) >= 2 or total_steps >= 2:
                                 state["stage"] = "overview"
                                 state["selected_option"] = sel
-                                state["steps"] = steps
+                                state["sections"] = sections
+                                state["current_sec_idx"] = 0
+                                state["current_step_idx"] = 0
+                                state["steps"] = first_sec_steps
                                 state["current_idx"] = 0
                                 state["title"] = title
                                 store.set_interactive_state(session_id, state)
                                 
+                                sec_list_str = "\n".join(
+                                    f"- **{sec['title']}** ({len(sec['steps'])} step{'s' if len(sec['steps']) > 1 else ''})"
+                                    for sec in sections
+                                )
+                                first_sec_title = sections[0]["title"] if sections else title
+
                                 answer = (
                                     f"### Overview of {title}\n"
                                     f"{overview}\n\n"
-                                    f"Here is the process for **{title}** from `{fname}`. "
-                                    "We can guide you step-by-step. When you are ready, shall we start the process?"
+                                    f"This procedure consists of {len(sections)} section{'s' if len(sections) > 1 else ''} ({total_steps} total steps):\n\n"
+                                    f"{sec_list_str}\n\n"
+                                    f"We will guide you section-by-section, starting with **Section {first_sec_title}**. Shall we start?"
                                 )
                                 return {
                                     "status": "needs_clarification",
@@ -3258,7 +4237,7 @@ def run_agent(
 
                     elif stage == "overview":
                         msg_clean = message.strip().lower()
-                        is_start = any(w in msg_clean for w in ("start", "yes", "ready", "yep", "y", "go", "guided"))
+                        is_start = any(w in msg_clean for w in ("start", "yes", "ready", "yep", "y", "go", "guided", "proceed", "section", "ok", "sure", "continue"))
                         if is_start:
                             sel = state.get("selected_option", {})
                             doc_id = sel.get("document_id") or state.get("document_id")
@@ -3270,24 +4249,44 @@ def run_agent(
                                 state["end_page"] = end_page
                                 state["current_page"] = start_page
 
-                            # Re-extract steps fresh ONLY if state["steps"] is missing or empty
-                            if doc_id and (not state.get("steps") or len(state.get("steps", [])) < 2):
-                                proc_ctx = state.get("title") or state.get("query") or ""
-                                fresh_steps = _extract_steps_from_text_or_blocks(doc_id, proc_ctx, config, llm)
-                                if fresh_steps and len(fresh_steps) >= 2:
-                                    state["steps"] = fresh_steps
+                            sections = state.get("sections", [])
+                            if not sections:
+                                steps = state.get("steps", [])
+                                if doc_id and len(steps) < 2:
+                                    proc_ctx = state.get("title") or state.get("query") or ""
+                                    fresh_steps = _extract_steps_from_text_or_blocks(doc_id, proc_ctx, config, llm, start_page=state.get("retrieval_min_page", 1))
+                                    if fresh_steps and len(fresh_steps) >= 2:
+                                        steps = fresh_steps
+                                sections = [{"title": state.get("title", "Procedure"), "steps": steps}]
+                                state["sections"] = sections
 
-                            steps = state.get("steps", [])
-                            total_steps = len(steps)
+                            current_sec_idx = 0
+                            current_sec = sections[0] if sections else {"title": state.get("title", "Procedure"), "page_start": 1, "page_end": 999, "steps": []}
+                            sec_title = current_sec.get("title", "Procedure")
+                            
+                            # JIT Section JSON extraction if section steps are empty
+                            steps = current_sec.get("steps", [])
+                            if not steps and doc_id:
+                                p_start = current_sec.get("page_start", 1)
+                                p_end = current_sec.get("page_end", 999)
+                                steps = _extract_single_section_json_jit(doc_id, sec_title, p_start, p_end, config, llm)
+                                if not steps:
+                                    steps = state.get("steps", [])
+                                current_sec["steps"] = steps
+
+                            total_sec_steps = len(steps)
                             step1 = steps[0] if steps else ""
                             title = state.get("title", "Procedure")
 
-                            cur_page = _find_exact_step_page(step1, blocks, fallback_page=state.get("start_page", 1))
+                            cur_page = current_sec.get("page_start") or _find_exact_step_page(step1, blocks, fallback_page=state.get("start_page", 1))
 
                             cad_info = _find_associated_cad_diagram(title, config)
                             state["cad_info"] = cad_info
                             state["stage"] = "active"
+                            state["current_sec_idx"] = 0
+                            state["current_step_idx"] = 0
                             state["current_idx"] = 0
+                            state["steps"] = steps
                             state["current_page"] = cur_page
                             store.set_interactive_state(session_id, state)
                             
@@ -3301,43 +4300,24 @@ def run_agent(
                                     "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
                                 }]
 
-                            if cad_info:
-                                cad_fname = cad_info.get("filename")
-                                answer = (
-                                    f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF, wheel spindle is stopped, and lockout/tagout is applied before opening machine covers.\n\n"
-                                    f"**Step 1 of {total_steps}:** {step1}\n\n"
-                                    f"**Source:** Page {cur_page}\n\n"
-                                    f"I found a related CAD diagram: `{cad_fname}`. Would you like me to show the CAD diagram?"
-                                )
-                                return {
-                                    "status": "needs_clarification",
-                                    "answer": answer,
-                                    "question": f"Would you like me to show the CAD diagram `{cad_fname}`?",
-                                    "options": ["Show CAD Diagram", "No, proceed with Step 1"],
-                                    "tool_calls": step_tc,
-                                    "execution_trace": list(_trace_sink),
-                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
-                                    "token_usage": _get_tu(answer),
-                                    "trace_id": None,
-                                }
-                            else:
-                                answer = (
-                                    f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF, wheel spindle is stopped, and lockout/tagout is applied before opening machine covers.\n\n"
-                                    f"**Step 1 of {total_steps}:** {step1}\n\n"
-                                    f"**Source:** Page {cur_page}\n\n"
-                                    "Let me know when Step 1 is complete or if you have any questions."
-                                )
-                                return {
-                                    "status": "needs_clarification",
-                                    "answer": answer,
-                                    "question": "Is this step completed?",
-                                    "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                    "tool_calls": step_tc,
-                                    "execution_trace": list(_trace_sink),
-                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
-                                    "token_usage": _get_tu(answer),
-                                    "trace_id": None,
-                                }
+                            answer = (
+                                f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF, wheel spindle is stopped, and lockout/tagout is applied before opening machine covers.\n\n"
+                                f"**[{sec_title}]**\n"
+                                f"**Step 1 of {total_sec_steps}:** {step1}\n\n"
+                                f"**Source:** Page {cur_page}\n\n"
+                                "Let me know when Step 1 is complete or if you would like to view the full summary for this section."
+                            )
+                            return {
+                                "status": "needs_clarification",
+                                "answer": answer,
+                                "question": "Is this step completed?",
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                "tool_calls": step_tc,
+                                "execution_trace": list(_trace_sink),
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": _get_tu(answer),
+                                "trace_id": None,
+                            }
                         else:
                             store.set_interactive_state(session_id, None)
                             answer = "Guided process cancelled. Let me know if you need anything else!"
@@ -3351,19 +4331,186 @@ def run_agent(
                                 "trace_id": None,
                             }
                             
+                    elif stage == "trouble_global_search_pending":
+                        msg_clean = message.strip().lower()
+                        if "yes" in msg_clean:
+                            state["stage"] = "active"
+                            store.set_interactive_state(session_id, state)
+                            
+                            from backend.retrieval.search_documents import SearchDocumentsTool as _SDT
+                            _global_result = _SDT().run(
+                                query=state.get("trouble_query", ""),
+                                document_scope=[]
+                            )
+                            _global_answer = _global_result.get("answer", "")
+                            
+                            current_step_idx = state.get("current_step_idx", state.get("current_idx", 0))
+                            sections = state.get("sections", [])
+                            current_sec_idx = state.get("current_sec_idx", 0)
+                            total_sec_steps = len(sections[current_sec_idx].get("steps", [])) if current_sec_idx < len(sections) else 0
+                                
+                            answer = (
+                                f"{_global_answer}\n\n"
+                                f"*(Still on **Step {current_step_idx + 1} of {total_sec_steps}**)*\n"
+                                "Let me know when you have completed this step or if you need more help."
+                            )
+                            return {
+                                "status": "needs_clarification",
+                                "answer": answer,
+                                "question": "Is this step completed?",
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                "tool_calls": [],
+                                "execution_trace": list(_trace_sink),
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": _get_tu(answer),
+                                "trace_id": None,
+                            }
+                        else:
+                            state["stage"] = "active"
+                            store.set_interactive_state(session_id, state)
+                            current_step_idx = state.get("current_step_idx", state.get("current_idx", 0))
+                            sections = state.get("sections", [])
+                            current_sec_idx = state.get("current_sec_idx", 0)
+                            total_sec_steps = len(sections[current_sec_idx].get("steps", [])) if current_sec_idx < len(sections) else 0
+                            
+                            answer = (
+                                f"Okay, I'll restrict my answers to the current manual.\n\n"
+                                f"*(Still on **Step {current_step_idx + 1} of {total_sec_steps}**)*\n"
+                                "Let me know when you have completed this step or if you need more help."
+                            )
+                            return {
+                                "status": "needs_clarification",
+                                "answer": answer,
+                                "question": "Is this step completed?",
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                "tool_calls": [],
+                                "execution_trace": list(_trace_sink),
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": _get_tu(answer),
+                                "trace_id": None,
+                            }
+                            
                     elif stage == "active":
                         msg_clean = message.strip().lower()
-                        current_idx = state.get("current_idx", 0)
-                        steps = state.get("steps", [])
-                        total_steps = len(steps)
+                        sections = state.get("sections", [])
+                        current_sec_idx = state.get("current_sec_idx", 0)
+                        current_step_idx = state.get("current_step_idx", state.get("current_idx", 0))
+                        
+                        if not sections:
+                            steps = state.get("steps", [])
+                            sections = [{"title": state.get("title", "Procedure"), "steps": steps}]
+
+                        if current_sec_idx >= len(sections):
+                            current_sec_idx = len(sections) - 1
+
+                        current_sec = sections[current_sec_idx]
+                        sec_title = current_sec.get("title", "Procedure")
+                        steps = current_sec.get("steps", [])
+                        total_sec_steps = len(steps)
                         cad_info = state.get("cad_info")
                         title = state.get("title", "Procedure")
                         sel = state.get("selected_option") or {}
                         doc_id = sel.get("document_id") or state.get("document_id")
                         fname_val = sel.get("filename", "")
-                        
+
+                        # Handle Option B: Full Section Summary Request
+                        if "summary" in msg_clean or "full section" in msg_clean:
+                            step_lines = []
+                            for idx, st in enumerate(steps):
+                                # Replace internal newlines with a space so each step stays on one block
+                                st_flat = st.replace("\n", " ").strip()
+                                step_lines.append(f"**{idx+1}.** {st_flat}")
+                            sec_steps_str = "\n\n".join(step_lines)
+                            answer = (
+                                f"### Full Summary: {sec_title} ({total_sec_steps} Steps)\n\n"
+                                f"{sec_steps_str}\n\n"
+                                f"You can proceed step-by-step or continue to the next section when ready."
+                            )
+                            cur_page = current_sec.get("page_start", state.get("current_page", 1))
+                            step_tc = []
+                            if doc_id:
+                                import json as _json
+                                step_tc = [{
+                                    "name": "get_page_context",
+                                    "args": {"document_id": doc_id, "page": cur_page},
+                                    "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
+                                }]
+                            
+                            # Fast-forward progress so that stopping now treats all steps as viewed
+                            if total_sec_steps > 0:
+                                state["current_step_idx"] = total_sec_steps - 1
+                                state["current_idx"] = total_sec_steps - 1
+                                store.set_interactive_state(session_id, state)
+
+                            return {
+                                "status": "needs_clarification",
+                                "answer": answer,
+                                "question": "How would you like to proceed?",
+                                "options": ["✅ Step Complete - Next", "➡️ Proceed to Next Section", "Stop checklist"],
+                                "tool_calls": step_tc,
+                                "execution_trace": [],
+                                "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                "token_usage": _get_tu(answer),
+                                "trace_id": None,
+                            }
+
+                        if "next section" in msg_clean or "proceed to next" in msg_clean:
+                            next_sec_idx = current_sec_idx + 1
+                            if next_sec_idx < len(sections):
+                                next_sec = sections[next_sec_idx]
+                                next_steps = next_sec.get("steps", [])
+                                next_sec_title = next_sec.get("title", f"Section {next_sec_idx + 1}")
+
+                                # JIT extract steps if not yet loaded for this section
+                                if not next_steps and doc_id:
+                                    p_start = next_sec.get("page_start", 1)
+                                    p_end = next_sec.get("page_end", 999)
+                                    next_steps = _extract_single_section_json_jit(doc_id, next_sec_title, p_start, p_end, config, llm)
+                                    next_sec["steps"] = next_steps
+                                    sections[next_sec_idx] = next_sec
+                                    state["sections"] = sections
+
+                                step1 = next_steps[0] if next_steps else ""
+                                step_page = next_sec.get("page_start") or _find_exact_step_page(step1, blocks, fallback_page=state.get("current_page", 1))
+
+                                state["current_sec_idx"] = next_sec_idx
+                                state["current_step_idx"] = 0
+                                state["current_idx"] = 0
+                                state["steps"] = next_steps
+                                state["current_page"] = step_page
+                                store.set_interactive_state(session_id, state)
+
+                                step_tc = []
+                                if doc_id:
+                                    import json as _json
+                                    step_tc = [{
+                                        "name": "get_page_context",
+                                        "args": {"document_id": doc_id, "page": step_page},
+                                        "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": step_page})
+                                    }]
+
+                                answer = (
+                                    f"➡️ **Starting Section {next_sec_title}** ({len(next_steps)} steps).\n\n"
+                                    f"⚠️ **SAFETY MANDATE:** Ensure the main power is TURNED OFF before proceeding.\n\n"
+                                    f"**[{next_sec_title}] Step 1 of {len(next_steps)}:** {step1}\n\n"
+                                    f"**Source:** Page {step_page}\n\n"
+                                    "Let me know when Step 1 is complete."
+                                )
+                                return {
+                                    "status": "needs_clarification",
+                                    "answer": answer,
+                                    "question": "Is this step completed?",
+                                    "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                    "tool_calls": step_tc,
+                                    "execution_trace": list(_trace_sink),
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": _get_tu(answer),
+                                    "trace_id": None,
+                                }
+
+
                         if message == "Show CAD Diagram":
-                            step_text = steps[current_idx]
+                            step_text = steps[current_step_idx] if current_step_idx < total_sec_steps else ""
                             cur_page = _find_exact_step_page(step_text, blocks, fallback_page=state.get("current_page") or state.get("start_page", 1))
                             state["current_page"] = cur_page
                             store.set_interactive_state(session_id, state)
@@ -3377,7 +4524,8 @@ def run_agent(
                                 }]
                             answer = (
                                 f"Showing CAD diagram `{cad_info.get('filename')}`.\n\n"
-                                f"**Step {current_idx + 1} of {total_steps}:** {step_text}\n\n"
+                                f"**[{sec_title}]**\n"
+                                f"**Step {current_step_idx + 1} of {total_sec_steps}:** {step_text}\n\n"
                                 f"**Source:** Page {cur_page}\n\n"
                                 "Let me know when this step is complete."
                             )
@@ -3385,7 +4533,7 @@ def run_agent(
                                 "status": "needs_clarification",
                                 "answer": answer,
                                 "question": "Is this step completed?",
-                                "options": ["✅ Step Complete - Next", "Stop checklist"],
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
                                 "cad_diagrams": [cad_info],
                                 "tool_calls": step_tc,
                                 "execution_trace": [],
@@ -3395,7 +4543,7 @@ def run_agent(
                             }
                         
                         if message == "No, proceed with Step 1":
-                            step_text = steps[current_idx]
+                            step_text = steps[current_step_idx] if current_step_idx < total_sec_steps else ""
                             cur_page = _find_exact_step_page(step_text, blocks, fallback_page=state.get("current_page") or state.get("start_page", 1))
                             state["current_page"] = cur_page
                             store.set_interactive_state(session_id, state)
@@ -3408,7 +4556,8 @@ def run_agent(
                                     "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": cur_page})
                                 }]
                             answer = (
-                                f"**Step {current_idx + 1} of {total_steps}:** {step_text}\n\n"
+                                f"**[{sec_title}]**\n"
+                                f"**Step {current_step_idx + 1} of {total_sec_steps}:** {step_text}\n\n"
                                 f"**Source:** Page {cur_page}\n\n"
                                 "Let me know when this step is complete."
                             )
@@ -3416,7 +4565,7 @@ def run_agent(
                                 "status": "needs_clarification",
                                 "answer": answer,
                                 "question": "Is this step completed?",
-                                "options": ["✅ Step Complete - Next", "Stop checklist"],
+                                "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
                                 "tool_calls": step_tc,
                                 "execution_trace": [],
                                 "messages": [HumanMessage(message), AIMessage(content=answer)],
@@ -3425,26 +4574,104 @@ def run_agent(
                             }
                         
                         if any(w in msg_clean for w in ("stop", "cancel", "exit")):
-                            store.set_interactive_state(session_id, None)
-                            answer = "I have stopped the guided process. Let me know if you need anything else!"
+                            try:
+                                all_sections = state.get("sections", [])
+                                cur_sec_idx = state.get("current_sec_idx", 0)
+                                cur_step_idx = state.get("current_step_idx", state.get("current_idx", 0))
+                                proc_title = state.get("title") or (state.get("selected_option") or {}).get("title", "Procedure")
+
+                                # ── Save procedure context to cache for follow-up questions ──
+                                try:
+                                    cache_payload = {
+                                        "title": proc_title,
+                                        "document_id": state.get("document_id") or (state.get("selected_option") or {}).get("document_id"),
+                                        "filename": (state.get("selected_option") or {}).get("filename", ""),
+                                        "sections": all_sections,
+                                        "stopped_at_sec": cur_sec_idx,
+                                        "stopped_at_step": cur_step_idx + 1,  # store 1-based count of completed steps
+                                    }
+                                    store.set_procedure_cache(session_id, cache_payload)
+                                except Exception as ce:
+                                    logger.warning("Failed to save procedure cache: %s", ce)
+
+                                summary_lines = [f"## 📋 Progress Summary — {proc_title}\n"]
+
+                                for i, sec in enumerate(all_sections):
+                                    s_title = sec.get("title", f"Section {i+1}")
+                                    s_steps = sec.get("steps", [])
+                                    n_steps = len(s_steps)
+
+                                    if i < cur_sec_idx:
+                                        summary_lines.append(f"✅ **{s_title}** — All {n_steps} steps completed")
+                                    elif i == cur_sec_idx:
+                                        done_count = cur_step_idx + 1  # +1: current shown step counts as completed
+                                        if done_count == n_steps and n_steps > 0:
+                                            summary_lines.append(f"✅ **{s_title}** — All {n_steps} steps completed *(stopped here)*")
+                                        else:
+                                            summary_lines.append(
+                                                f"🔄 **{s_title}** — {done_count} of {n_steps if n_steps else '?'} steps completed *(stopped here)*"
+                                            )
+                                        if s_steps and done_count > 0:
+                                            for si in range(min(done_count, len(s_steps))):
+                                                st_flat = s_steps[si].replace("\n", " ").strip()[:120]
+                                                summary_lines.append(f"  - ~~{st_flat}~~")
+                                    else:
+                                        summary_lines.append(f"⏳ **{s_title}** — not started")
+
+                                is_100_percent_done = False
+                                if cur_sec_idx >= len(all_sections) - 1:
+                                    last_sec = all_sections[-1]
+                                    if (cur_step_idx + 1) >= len(last_sec.get("steps", [])):
+                                        is_100_percent_done = True
+                                
+                                if is_100_percent_done:
+                                    prompt = (
+                                        "You are a helpful and celebratory technical assistant.\n"
+                                        f"The user has just successfully completed 100% of the technical procedure: '{proc_title}'.\n"
+                                        "Please generate a short, congratulatory final message (2-3 sentences) letting them know they have "
+                                        "completely finished all sections and steps, and asking if they need help with anything else. DO NOT use placeholders like [Your Name]."
+                                    )
+                                    try:
+                                        answer = llm.invoke(prompt).content.strip()
+                                    except Exception:
+                                        answer = f"🎉 **Procedure Complete!** You have finished all steps for '{proc_title}'. Let me know if you need anything else."
+                                    options = []
+                                    store.set_interactive_state(session_id, None)
+                                    store.set_procedure_cache(session_id, None)
+                                    status_val = "done"
+                                else:
+                                    summary_lines.append("\n\nLet me know if you'd like to resume, or ask me anything about a specific section.")
+                                    answer = "\n\n".join(summary_lines)
+                                    options = ["▶️ Resume Procedure"]
+                                    store.set_interactive_state(session_id, None)
+                                    status_val = "needs_clarification"
+                            except Exception:
+                                answer = "Guided process stopped. Let me know if you need anything else!"
+                                options = []
+                                status_val = "done"
+                                store.set_interactive_state(session_id, None)
+
                             return {
-                                "status": "done",
+                                "status": status_val,
                                 "answer": answer,
+                                "options": options,
                                 "tool_calls": [],
                                 "execution_trace": [],
                                 "messages": [HumanMessage(message), AIMessage(content=answer)],
                                 "token_usage": _get_tu(answer),
                                 "trace_id": None,
                             }
+
                             
                         is_done = any(w in msg_clean for w in ("yes", "completed", "ok", "next", "proceed", "done"))
                         if is_done:
-                            next_idx = current_idx + 1
-                            if next_idx < total_steps:
-                                next_step = steps[next_idx]
+                            next_step_idx = current_step_idx + 1
+                            if next_step_idx < total_sec_steps:
+                                next_step = steps[next_step_idx]
                                 last_page = state.get("current_page") or state.get("start_page", 1)
                                 step_page = _find_exact_step_page(next_step, blocks, fallback_page=last_page)
-                                state["current_idx"] = next_idx
+                                state["current_step_idx"] = next_step_idx
+                                state["current_idx"] = next_step_idx
                                 state["current_page"] = step_page
                                 store.set_interactive_state(session_id, state)
                                 step_tc = []
@@ -3457,7 +4684,8 @@ def run_agent(
                                     }]
 
                                 answer = (
-                                    f"**Step {next_idx + 1} of {total_steps}:** {next_step}\n\n"
+                                    f"**[{sec_title}]**\n"
+                                    f"**Step {next_step_idx + 1} of {total_sec_steps}:** {next_step}\n\n"
                                     f"**Source:** Page {step_page}\n\n"
                                     "Let me know when this step is complete."
                                 )
@@ -3465,7 +4693,7 @@ def run_agent(
                                     "status": "needs_clarification",
                                     "answer": answer,
                                     "question": "Is this step completed?",
-                                    "options": ["✅ Step Complete - Next", "Stop checklist"],
+                                    "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
                                     "tool_calls": step_tc,
                                     "execution_trace": list(_trace_sink),
                                     "messages": [HumanMessage(message), AIMessage(content=answer)],
@@ -3473,75 +4701,152 @@ def run_agent(
                                     "trace_id": None,
                                 }
                             else:
-                                store.set_interactive_state(session_id, None)
-                                
-                                summary_prompt = (
-                                    "You are a precise technical case summarization assistant.\n"
-                                    "Write a short summary of the completed troubleshooting/cleaning case.\n"
-                                    f"Equipment/Topic: {title}\n"
-                                    "Steps performed:\n" + "\n".join(f"- {s}" for s in steps) + "\n\n"
-                                    "Output a clean markdown summary listing the Equipment, steps completed, and confirmation of resolution."
-                                )
-                                try:
-                                    summary_resp = llm.invoke(summary_prompt)
-                                    summary = getattr(summary_resp, "content", "").strip()
-                                except Exception:
-                                    summary = f"All {total_steps} steps of the process '{title}' were completed successfully."
+                                # Section is complete! Check if there is a next section
+                                next_sec_idx = current_sec_idx + 1
+                                if next_sec_idx < len(sections):
+                                    next_sec = sections[next_sec_idx]
+                                    next_sec_title = next_sec.get("title", f"Section {next_sec_idx + 1}")
+                                    next_steps = next_sec.get("steps", [])
+                                    if not next_steps and doc_id:
+                                        p_start = next_sec.get("page_start", 1)
+                                        p_end = next_sec.get("page_end", 999)
+                                        next_steps = _extract_single_section_json_jit(doc_id, next_sec_title, p_start, p_end, config, llm)
+                                        next_sec["steps"] = next_steps
+
+                                    step1 = next_steps[0] if next_steps else ""
+                                    step_page = next_sec.get("page_start") or _find_exact_step_page(step1, blocks, fallback_page=state.get("current_page", 1))
+
+                                    state["current_sec_idx"] = next_sec_idx
+                                    state["current_step_idx"] = 0
+                                    state["current_idx"] = 0
+                                    state["steps"] = next_steps
+                                    state["current_page"] = step_page
+                                    store.set_interactive_state(session_id, state)
+
+                                    step_tc = []
+                                    if doc_id:
+                                        import json as _json
+                                        step_tc = [{
+                                            "name": "get_page_context",
+                                            "args": {"document_id": doc_id, "page": step_page},
+                                            "result": _json.dumps({"document_id": doc_id, "filename": fname_val, "page": step_page})
+                                        }]
+
+                                    answer = (
+                                        f"🎉 **{sec_title} Complete!**\n\n"
+                                        f"Next up: **Section {next_sec_title}** ({len(next_steps)} steps).\n\n"
+                                        f"**[{next_sec_title}]**\n"
+                                        f"**Step 1 of {len(next_steps)}:** {step1}\n\n"
+                                        f"**Source:** Page {step_page}\n\n"
+                                        "Let me know when Step 1 is complete."
+                                    )
+                                    return {
+                                        "status": "needs_clarification",
+                                        "answer": answer,
+                                        "question": "Is this step completed?",
+                                        "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                        "tool_calls": step_tc,
+                                        "execution_trace": list(_trace_sink),
+                                        "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                        "token_usage": _get_tu(answer),
+                                        "trace_id": None,
+                                    }
+                                else:
+                                    # All sections complete!
+                                    store.set_interactive_state(session_id, None)
                                     
+                                    all_steps_flat = []
+                                    for sec in sections:
+                                        all_steps_flat.extend(sec.get("steps", []))
+
+                                    summary_prompt = (
+                                        "You are a helpful and celebratory technical assistant.\n"
+                                        f"The user has just successfully completed 100% of the technical procedure: '{title}'.\n"
+                                        "Please generate a short, congratulatory final message (2-3 sentences) letting them know they have "
+                                        "completely finished all sections and steps, and asking if they need help with anything else. DO NOT use placeholders like [Your Name]."
+                                    )
+                                    try:
+                                        summary_resp = llm.invoke(summary_prompt)
+                                        answer = getattr(summary_resp, "content", "").strip()
+                                    except Exception:
+                                        answer = f"🎉 **Guided process complete!** All {len(sections)} sections and {len(all_steps_flat)} steps of '{title}' were completed successfully. Let me know if you need anything else."
+                                    
+                                    store.set_procedure_cache(session_id, None)
+                                    return {
+                                        "status": "done",
+                                        "answer": answer,
+                                        "tool_calls": [],
+                                        "execution_trace": list(_trace_sink),
+                                        "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                        "token_usage": _get_tu(answer),
+                                        "trace_id": None,
+                                    }
+                        else:
+                            # Stuck Technician Troubleshooting Sub-Loop
+                            sel = state.get("selected_option") or {}
+                            doc_id = sel.get("document_id")
+                            from backend.retrieval.search_documents import SearchDocumentsTool as _SDT
+                            _scoped_answer = ""
+                            try:
+                                if doc_id:
+                                    sdt_query = f"The technician is on Step {current_step_idx + 1} ('{steps[current_step_idx]}') and asks: {message}"
+                                    _scoped_result = _SDT().run(
+                                        query=sdt_query,
+                                        document_scope=[doc_id]
+                                    )
+                                    _scoped_answer = _scoped_result.get("answer", "")
+                            except Exception as e:
+                                logger.warning(f"Stuck Technician SDT failed: {e}")
+                                _scoped_answer = ""
+
+                            _refusal_phrases = (
+                                "could not find", "cannot find", "no information", "not found",
+                                "does not contain", "not available", "no mention", "unable to find",
+                                "nothing relevant"
+                            )
+                            _is_refusal = (
+                                not _scoped_answer
+                                or len(_scoped_answer) < 40
+                                or any(ph in _scoped_answer.lower() for ph in _refusal_phrases)
+                            )
+
+                            if _is_refusal:
+                                state["stage"] = "trouble_global_search_pending"
+                                state["trouble_query"] = message
+                                store.set_interactive_state(session_id, state)
                                 answer = (
-                                    f"🎉 **Guided process complete!** All steps have been completed.\n\n"
-                                    f"### Case Summary\n{summary}"
+                                    "I could not find information about this in your current manual. "
+                                    "Would you like me to search all manuals globally?"
                                 )
                                 return {
-                                    "status": "done",
+                                    "status": "needs_clarification",
                                     "answer": answer,
+                                    "question": "Can I search globally?",
+                                    "options": ["✅ Yes, search globally", "❌ No, that's fine"],
                                     "tool_calls": [],
                                     "execution_trace": list(_trace_sink),
                                     "messages": [HumanMessage(message), AIMessage(content=answer)],
                                     "token_usage": _get_tu(answer),
                                     "trace_id": None,
                                 }
-                        else:
-                            # Stuck Technician Troubleshooting Sub-Loop
-                            sel = state.get("selected_option") or {}
-                            doc_id = sel.get("document_id")
-                            doc_text = ""
-                            if doc_id:
-                                doc_text = _get_document_content_from_db(doc_id, config)
-                                
-                            trouble_prompt = (
-                                "You are a technical support supervisor assisting a technician on a machine. "
-                                f"They are currently on Step {current_idx + 1} of the procedure '{title}':\n"
-                                f"Current Step: {steps[current_idx]}\n\n"
-                                "They have run into an issue or asked the following question:\n"
-                                f"\"{message}\"\n\n"
-                                "Here is the context of the manual:\n"
-                                f"{doc_text[:12000]}\n\n"
-                                "Answer their question precisely using the manual context. Give practical troubleshooting advice. "
-                                "Do not say they should proceed to the next step. Maintain a helpful support tone."
-                            )
-                            try:
-                                trouble_resp = llm.invoke(trouble_prompt)
-                                trouble_ans = getattr(trouble_resp, "content", "").strip()
-                            except Exception as e:
-                                trouble_ans = f"I'm here to help. Could you please rephrase your question? (Error: {e})"
-                            
-                            answer = (
-                                f"{trouble_ans}\n\n"
-                                f"*(Still on **Step {current_idx + 1} of {total_steps}**)*\n"
-                                "Let me know when you have completed this step or if you need more help."
-                            )
-                            return {
-                                "status": "needs_clarification",
-                                "answer": answer,
-                                "question": "Is this step completed?",
-                                "options": ["✅ Step Complete - Next", "Stop checklist"],
-                                "tool_calls": [],
-                                "execution_trace": list(_trace_sink),
-                                "messages": [HumanMessage(message), AIMessage(content=answer)],
-                                "token_usage": _get_tu(answer),
-                                "trace_id": None,
-                            }
+                            else:
+                                trouble_ans = _scoped_answer
+                                answer = (
+                                    f"{trouble_ans}\n\n"
+                                    f"*(Still on **Step {current_step_idx + 1} of {total_sec_steps}**)*\n"
+                                    "Let me know when you have completed this step or if you need more help."
+                                )
+                                return {
+                                    "status": "needs_clarification",
+                                    "answer": answer,
+                                    "question": "Is this step completed?",
+                                    "options": ["✅ Step Complete - Next", "📋 View Full Section Summary", "Stop checklist"],
+                                    "tool_calls": [],
+                                    "execution_trace": list(_trace_sink),
+                                    "messages": [HumanMessage(message), AIMessage(content=answer)],
+                                    "token_usage": _get_tu(answer),
+                                    "trace_id": None,
+                                }
 
             else:
                 if mode:
@@ -3596,6 +4901,91 @@ def run_agent(
 
     tool_schemas = [_to_openai_tool(t) for t in registry.values()]
     is_question = not _is_greeting(message)
+
+    # === CHAT CONTEXT AGENT: Session-Scoped Pre-Search Interceptor =============
+    # When the session has context docs (PDFs opened / procedures run in this chat)
+    # and the 5-tier scope resolver did NOT already pin a specific document,
+    # try answering from only those docs first.  If found → return immediately.
+    # If not → ask the user (with buttons) whether to expand to global search.
+    if context_docs and not resolved_scope and is_question and session_id:
+        try:
+            from backend.retrieval.search_documents import SearchDocumentsTool as _SDT
+            _scoped_result = _SDT().run(
+                query=message,
+                document_scope=context_docs,
+                session_id=session_id,
+            )
+            _scoped_answer = (_scoped_result.get("answer") or "").strip()
+
+            # Refusal detection: LLM answerer emits one of these when it can't find the answer
+            _refusal_phrases = (
+                "could not find", "cannot find", "no information", "not found",
+                "does not contain", "not available", "no mention", "unable to find",
+                "not provided", "i don't have",
+            )
+            _is_refusal = (
+                not _scoped_answer
+                or len(_scoped_answer) < 40
+                or any(ph in _scoped_answer.lower() for ph in _refusal_phrases)
+            )
+
+            if not _is_refusal:
+                # Good answer found in context docs — return it directly (fast path)
+                logger.info("⚡ [CONTEXT AGENT] Answered from session context (%d docs)", len(context_docs))
+                _ctx_sources = _scoped_result.get("sources") or []
+                _ctx_tc = [
+                    {"name": "search_documents",
+                     "args": {"query": message, "document_scope": context_docs},
+                     "result": ""}
+                ]
+                return {
+                    "status": "done",
+                    "answer": _scoped_answer,
+                    "tool_calls": _ctx_tc,
+                    "execution_trace": [],
+                    "messages": [HumanMessage(message), AIMessage(content=_scoped_answer)],
+                    "token_usage": _scoped_result.get("token_usage") or {"total_tokens": 100, "input_tokens": 80, "output_tokens": 20},
+                    "trace_id": None,
+                }
+            else:
+                # No answer in context — ask user for permission to search globally
+                logger.info("⚡ [CONTEXT AGENT] No answer in context (%d docs), asking user for global search", len(context_docs))
+                _ctx_fnames = _get_filenames_for_ids(context_docs, config)
+                _ctx_label  = ", ".join(_ctx_fnames[:3]) or "your current documents"
+                if len(_ctx_fnames) > 3:
+                    _ctx_label += f" and {len(_ctx_fnames) - 3} more"
+
+                _cq = (
+                    f"I couldn't find information about this in your current context "
+                    f"({_ctx_label}). Would you like me to search globally across all manuals?"
+                )
+
+                # Persist state so we can re-run the original question on user approval
+                try:
+                    from backend.storage.conversation_store import get_conversation_store as _gcs
+                    _gcs().set_interactive_state(session_id, {
+                        "mode": "context_search",
+                        "stage": "global_search_pending",
+                        "original_message": message,
+                    })
+                except Exception:
+                    pass
+
+                return {
+                    "status": "needs_clarification",
+                    "answer": _cq,
+                    "question": _cq,
+                    "options": ["\u2705 Yes, search globally", "\u274c No, that's fine"],
+                    "tool_calls": [],
+                    "execution_trace": [],
+                    "messages": [HumanMessage(message), AIMessage(content=_cq)],
+                    "token_usage": {"total_tokens": 50, "input_tokens": 30, "output_tokens": 20},
+                    "trace_id": None,
+                }
+        except Exception as _ctx_exc:
+            logger.warning("[CONTEXT AGENT] Error in scoped pre-search, falling through: %s", _ctx_exc)
+    # === END CHAT CONTEXT AGENT ================================================
+
 
     system_prompt_text = SYSTEM_PROMPT
     if is_ambiguous_trigger:
@@ -3917,106 +5307,78 @@ def run_agent(
         except Exception as e:
             logger.warning("Failed to construct disambiguation menu: %s", e)
 
-    # Fallback to single file procedure/checklist offering
-    if session_id and final_answer and not final_state.get("guard_blocked"):
-        lower_ans = final_answer.lower()
-        if any(w in lower_ans for w in ("step", "1.", "first", "procedure", "checklist")):
-            try:
-                from backend.storage.conversation_store import get_conversation_store
-                store = get_conversation_store()
-                
-                # Fetch full document context to ensure complete steps extraction
-                doc_id, page_no = _get_primary_citation(final_state["messages"])
-                logger.warning("[DEBUG GUIDED] _get_primary_citation returned doc_id=%s, page=%s", doc_id, page_no)
-                doc_text = ""
-                if doc_id:
-                    doc_text = _get_document_content_from_db(doc_id, config)
-                
-                steps_source = doc_text if doc_text.strip() else final_answer
-                steps = _extract_steps_from_text_or_blocks(doc_id, final_answer, config, llm)
-                logger.warning("[DEBUG GUIDED] _extract_steps_from_text_or_blocks returned %d steps", len(steps))
+    # ── Single-file procedural offering — Phase 1: lightweight first offer (0 DB reads, 0 LLM calls) ──
+    is_procedural_ans = any(w in final_answer.lower() for w in ("step", "1.", "first", "procedure", "checklist"))
+    if session_id and final_answer and not final_state.get("guard_blocked") and final_state.get("status") != "needs_clarification" and is_procedural_ans:
+        try:
+            from backend.storage.conversation_store import get_conversation_store
+            store = get_conversation_store()
 
-                if len(steps) >= 2:
-                    fname = "Document"
-                    citations = _extract_all_citations(final_state["messages"])
-                    logger.warning("[DEBUG GUIDED] All citations: %s", [(c.get('filename'), c.get('document_id')) for c in citations[:5]])
-                    if citations:
-                        fname = citations[0].get("filename")
+            doc_id, page_no = _get_primary_citation(final_state["messages"])
+            logger.info("[GUIDED PHASE1] doc_id=%s page=%s", doc_id, page_no)
 
-                    title = _clean_title(fname)
-                    logger.warning("[DEBUG GUIDED] Using fname=%s, title=%s, doc_id=%s, num_steps=%d", fname, title, doc_id, len(steps))
+            if doc_id:
+                fname = "Document"
+                citations = _extract_all_citations(final_state["messages"])
+                if citations:
+                    fname = citations[0].get("filename") or fname
 
-                    blocks = []
-                    if doc_id:
-                        from backend.storage.postgres_store import PostgresStore
-                        store_pg = PostgresStore(config=config)
-                        try:
-                            blocks = store_pg.get_blocks(doc_id)
-                            logger.warning("[DEBUG GUIDED] Loaded %d blocks from doc_id=%s", len(blocks), doc_id)
-                            # Run section extraction to verify
-                            sec_data_debug = _extract_sections_with_steps_agentic(blocks, llm=llm)
-                            if sec_data_debug:
-                                for sd in sec_data_debug:
-                                    logger.warning("[DEBUG GUIDED] Section: %s -> %d steps", sd["title"], len(sd["steps"]))
-                            else:
-                                logger.warning("[DEBUG GUIDED] _extract_sections_with_steps returned EMPTY for doc_id=%s", doc_id)
-                        except Exception:
-                            pass
-                        finally:
-                            store_pg.close()
+                title = _clean_title(fname)
+                # Extract human-readable manual code from filename (e.g. "G0793V10")
+                manual_code = re.sub(r'[_\-\.](pdf|docx?|xlsx?|pptx?)$', '', fname, flags=re.IGNORECASE)
+                manual_code = re.sub(r'[\._]', ' ', manual_code).strip()
 
+                # Derive procedure start page from citations returned by the search tool.
+                # _extract_all_citations already has correct doc_id strings and page numbers.
+                citation_pages = [
+                    c.get("page")
+                    for c in citations
+                    if str(c.get("document_id", "")) == str(doc_id)
+                    and c.get("page") is not None
+                ]
+                retrieval_min_page = min((int(p) for p in citation_pages if str(p).isdigit()), default=1)
+                logger.info("[GUIDED PHASE1] retrieval_min_page=%d (from %d citation pages for doc_id=%s)", retrieval_min_page, len(citation_pages), doc_id)
 
-                    state = {
-                        "mode": "guided_assistant",
-                        "stage": "overview",
-                        "steps": steps,
-                        "current_idx": 0,
-                        "title": title,
-                        "document_id": doc_id,
-                        "selected_option": {"document_id": doc_id, "filename": fname, "title": title}
-                    }
-                    store.set_interactive_state(session_id, state)
+                state = {
+                    "mode": "guided_assistant",
+                    "stage": "procedure_offer",
+                    "document_id": doc_id,
+                    "filename": fname,
+                    "title": title,
+                    "query": message,
+                    "start_page": page_no or 1,
+                    "retrieval_min_page": retrieval_min_page,
+                    "selected_option": {"document_id": doc_id, "filename": fname, "title": title}
+                }
+                store.set_interactive_state(session_id, state)
 
-                    overview = ""
-                    if llm:
-                        overview_prompt = (
-                            "You are a technical procedure assistant.\n"
-                            f"Write a concise 2-3 sentence high-level summary overview of the procedure for '{title}'.\n"
-                            "Summarize the main objective, safety requirements, and equipment involved.\n"
-                            "Do NOT list out numbered steps or individual step instructions.\n\n"
-                            f"Procedure Context:\n{(doc_text if doc_text.strip() else final_answer)[:6000]}"
-                        )
-                        try:
-                            overview_resp = llm.invoke(overview_prompt)
-                            overview = clean_message_content(getattr(overview_resp, "content", "").strip())
-                        except Exception:
-                            pass
+                offer_answer = (
+                    f"I found a procedure about **{title}** from **{manual_code}**.\n\n"
+                    "Would you like to start the guided procedure?"
+                )
+                import json as _json_offer
+                offer_tc = [{
+                    "name": "get_page_context",
+                    "args": {"document_id": doc_id, "page": 1},
+                    "result": _json_offer.dumps({"document_id": doc_id, "filename": fname, "page": 1})
+                }]
+                return {
+                    "status": "needs_clarification",
+                    "answer": offer_answer,
+                    "question": "Would you like to start the guided procedure?",
+                    "options": ["Continue", "No, thanks"],
+                    "tool_calls": offer_tc,
+                    "llm_calls": calls_log,
+                    "execution_trace": execution_trace,
+                    "messages": [HumanMessage(message), AIMessage(content=offer_answer)],
+                    "token_usage": token_usage,
+                    "trace_id": trace_info["trace_id"],
+                    "guard_risk_score": final_state.get("guard_risk_score", 0),
+                    "guard_policy": final_state.get("guard_policy", "allow"),
+                }
+        except Exception as e:
+            logger.warning("Failed to offer interactive checklist: %s", e)
 
-                    if not overview:
-                        overview = f"This procedure details the standard instructions and safety guidelines for **{title}**."
-
-                    offer_answer = (
-                        f"### Overview of {title}\n"
-                        f"{overview}\n\n"
-                        f"Here is the process for **{title}** from `{fname}` ({len(steps)} steps total). "
-                        "We can guide you step-by-step. When you are ready, shall we start the process?"
-                    )
-                    return {
-                        "status": "needs_clarification",
-                        "answer": offer_answer,
-                        "question": "When you are ready, shall we start the process?",
-                        "options": ["🚀 Start Guided Process", "No, thanks"],
-                        "tool_calls": tool_calls,
-                        "llm_calls": calls_log,
-                        "execution_trace": execution_trace,
-                        "messages": final_state["messages"],
-                        "token_usage": token_usage,
-                        "trace_id": trace_info["trace_id"],
-                        "guard_risk_score": final_state.get("guard_risk_score", 0),
-                        "guard_policy": final_state.get("guard_policy", "allow"),
-                    }
-            except Exception as e:
-                logger.warning("Failed to offer interactive checklist: %s", e)
 
     return {
         "status": "done",

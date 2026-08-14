@@ -52,10 +52,22 @@ class _MultiFileSearchTool:
 class MockStore:
     def __init__(self):
         self.state = {}
+        self.proc_cache = {}
+        self.ctx_docs: dict[str, list[str]] = {}
     def get_interactive_state(self, session_id):
         return self.state.get(session_id)
     def set_interactive_state(self, session_id, state):
         self.state[session_id] = state
+    def get_procedure_cache(self, session_id):
+        return self.proc_cache.get(session_id)
+    def set_procedure_cache(self, session_id, val):
+        self.proc_cache[session_id] = val
+    def get_context_docs(self, session_id):
+        return self.ctx_docs.get(session_id, [])
+    def add_context_doc(self, session_id, doc_id):
+        lst = self.ctx_docs.setdefault(session_id, [])
+        if doc_id not in lst:
+            lst.append(doc_id)
 
 
 _CONFIG = {"query": {"agent": {"max_iterations": 5, "write_tools": []}}}
@@ -122,7 +134,7 @@ def test_guided_procedure_flow():
         
     assert result2["status"] == "needs_clarification"
     assert "Overview of Cleaning Up The Wheel Mounting Section" in result2["answer"]
-    assert "shall we start the process?" in result2["answer"]
+    assert "Shall we start?" in result2["answer"]
     assert result2["options"] == ["🚀 Start Guided Process", "No, thanks"]
     
     saved_state = mock_store.get_interactive_state("test_session_1")
@@ -148,8 +160,9 @@ def test_guided_procedure_flow():
         
     assert result3["status"] == "needs_clarification"
     assert "SAFETY MANDATE" in result3["answer"]
-    assert "Step 1 of 2: Step 1: Turn off power" in result3["answer"]
-    assert result3["options"] == ["✅ Step Complete - Next", "Stop checklist"]
+    assert "Step 1 of 2" in result3["answer"]
+    assert "Step 1: Turn off power" in result3["answer"]
+    assert "📋 View Full Section Summary" in result3["options"]
     
     saved_state = mock_store.get_interactive_state("test_session_1")
     assert saved_state["stage"] == "active"
@@ -177,8 +190,8 @@ def test_guided_procedure_flow():
         
     assert result_trouble["status"] == "needs_clarification"
     assert "back panel" in result_trouble["answer"]
-    assert "Still on Step 1 of 2" in result_trouble["answer"]
-    assert result_trouble["options"] == ["✅ Step Complete - Next", "Stop checklist"]
+    assert "Step 1 of 2" in result_trouble["answer"]
+    assert "📋 View Full Section Summary" in result_trouble["options"]
     
     # Verify we stayed on Step 1
     saved_state = mock_store.get_interactive_state("test_session_1")
@@ -196,14 +209,15 @@ def test_guided_procedure_flow():
         )
         
     assert result4["status"] == "needs_clarification"
-    assert "Step 2 of 2: Step 2: Clean the wheel flange" in result4["answer"]
+    assert "Step 2 of 2" in result4["answer"]
+    assert "Step 2: Clean the wheel flange" in result4["answer"]
     
     saved_state = mock_store.get_interactive_state("test_session_1")
     assert saved_state["current_idx"] == 1
     
-    # Confirming Step 2 should complete and generate Case Summary
+    # Confirming Step 2 should complete and generate Celebration Message
     llm_summary = _ScriptedLLM([
-        AIMessage(content="Cylinder Grinder Wheel Mounting Section Cleaning. Steps completed: 1. Turned off power. 2. Cleaned flange. Status: Resolved.")
+        AIMessage(content="🎉 All steps are completely finished! Status: Resolved. Do you need anything else?")
     ])
     with patch("backend.storage.conversation_store.get_conversation_store", return_value=mock_store):
         result5 = run_agent(
@@ -215,8 +229,7 @@ def test_guided_procedure_flow():
         )
         
     assert result5["status"] == "done"
-    assert "Guided process complete!" in result5["answer"]
-    assert "Case Summary" in result5["answer"]
+    assert "All steps are completely finished!" in result5["answer"]
     assert "Status: Resolved" in result5["answer"]
     
     # State should be cleared

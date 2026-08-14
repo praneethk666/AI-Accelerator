@@ -403,7 +403,7 @@ const ChatPage = () => {
 
   const fileId = searchParams.get('fileId');
 
-  useEffect(() => { loadSessions(true, true); loadFiles(); }, []);
+  useEffect(() => { loadSessions(false, true); loadFiles(); }, []);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
 
   useEffect(() => {

@@ -302,17 +302,42 @@ def get_sparse_model(config: dict):
 
 
 class JinaRerankerAPIClient:
-    """Reranker client that calls Jina AI's cloud Reranker API instead of running it locally."""
+    """Reranker client that calls Jina AI's cloud Reranker API instead of running it locally.
+    Supports API key rotation via comma-separated keys in configuration or environment variable.
+    """
 
     def __init__(self, model_name: str, api_key: str | None = None) -> None:
         self.model_name = model_name
         self.api_key = api_key
         self.url = "https://api.jina.ai/v1/rerank"
 
+    def _get_active_api_key(self) -> str | None:
+        import os
+        import random
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        api_key = self.api_key
+        if not api_key or (isinstance(api_key, str) and api_key.startswith("${")):
+            api_key = os.environ.get("JINA_API_KEY") or os.environ.get("RERANKER_API_KEY")
+
+        if api_key and "," in api_key:
+            keys = [k.strip() for k in api_key.split(",") if k.strip()]
+            if keys:
+                chosen = random.choice(keys)
+                idx = keys.index(chosen)
+                masked = chosen[:6] + "..." + chosen[-4:] if len(chosen) > 10 else "..."
+                logger.debug("Reranker API call using rotated key %d of %d (%s)", idx + 1, len(keys), masked)
+                return chosen
+        return api_key
+
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         if not pairs:
             return []
-        if not self.api_key:
+
+        active_key = self._get_active_api_key()
+        if not active_key:
             raise ValueError(
                 "JINA_API_KEY is not set. Please configure it in your environment or .env file "
                 "to use the Jina AI Reranker API."
@@ -325,7 +350,7 @@ class JinaRerankerAPIClient:
         import requests
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {active_key}",
             "Content-Type": "application/json",
         }
         data = {
@@ -345,6 +370,7 @@ class JinaRerankerAPIClient:
             scores[idx] = item["relevance_score"]
 
         return scores
+
 
 
 def get_reranker(config: dict):

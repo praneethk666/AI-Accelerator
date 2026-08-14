@@ -39,10 +39,12 @@ Do two things:
    "that", "they", etc.). If it is already standalone, keep it as-is.
    If the user question is a single keyword, entity, or a proper name (e.g. "warranty period", "employee onboarding"), rewrite it as a proper search question asking for information about that keyword.
    CRITICAL: Do NOT expand, translate, or reinterpret any acronym, abbreviation, code, or short technical term you are not 100% certain about (e.g. "MS LED", "DLNK-M2", "PCB", "ECU", "MS"). Preserve such terms EXACTLY as written, verbatim, same case. Never assume a short acronym refers to a well-known company or consumer product (e.g. never expand "MS" to "Microsoft") — in an enterprise document search engine, short acronyms almost always refer to domain-specific equipment, parts, or components, not brand names.
-2. Break it into 1 to {max_subs} focused search sub-questions.
-   - ALWAYS include the user's original phrase verbatim (with acronyms untouched) as one of the sub-questions, in addition to any expanded/rewritten versions.
-   - For domain-specific or technical questions (e.g. safety, errors, incidents, parameters, procedures), include synonym and concept expansions that appear in technical manuals and standard documents (e.g., expand "high-severity incidents / escalation steps" to include "danger warning classifications (DANGER/WARNING/CAUTION)" and "emergency safety/shutdown procedures").
-   - A simple, specific question can remain 1-2 sub-questions.
+2. Break it into the minimum number of focused search sub-questions needed — at most {max_subs}.
+   RULES:
+   - ALWAYS include the user's original phrase VERBATIM (with acronyms untouched) as one sub-question.
+   - For a SIMPLE, SINGLE-TOPIC question (e.g. "change the setup of tailstock", "where is the workhead", "what is the rated torque"): produce EXACTLY 2 sub-questions — the verbatim original and one rewritten/expanded version. NO MORE.
+   - Only produce 3 or more sub-questions when the question is GENUINELY COMPOUND (explicitly asks about multiple distinct topics, e.g. "what is the rated torque AND the seal type AND the drawing number").
+   - For domain-specific or technical questions, you may include a synonym/concept expansion as the third sub-question ONLY if the question is compound.
 
 Reply with ONLY a JSON object, no prose:
 {{"standalone_query": "...", "sub_questions": ["...", "..."]}}"""
@@ -59,7 +61,7 @@ class QueryPlannerTool:
             return state
 
         max_subs = config.get("query", {}).get("planner", {}).get(
-            "max_sub_questions", 4
+            "max_sub_questions", 3
         )
         try:
             plan = _plan(query, state.get("conversation_history") or [], config, max_subs)

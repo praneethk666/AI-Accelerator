@@ -392,11 +392,8 @@ def _hybrid_rerank(query, cfg, full_config, filters):
             c["_score"] = float(score)
             result.append(c)
         return result
-    except Exception as exc:
-        logger.warning(
-            "Reranker failed (rate limited or API error), falling back to standard hybrid RRF results: %s",
-            exc,
-        )
+    except Exception:
+        logger.info("[Reranker] Rate limited or API key error — using standard hybrid RRF reranker.")
         fallback_limit = cfg.get("top_n", 20)
         return candidates[:fallback_limit]
 

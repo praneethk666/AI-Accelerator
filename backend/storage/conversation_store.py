@@ -64,6 +64,14 @@ class ConversationStore(Protocol):
         """Set or clear interactive checklist state for a session."""
         ...
 
+    def get_context_docs(self, session_id: str) -> list[str]:
+        """Return the ordered list of document IDs added to this session's context."""
+        ...
+
+    def add_context_doc(self, session_id: str, doc_id: str) -> None:
+        """Append doc_id to the session context list (idempotent — no duplicates)."""
+        ...
+
 
 class PostgresConversationStore:
     """ConversationStore backed by the `conversations` table.
@@ -166,6 +174,8 @@ class PostgresConversationStore:
                 "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_document_id TEXT",
                 "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT",
                 "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS interactive_state JSONB",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS procedure_cache JSONB",
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_doc_ids JSONB",
             ]:
                 try:
                     pg.conn.execute(col_ddl)
@@ -333,6 +343,79 @@ class PostgresConversationStore:
         finally:
             pg.close()
 
+    def get_procedure_cache(self, session_id: str) -> dict | None:
+        """Return the last-run procedure context (sections + steps) for a session."""
+        if not session_id:
+            return None
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT procedure_cache FROM sessions WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            pg.close()
+
+    def set_procedure_cache(self, session_id: str, cache: dict | None) -> None:
+        """Persist procedure context (title, doc_id, sections+steps) for follow-up queries."""
+        if not session_id:
+            return
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, procedure_cache, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET procedure_cache = EXCLUDED.procedure_cache, updated_at = NOW()
+                """,
+                (session_id, _Json(cache) if cache else None),
+            )
+        finally:
+            pg.close()
+
+
+    def get_context_docs(self, session_id: str) -> list[str]:
+        """Return the ordered list of document IDs in the session context (newest-first dedup)."""
+        if not session_id:
+            return []
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT context_doc_ids FROM sessions WHERE session_id = %s",
+                (session_id,)
+            ).fetchone()
+            val = row[0] if row else None
+            return list(val) if val else []
+        finally:
+            pg.close()
+
+    def add_context_doc(self, session_id: str, doc_id: str) -> None:
+        """Append doc_id to the session's context_doc_ids JSONB array (idempotent, no duplicates)."""
+        if not session_id or not doc_id:
+            return
+        import json as _json
+        _item = _json.dumps([doc_id])
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, context_doc_ids, updated_at)
+                VALUES (%s, %s::jsonb, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET
+                    context_doc_ids = CASE
+                        WHEN sessions.context_doc_ids IS NULL THEN %s::jsonb
+                        WHEN sessions.context_doc_ids @> %s::jsonb THEN sessions.context_doc_ids
+                        ELSE sessions.context_doc_ids || %s::jsonb
+                    END,
+                    updated_at = NOW()
+                """,
+                (session_id, _item, _item, _item, _item),
+            )
+        finally:
+            pg.close()
 
     def load_history(self, session_id: str, n: int = 500) -> list[dict]:
         pg = _get_store()

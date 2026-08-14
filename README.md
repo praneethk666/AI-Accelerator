@@ -65,48 +65,32 @@ graph TD
 The conversational query layer operates as a 2-node cyclic **LangGraph** state machine (`agent` $\leftrightarrow$ `tools`) with human-in-the-loop write approval gates, anti-redundancy short-circuiting, and 5-tier document disambiguation:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant UI as React Frontend
-    participant API as FastAPI Gateway
-    participant Guard as 3-Stage Safety Guardrails
-    participant Agent as LangGraph Agent Node
-    participant Tools as Tools Node: search_documents
-    participant QP as Query Planner
-    participant Ret as Hybrid Retrieval & RRF
-    participant Rerank as Jina Reranker v2
-    participant Expand as Postgres Page Expansion
-    participant Synth as Answerer & LaTeX Synthesis
+graph TD
+    User([User Question]) --> InputGuard[1. Input Guardrail: PII Redaction & Injection Check]
+    InputGuard --> Agent[2. Conversational Agent Loop]
 
-    User->>UI: Submit Question
-    UI->>API: POST /agent/chat { message, session_id }
-    API->>Guard: Checkpoint 1: InputGuard (PII & Injection)
-    Guard-->>Agent: Sanitized Query + Clean History
-    Agent->>Tools: Propose Tool: search_documents(query)
-    
-    Tools->>QP: Query Planner: Decompose & Rewrite
-    QP-->>Ret: Standalone Query + Sub-Questions + Raw Query Safety Net
-    
-    par Dual Vector Search
-        Ret->>Ret: Dense Vector ANN (Qdrant)
-        Ret->>Ret: Sparse Lexical BM25 (Qdrant)
+    Agent -->|Select Action| ToolSelect{Tool Type?}
+
+    ToolSelect -->|Search Document Corpus| RAG[3. Multi-Stage Hybrid Retrieval & Reranking]
+    ToolSelect -->|Run SQL / Excel Script| Analytics[Data Analytics: sql_read / excel_tool]
+    ToolSelect -->|Write Action: ingest_document| WriteGate{User Confirmed?}
+
+    WriteGate -->|No| ApprovalCard[Return needs_approval Card to UI]
+    WriteGate -->|Yes| IngestExec[Execute Ingest Tool]
+
+    subgraph RAG Subsystem
+        RAG --> QueryPlan[Query Planner: Decompose & Acronym Protection]
+        QueryPlan --> HybridSearch[Hybrid Search: Dense ANN + Sparse BM25 + RRF]
+        HybridSearch --> JinaRerank[Jina Reranker v2 with Key Failover]
+        JinaRerank --> PageExpand[Page Context Expansion via Postgres]
     end
-    
-    Ret->>Ret: Reciprocal Rank Fusion (k=60)
-    Ret->>Rerank: Top-80 Candidate Chunks
-    Rerank->>Rerank: Cross-Encoder Score with Key Failover
-    Rerank-->>Expand: Top-5 Scored Chunks
-    
-    alt Best Score < Threshold (-1.0)
-        Expand->>Expand: Fetch Verbatim Page Blocks from Postgres
-    end
-    
-    Expand->>Synth: Pass Expanded Context Passages
-    Synth->>Synth: Synthesize Grounded Answer + LaTeX Math + [1], [2] Citations
-    Synth-->>Guard: Checkpoint 2 & 3: Retrieval & Output Guard
-    Guard-->>API: Verified Answer + Exact SourceRefs
-    API-->>UI: Streaming Response + Inline Citation Preview
+
+    PageExpand --> Synth[4. Grounded Answer Synthesis & LaTeX Math]
+    Analytics --> Synth
+    IngestExec --> Synth
+
+    Synth --> OutputGuard[5. Output Guardrail & PII Masking]
+    OutputGuard --> UIOut([Deliver Final Answer + Exact Citations [1], [2] to UI])
 ```
 
 ### Retrieval & Ranking Mathematics

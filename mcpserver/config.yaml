@@ -1,0 +1,46 @@
+server:
+  host: "0.0.0.0"
+  port: 8100
+  allowed_origins:
+    - "http://localhost:8100"
+    - "http://127.0.0.1:8100"
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+    - "https://modelcontextprotocol.io"
+    - "*"  # Or specify trusted origins for production
+
+auth:
+  enabled: true
+  tokens:
+    "agent-token-alpha": "agent_alpha"
+    "agent-token-beta": "agent_beta"
+    "admin-token-secret": "admin_user"
+    "vishal-test-token": "vishal_engineer"
+    "vinod-test-token": "vinod_engineer"
+
+security:
+  email:
+    allowlist:
+      - "ops@company.com"
+      - "manager@company.com"
+      - "alerts@company.com"
+      - "vishal@company.com"
+      - "vinod@company.com"
+      - "vishalreddykonreddy@gmail.com"
+      - "bonthumanoj999@gmail.com"
+      - "*@trusteddomain.com"
+    rate_limit:
+      max_calls: 10
+      window_seconds: 60
+    prompt_injection_guard:
+      enabled: true
+      strict_mode: true
+
+smtp:
+  mode: "smtp"
+  host: "smtp.gmail.com"
+  port: 587
+  username: "vishalreddykonreddy@gmail.com"
+  password: "brymlwiqqihwzoyr"
+  use_tls: true
+  sender_address: "vishalreddykonreddy@gmail.com"

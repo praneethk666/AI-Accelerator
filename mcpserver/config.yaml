@@ -17,6 +17,12 @@ auth:
     "admin-token-secret": "admin_user"
     "vishal-test-token": "vishal_engineer"
     "vinod-test-token": "vinod_engineer"
+  permissions:
+    vishal_engineer: ["*"]
+    vinod_engineer: ["*"]
+    admin_user: ["*"]
+    agent_alpha: ["get_current_datetime", "send_email"]
+    agent_beta: ["get_current_datetime"]  # Read-only agent (no email dispatch access)
 
 security:
   email:

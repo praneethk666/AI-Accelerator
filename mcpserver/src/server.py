@@ -109,15 +109,23 @@ async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str) -> Dict[s
     if method == "ping":
         return make_jsonrpc_success(result={}, req_id=req_id)
 
-    # 4. tools/list
+    # 4. tools/list (Filtered by caller RBAC permissions)
     if method == "tools/list":
-        tools = get_tool_definitions()
+        cfg = load_config()
+        all_tools = get_tool_definitions()
+        caller_perms = cfg.auth.permissions.get(caller, ["*"]) if cfg.auth.enabled else ["*"]
+        
+        if "*" in caller_perms:
+            visible_tools = all_tools
+        else:
+            visible_tools = [t for t in all_tools if t["name"] in caller_perms]
+
         return make_jsonrpc_success(
-            result={"tools": tools},
+            result={"tools": visible_tools},
             req_id=req_id,
         )
 
-    # 5. tools/call
+    # 5. tools/call (Enforce RBAC execution permissions)
     if method == "tools/call":
         tool_name = params.get("name")
         arguments = params.get("arguments") or {}
@@ -128,6 +136,20 @@ async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str) -> Dict[s
                 message="Invalid params: 'name' is required for tools/call.",
                 req_id=req_id,
             )
+
+        # Enforce caller RBAC authorization
+        cfg = load_config()
+        if cfg.auth.enabled:
+            caller_perms = cfg.auth.permissions.get(caller, ["*"])
+            if "*" not in caller_perms and tool_name not in caller_perms:
+                logger.warning(
+                    f"RBAC authorization denied | caller={caller} | tool={tool_name} | allowed={caller_perms}"
+                )
+                return make_jsonrpc_error(
+                    code=JSONRPCErrorCodes.FORBIDDEN,
+                    message=f"Forbidden: Caller identity '{caller}' is not authorized to execute tool '{tool_name}'.",
+                    req_id=req_id,
+                )
 
         try:
             result = await execute_tool(tool_name=tool_name, arguments=arguments, caller=caller)
@@ -274,13 +296,34 @@ async def mcp_sse_endpoint(request: Request) -> StreamingResponse:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Expose-Headers": "*",
         },
     )
 
 
+# ── Web UI Endpoint ───────────────────────────────────────────────────────────
+
+from starlette.responses import HTMLResponse
+from pathlib import Path
+
+async def serve_ui(request: Request) -> Response:
+    """Serves the Gemini AI + MCP Chat Web Interface."""
+    ui_path = Path(__file__).resolve().parent.parent / "ui" / "index.html"
+    if ui_path.exists():
+        content = ui_path.read_text(encoding="utf-8")
+        return HTMLResponse(content)
+    return HTMLResponse("<h1>Gemini + MCP Web UI</h1><p>ui/index.html not found.</p>", status_code=404)
+
+
 # ── Application Assembly ──────────────────────────────────────────────────────
 
+from starlette.middleware.cors import CORSMiddleware
+
 routes = [
+    Route("/", endpoint=serve_ui, methods=["GET"]),
+    Route("/ui", endpoint=serve_ui, methods=["GET"]),
     Route("/health", endpoint=health_check, methods=["GET"]),
     Route("/ready", endpoint=readiness_check, methods=["GET"]),
     Route("/mcp", endpoint=mcp_post_endpoint, methods=["POST"]),
@@ -291,6 +334,13 @@ routes = [
 app = Starlette(
     routes=routes,
     middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["*"],
+        ),
         Middleware(AuthMiddleware),
     ],
 )

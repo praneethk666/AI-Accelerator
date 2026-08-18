@@ -199,3 +199,39 @@ def test_tag_blocks_omits_null_component_key():
     blocks = [_block()]
     tag_blocks_with_folder_info(blocks, p, ROOT)
     assert "component" not in blocks[0]["metadata"]["folder"]
+
+
+# ---------------------------------------------------------------------------
+# extra_keywords -- client-config-driven folder categories (config-driven
+# client customization work). Omitted/empty must behave identically to every
+# test above; a client's own folder convention must be recognized without
+# touching this file.
+# ---------------------------------------------------------------------------
+
+def test_extra_keywords_none_or_empty_behaves_like_built_ins_only():
+    p = os.path.join(ROOT, "120_CYLINDRICAL GRINDER", "3.INSTRUCTION MANUAL", "EN", "x.pdf")
+    assert route_from_path(p, ROOT, extra_keywords=None) == route_from_path(p, ROOT)
+    assert route_from_path(p, ROOT, extra_keywords=[]) == route_from_path(p, ROOT)
+
+
+def test_extra_keywords_recognizes_a_new_clients_folder_convention():
+    # A folder scheme the built-in list has no entry for at all.
+    p = os.path.join(ROOT, "SOME_MACHINE", "Field Service Manual", "x.pdf")
+    assert route_from_path(p, ROOT) is None  # built-ins alone: no match
+    info = route_from_path(p, ROOT, extra_keywords=[("field service manual", "manual")])
+    assert info["force_document_type"] == "manual"
+
+
+def test_extra_keywords_take_precedence_over_built_ins_on_overlap():
+    # A folder that WOULD match a built-in keyword, but the client's own list
+    # (checked first) claims it for a different document_type.
+    p = os.path.join(ROOT, "120_CYLINDRICAL GRINDER", "3.INSTRUCTION MANUAL", "x.pdf")
+    info = route_from_path(p, ROOT, extra_keywords=[("instruction manual", "datasheet")])
+    assert info["force_document_type"] == "datasheet"
+
+
+def test_tag_blocks_with_folder_info_passes_extra_keywords_through():
+    p = os.path.join(ROOT, "SOME_MACHINE", "Field Service Manual", "x.pdf")
+    blocks = [_block()]
+    tag_blocks_with_folder_info(blocks, p, ROOT, extra_keywords=[("field service manual", "manual")])
+    assert blocks[0]["metadata"]["folder"]["doc_category"] == "Field Service Manual"

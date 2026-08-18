@@ -320,7 +320,8 @@ def ingest_document(
                     # to any one extractor. Tags block metadata in place; best-effort,
                     # same as the write itself -- never blocks a successful ingest.
                     from backend.categorize.id_graph import tag_blocks_with_ids
-                    tag_blocks_with_ids(blocks_to_write)
+                    categorization_cfg = cfg.get("categorization") or {}
+                    tag_blocks_with_ids(blocks_to_write, categorization_cfg.get("id_patterns"))
                     # Redaction/gap detection (backend/categorize/redaction_detect.py)
                     # -- real finding, 3-Aug: a CAD sheet's own parts table had its
                     # values blanked out ("***") in the source. Flags it so the
@@ -336,7 +337,8 @@ def ingest_document(
                     corpus_root = (cfg.get("deployment") or {}).get("corpus_root")
                     if corpus_root:
                         from backend.categorize.folder_router import tag_blocks_with_folder_info
-                        tag_blocks_with_folder_info(blocks_to_write, file_path, corpus_root)
+                        extra_kw = [tuple(pair) for pair in categorization_cfg.get("folder_category_keywords") or []]
+                        tag_blocks_with_folder_info(blocks_to_write, file_path, corpus_root, extra_kw)
                 pg.write_blocks(document_id, blocks_to_write)
             except Exception:
                 logger.exception("write_blocks failed for %s", document_id)

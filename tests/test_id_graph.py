@@ -204,3 +204,51 @@ def test_find_documents_by_id_scopes_to_one_document_when_given():
     sql, params = mock_store.conn.execute.call_args.args
     assert "document_id::text = %s" in sql
     assert params[1] == "doc-a"
+
+
+# ---------------------------------------------------------------------------
+# extra_patterns -- client-config-driven ID formats (config-driven client
+# customization work). Omitted/empty must behave identically to the tests
+# above; a client's own pattern must be recognized without touching this file.
+# ---------------------------------------------------------------------------
+
+def test_extra_patterns_none_or_empty_behaves_like_built_ins_only():
+    text = "Ref drawing 00-83547001-0"
+    assert extract_ids(text, extra_patterns=None) == extract_ids(text)
+    assert extract_ids(text, extra_patterns={}) == extract_ids(text)
+
+
+def test_extra_patterns_recognizes_a_new_client_id_format():
+    ids = extract_ids("Part ref: XY-123456", extra_patterns={"custom_part_id": r"\bXY-\d{6}\b"})
+    assert ids["custom_part_id"] == ["XY-123456"]
+
+
+def test_extra_patterns_coexist_with_built_in_kinds():
+    ids = extract_ids(
+        "Drawing 00-83547001-0 also ref XY-123456",
+        extra_patterns={"custom_part_id": r"\bXY-\d{6}\b"},
+    )
+    assert ids["drawing_number"] == ["00-83547001-0"]
+    assert ids["custom_part_id"] == ["XY-123456"]
+
+
+def test_extra_patterns_override_a_built_in_kind_name_on_collision():
+    # A client's config may reuse a built-in kind name to redefine its shape
+    # entirely -- config wins on collision.
+    ids = extract_ids("id ZZ-9", extra_patterns={"drawing_number": r"\bZZ-\d\b"})
+    assert ids["drawing_number"] == ["ZZ-9"]
+
+
+def test_extra_patterns_bad_regex_is_skipped_not_fatal():
+    text = "Drawing 00-83547001-0"
+    ids = extract_ids(text, extra_patterns={"broken": "(unclosed["})
+    # built-in patterns still work; the bad one is silently dropped
+    assert ids["drawing_number"] == ["00-83547001-0"]
+    assert "broken" not in ids
+
+
+def test_tag_blocks_with_ids_passes_extra_patterns_through():
+    blocks = [_block("Part ref: XY-123456")]
+    tag_blocks_with_ids(blocks, extra_patterns={"custom_part_id": r"\bXY-\d{6}\b"})
+    assert blocks[0]["metadata"]["mentioned_ids"]["custom_part_id"] == ["XY-123456"]
+    assert "XY-123456" in blocks[0]["metadata"]["mentioned_ids_flat"]

@@ -78,7 +78,8 @@ def _make_node(tool: Tool, raw_config: dict):
                     # Cache blocks immediately if this is an extractor
                     if is_extractor and result and result.get("blocks"):
                         from backend.categorize.id_graph import tag_blocks_with_ids, tag_blocks_with_filename_id
-                        tag_blocks_with_ids(result["blocks"])
+                        categorization_cfg = raw_config.get("categorization") or {}
+                        tag_blocks_with_ids(result["blocks"], categorization_cfg.get("id_patterns"))
                         # Filename-derived ID (e.g. a CAD PDF literally named after its
                         # own drawing number) -- unconditional, no corpus_root gate
                         # needed. See id_graph.py::extract_id_from_filename for why this
@@ -96,7 +97,9 @@ def _make_node(tool: Tool, raw_config: dict):
                         corpus_root = (raw_config.get("deployment") or {}).get("corpus_root")
                         if corpus_root and "${" not in str(corpus_root):
                             from backend.categorize.folder_router import tag_blocks_with_folder_info
-                            tag_blocks_with_folder_info(result["blocks"], state.get("file_path") or "", corpus_root)
+                            extra_kw = [tuple(pair) for pair in categorization_cfg.get("folder_category_keywords") or []]
+                            tag_blocks_with_folder_info(
+                                result["blocks"], state.get("file_path") or "", corpus_root, extra_kw)
                         # Navigable chapter/section outline (backend/pipeline/
                         # outline_builder.py) -- unconditional, cheap, no LLM call,
                         # fails inert (writes nothing) on a document with no real

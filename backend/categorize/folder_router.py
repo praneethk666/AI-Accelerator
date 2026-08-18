@@ -93,7 +93,9 @@ def _has_text_layer(pdf_path: str, sample_pages: int = 3, min_chars: int = 40) -
         return None
 
 
-def route_from_path(file_path: str, corpus_root: str) -> dict[str, Any] | None:
+def route_from_path(
+    file_path: str, corpus_root: str, extra_keywords: list[tuple[str, str]] | None = None
+) -> dict[str, Any] | None:
     """Derive {machine, doc_category, component, force_document_type,
     force_route (rarely), reasoning} from file_path's position under corpus_root.
     Returns None if file_path isn't under corpus_root, or no category folder in
@@ -108,6 +110,12 @@ def route_from_path(file_path: str, corpus_root: str) -> dict[str, Any] | None:
                   neither the machine nor the doc_category folder itself (e.g.
                   "04_Spindlehead" under ".../04_Machine assembly drawing/") --
                   None when the file sits directly in the category folder.
+
+    extra_keywords: optional (substring, document_type) pairs from a client's
+    config profile (categorization.folder_category_keywords) -- checked BEFORE
+    the built-in _CATEGORY_KEYWORDS, so a client's own folder convention takes
+    precedence over (and can coexist with) the generic defaults. Omitted/empty
+    behaves identically to the built-in-only keywords.
     """
     try:
         rel = os.path.relpath(file_path, corpus_root)
@@ -119,13 +127,17 @@ def route_from_path(file_path: str, corpus_root: str) -> dict[str, Any] | None:
     if len(parts) < 2:
         return None  # file sits directly at corpus_root -- no machine folder
 
+    keyword_tiers = (extra_keywords or [], _CATEGORY_KEYWORDS)
     machine = parts[0]
     doc_type = None
     doc_category = None
     for seg in parts[1:-1]:
-        for kw, dt in _CATEGORY_KEYWORDS:
-            if kw in seg.lower():
-                doc_type, doc_category = dt, seg
+        for tier in keyword_tiers:
+            for kw, dt in tier:
+                if kw in seg.lower():
+                    doc_type, doc_category = dt, seg
+                    break
+            if doc_type:
                 break
         if doc_type:
             break
@@ -170,15 +182,20 @@ def route_from_path(file_path: str, corpus_root: str) -> dict[str, Any] | None:
     }
 
 
-def tag_blocks_with_folder_info(blocks: list[dict], file_path: str, corpus_root: str) -> list[dict]:
+def tag_blocks_with_folder_info(
+    blocks: list[dict], file_path: str, corpus_root: str,
+    extra_keywords: list[tuple[str, str]] | None = None,
+) -> list[dict]:
     """Stamp machine/doc_category/component onto every block's metadata (mutates
     in place, same convention as id_graph.tag_blocks_with_ids) -- the OTHER half
     of cross-document correlation alongside exact drawing/part-number matching:
     "everything under this machine/component" vs "everything mentioning this
     exact drawing number". No-op if the path doesn't match a known corpus
     structure (route_from_path returned None) -- most deployments won't set
-    deployment.corpus_root at all, and this must be silently inert then."""
-    info = route_from_path(file_path, corpus_root)
+    deployment.corpus_root at all, and this must be silently inert then.
+
+    extra_keywords: see route_from_path()."""
+    info = route_from_path(file_path, corpus_root, extra_keywords)
     if not info:
         return blocks
     tag = {k: v for k, v in info.items() if k in ("machine", "doc_category", "component") and v}

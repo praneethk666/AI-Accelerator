@@ -434,7 +434,7 @@ embeddings:
 chunking:
   strategy: semantic        # semantic | recursive
   size: 400                 # tokens (not characters)
-  overlap: 50               # tokens
+  overlap: 50                # tokens
   section_aware: true       # break chunks at headings (section-scoped) + tag the
                             # section; images stay atomic (never split).
   split_large_tables: true  # tables ARE atomic (one chunk) UNLESS bigger than `size`
@@ -628,36 +628,46 @@ default_industry: general
 # avoidable cost+latency at high volume for a single-purpose install. Leave
 # force_document_type unset (the default) for a general-purpose multi-industry
 # deployment — classification then runs normally, as it does today.
-# This file (config/global.yaml) is the GENERIC, client-neutral default profile —
-# it should work for any new client with zero edits. A real client with its own
-# corpus conventions gets its own profile file (e.g. config/toyota.yaml, a full
-# copy of this file with client-specific values filled in below), switchable at
-# runtime via the API's /config/profiles + /config/activate endpoints
-# (backend/api/main.py) without touching this file or any shared code.
+# ── Toyota profile ──────────────────────────────────────────────────────────
+# This is the Toyota deployment's own config profile — a copy of the generic
+# config/global.yaml with this client's specifics filled in below
+# (deployment.corpus_root, deployment.industry). Switchable at runtime via the
+# API's /config/profiles + /config/activate endpoints (backend/api/main.py)
+# without touching global.yaml or any shared code. The real corpus's folder-name
+# vocabulary (TNGA + GD/BF-5 schemes) and drawing-number ID formats are still the
+# hardcoded defaults in backend/categorize/folder_router.py and id_graph.py
+# rather than duplicated into categorization.folder_category_keywords/id_patterns
+# below — that's an intentional, explicitly deferred cleanup (see the
+# config-driven-client-customization plan): those code defaults ARE Toyota's
+# real values today, so nothing needs restating here yet. A second real client
+# would populate those two keys in ITS OWN profile instead.
 deployment:
   # force_document_type:      # e.g. "manual" — see document_types below for the
                                # full vocabulary. Setting this enables the bypass.
   # force_industry:           # only takes effect together with force_document_type
                                # above; defaults to default_industry if unset.
   # force_route:              # defaults to type_to_route[force_document_type]
-  # industry:                 # the GENERAL way to pin one constant industry for a
-                               # whole deployment (independent of force_document_type
-                               # above -- works for a corpus with multiple real
-                               # document_types, e.g. manuals + CAD + parts lists).
-                               # Applied as a final override after classification,
-                               # whichever tier resolved document_type/route. Most
-                               # real deployments are one customer = one industry --
-                               # set this instead of re-deriving industry per file.
+  industry: manufacturing     # pinned constant -- this corpus is industrial
+                               # equipment/machine-tool documentation (grinders,
+                               # spindles, assembly lines), a better content match
+                               # than the consumer-vehicle sense of "automotive"
+                               # even though the client is Toyota. Applied after
+                               # classification regardless of which tier resolved
+                               # document_type/route (forced / folder / vision).
   default_industry: general   # fallback when classification confidence is low
                                # (used regardless of the bypasses above)
   # Root of a folder-structured corpus (backend/categorize/folder_router.py) --
   # enables deterministic document_type/route resolution from the file's own
   # folder path (skips the vision/LLM classify call when it matches) PLUS
   # machine/doc_category/component tagging for cross-document correlation
-  # alongside id_graph.py's exact-ID matching. Unset by default -- most
-  # deployments won't have a folder-structured corpus, and this is silently
-  # inert (falls through to normal categorize()) when unset.
-  # corpus_root: ${CORPUS_ROOT}
+  # alongside id_graph.py's exact-ID matching. Real finding: this deployment's
+  # actual corpus has 3 top-level roots under one OneDrive folder (TNGA, GD, and
+  # a "TNGA (1)" that looks like a sync-conflict duplicate of TNGA, not a genuine
+  # third line) -- corpus_root here is a SINGLE root only
+  # (folder_router.route_from_path() takes one string). Point it at one line at a
+  # time; multi-root support is a real but separate future extension if this
+  # deployment genuinely needs more than one root tagged simultaneously.
+  corpus_root: ${CORPUS_ROOT}
 
 # Used by CategorizeTool.
 # config["categorization"]["industry_keywords"] — keyword lists per industry
@@ -674,6 +684,10 @@ categorization:
   # -- weighted scoring (strong=2, weak=1, need score>=2) fixes this: 3 weak hits
   # alone score 3 and still pass (real corroboration), but so does 1 strong hit,
   # while 1 weak hit alone (score=1) correctly does NOT. See _score_industry_from_text.
+  # NOTE: with deployment.industry pinned above, this scoring machinery never
+  # actually runs for document_type/route resolution paths that skip vision
+  # (forced/folder) and is only consulted as a signal inside the full categorize()
+  # vision call on files that neither tier resolves -- kept unchanged, harmless.
   industry_keywords:
     automotive:
       strong: [toyota, ford, bmw, honda, "vehicle identification number", odometer, dealership, "catalytic converter", "spark plug"]
@@ -707,19 +721,18 @@ categorization:
       weak: []
 
   # Client-specific ID-format regexes, merged with (and taking precedence over)
-  # the built-in patterns in backend/categorize/id_graph.py -- lets a client's own
-  # drawing-number/part-number convention be recognized without a code change.
-  # {kind_name: raw_regex_string}. Empty/absent here (the generic default) means
-  # only the built-in patterns apply. Example (do not uncomment on the generic
-  # profile -- put a real client's actual formats in that client's own profile):
+  # the built-in patterns in backend/categorize/id_graph.py. Left empty here on
+  # purpose -- Toyota's 3 real formats (drawing_number, cad_sheet_id,
+  # parts_drawing_no) already live as the code defaults, since they were
+  # discovered/tuned against THIS corpus. A future second client would populate
+  # this key in its own profile instead of touching id_graph.py.
   # id_patterns:
   #   custom_part_id: '\bXY-\d{6}\b'
 
   # Client-specific folder-name -> document_type keywords, checked BEFORE the
-  # built-in list in backend/categorize/folder_router.py -- lets a client's own
-  # folder-naming convention be recognized without a code change. List of
-  # [substring, document_type] pairs, first match wins. Empty/absent here (the
-  # generic default) means only the built-in keywords apply. Example:
+  # built-in list in backend/categorize/folder_router.py. Left empty here for the
+  # same reason as id_patterns above -- Toyota's real TNGA + GD/BF-5 folder
+  # schemes already live as the code defaults.
   # folder_category_keywords:
   #   - ["service manual", "manual"]
 

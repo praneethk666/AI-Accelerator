@@ -23,8 +23,11 @@ written anyway -- see find_documents_by_id().
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 # Order matters only for readability; each pattern is applied independently.
 _ID_PATTERNS: dict[str, re.Pattern] = {
@@ -45,14 +48,36 @@ _ID_PATTERNS: dict[str, re.Pattern] = {
 }
 
 
-def extract_ids(text: str) -> dict[str, list[str]]:
+def _compile_extra_patterns(extra_patterns: dict[str, str] | None) -> dict[str, re.Pattern]:
+    """Raw regex strings from a client's config profile (categorization.id_patterns)
+    -> compiled patterns. A bad regex is logged and skipped, not fatal -- one
+    malformed client-supplied pattern must not break ID extraction for everyone."""
+    if not extra_patterns:
+        return {}
+    compiled: dict[str, re.Pattern] = {}
+    for kind, raw in extra_patterns.items():
+        try:
+            compiled[kind] = re.compile(raw)
+        except re.error:
+            logger.warning("id_graph: skipping invalid extra_patterns regex for %r: %r", kind, raw)
+    return compiled
+
+
+def extract_ids(text: str, extra_patterns: dict[str, str] | None = None) -> dict[str, list[str]]:
     """{"drawing_number": [...], "cad_sheet_id": [...]} for one string, deduped,
     first-seen order preserved. Empty dict (not per-key empty lists) for kinds
-    with zero matches, so callers can trivially check `if ids: ...`."""
+    with zero matches, so callers can trivially check `if ids: ...`.
+
+    extra_patterns: optional {kind: raw_regex_string} from a client's config
+    profile (categorization.id_patterns) -- lets a deployment recognize its own
+    ID formats (e.g. a different customer's drawing-number convention) without a
+    code change. Overrides a built-in kind of the same name; omitted/empty
+    behaves identically to the built-in-only patterns."""
     if not text:
         return {}
+    patterns = {**_ID_PATTERNS, **_compile_extra_patterns(extra_patterns)}
     out: dict[str, list[str]] = {}
-    for kind, pattern in _ID_PATTERNS.items():
+    for kind, pattern in patterns.items():
         seen: list[str] = []
         for m in pattern.finditer(text):
             v = m.group(0)
@@ -63,16 +88,18 @@ def extract_ids(text: str) -> dict[str, list[str]]:
     return out
 
 
-def tag_blocks_with_ids(blocks: list[dict]) -> list[dict]:
+def tag_blocks_with_ids(blocks: list[dict], extra_patterns: dict[str, str] | None = None) -> list[dict]:
     """Mutates each block in place: adds metadata["mentioned_ids"] wherever its
     own text contains a matched ID. Blocks with no match are left untouched (no
     empty key added -- keeps the common case's JSON small). Returns the same
     list (mutated), matching the in-place-mutation convention the rest of this
-    pipeline uses for block metadata."""
+    pipeline uses for block metadata.
+
+    extra_patterns: see extract_ids()."""
     for b in blocks:
         if not isinstance(b, dict):
             continue
-        ids = extract_ids(b.get("text") or "")
+        ids = extract_ids(b.get("text") or "", extra_patterns)
         if ids:
             meta = b.setdefault("metadata", {})
             meta["mentioned_ids"] = ids

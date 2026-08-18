@@ -277,6 +277,100 @@ def test_padding_capped_by_neighboring_figure(tmp_path):
     assert captured["kwargs"].get("caption_pad_pts") == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Geometric caption adoption: real bug found live, 12-Aug, on the real Toyota
+# "Cleaning up the wheel mounting section" manual -- TWO side-by-side drawings
+# shared ONE caption line ("Labyrinth cap" / "Labyrinth cover") sitting only
+# 3.5pt below them. Docling's own item.captions link didn't catch this unusual
+# one-caption-for-two-pictures layout, so the caption fell through to the
+# generic collision guard above, which (correctly) saw text nearby and zeroed
+# bottom padding -- excluding the real caption right along with it. Fixed by
+# adopting a close, width-matching TEXT block below as the caption when
+# cap_info is empty, BEFORE the collision math runs, so it becomes part of the
+# "must include" region rather than something padding has to reach for.
+# ---------------------------------------------------------------------------
+
+def _run_with_real_pdf_and_text(tmp_path, fig_bbox, texts, other_figure_bboxes=None):
+    """Same harness as _run_with_real_pdf, but inserts REAL text into the PDF
+    (texts: list of (string, (x, y)) baseline points) so page.get_text('blocks')
+    has something real to find -- a blank page can't exercise the caption-
+    adoption geometry at all."""
+    import fitz
+
+    pdf_path = str(tmp_path / "with_text.pdf")
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+    for text, point in texts:
+        page.insert_text(point, text, fontsize=11)
+    doc.save(pdf_path)
+    doc.close()
+
+    # Recover the REAL bbox fitz assigned the inserted text, so assertions
+    # don't have to guess exact font-metric widths.
+    doc2 = fitz.open(pdf_path)
+    text_bboxes = [
+        (b[4].strip(), (b[0], b[1], b[2], b[3]))
+        for b in doc2[0].get_text("blocks") if b[6] == 0
+    ]
+    doc2.close()
+
+    captured = {}
+
+    def fake_crop_region(self, pdf_path, page_no, padded_bbox, **kwargs):
+        captured["padded_bbox"] = padded_bbox
+        captured["kwargs"] = kwargs
+        return b"fakepngbytes"
+
+    with patch("backend.vision.pdf_cropper.PDFCropper.crop_region", fake_crop_region), \
+         patch("backend.extraction.vision_ocr.classify_caption_crop") as mock_gate:
+        mock_gate.return_value = {"keep": True, "kind": "diagram", "caption": "a diagram"}
+        _figure_block(pdf_path, "doc1", 1, "manual.pdf", fig_bbox, [], {},
+                     other_figure_bboxes=other_figure_bboxes)
+    captured["text_bboxes"] = text_bboxes
+    return captured
+
+
+def test_close_below_caption_adopted_when_no_docling_link(tmp_path):
+    # fontsize-11 text baselined at y=410 renders with its glyph top around
+    # y=398 (ascenders extend above the baseline) -- ending the figure at
+    # y=395 leaves a real, non-overlapping ~3pt gap, matching the real bug's
+    # own ~3.5pt gap on the live manual.
+    fig_bbox = [100, 300, 400, 395]
+    captured = _run_with_real_pdf_and_text(
+        tmp_path, fig_bbox, texts=[("Labyrinth cap", (150, 410))])
+    caption_bbox = next(bb for txt, bb in captured["text_bboxes"] if txt == "Labyrinth cap")
+
+    # The adopted caption's own bottom edge must be inside the region handed to
+    # crop_region -- not just "padding happened to reach that far".
+    assert captured["padded_bbox"][3] >= caption_bbox[3]
+
+
+def test_far_below_text_not_adopted_as_caption(tmp_path):
+    fig_bbox = [100, 300, 400, 400]
+    # >15pt gap (real caption-adoption's own conservative cutoff) -- this is
+    # NOT close enough to plausibly be this figure's own caption.
+    captured = _run_with_real_pdf_and_text(
+        tmp_path, fig_bbox, texts=[("Some unrelated paragraph below", (150, 450))])
+    text_bbox = next(bb for txt, bb in captured["text_bboxes"]
+                     if txt == "Some unrelated paragraph below")
+
+    assert captured["padded_bbox"][3] < text_bbox[1]
+
+
+def test_neighboring_figure_never_adopted_as_caption(tmp_path):
+    # Exact regression for the bug the fix's own first draft introduced: a
+    # genuinely NEIGHBORING FIGURE close below must never be treated as "this
+    # figure's caption" just because it's close and width-matching -- only
+    # real TEXT is a candidate caption. The existing collision guard (not
+    # adoption) is what's supposed to keep the crop out of it.
+    fig_bbox = [100, 300, 300, 400]
+    neighbor_bbox = [100, 405, 300, 500]  # 5pt gap, same shape as the OTHER bug above
+
+    captured = _run_with_real_pdf(tmp_path, fig_bbox, other_figure_bboxes=[neighbor_bbox])
+
+    assert captured["padded_bbox"][3] <= 405
+
+
 def test_padding_not_capped_without_neighbor_info(tmp_path):
     fig_bbox = [100, 300, 300, 400]
 

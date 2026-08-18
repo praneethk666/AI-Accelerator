@@ -1539,12 +1539,54 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
         # page -- a scanned page has zero text rects (no text layer), so without the
         # figure boxes here padding has nothing at all to guard against and can bleed
         # straight into a neighboring figure a few points away.
-        rects = []
+        text_rects = []
         for block in page.get_text("blocks"):
             if block[6] == 0:  # Text block type
-                rects.append(fitz.Rect(block[0], block[1], block[2], block[3]))
+                text_rects.append(fitz.Rect(block[0], block[1], block[2], block[3]))
+        rects = list(text_rects)
         for ob in (other_figure_bboxes or []):
             rects.append(fitz.Rect(ob[0], ob[1], ob[2], ob[3]))
+
+        # Geometric caption-adoption fallback, only when Docling's OWN linked-caption
+        # lookup (cap_info, above) found nothing for this picture. Real bug found
+        # live, 12-Aug: a real caption ("Labyrinth cap / Labyrinth cover") sat just
+        # 3.5pt below a figure with TWO side-by-side drawings sharing ONE caption
+        # line -- Docling's own captions link didn't catch this unusual one-caption-
+        # for-two-pictures layout, so the caption fell through to the generic
+        # collision logic below, which correctly saw "something is there" and
+        # zeroed bottom padding, excluding the real caption right along with it.
+        # A short TEXT block sitting immediately below (small gap) and roughly
+        # matching the figure's width is almost certainly ITS caption, not
+        # unrelated content -- adopt it into crop_bbox (same as a real cap_info
+        # hit would) so the collision logic below never has to choose between
+        # "include the caption" and "block unrelated content", it does both:
+        # collision-avoidance still applies to whatever comes AFTER the adopted
+        # caption. Only checked directly below (not left/right/above) and within
+        # a small gap -- deliberately conservative, a caption sits close. Scans
+        # text_rects ONLY, never other_figure_bboxes -- a real bug caught by this
+        # file's own test suite: a genuinely NEIGHBORING FIGURE sitting close
+        # below is emphatically not "this figure's caption" and must never be
+        # unioned in, only avoided (that's what the collision check below is for).
+        if not (cap_info and cap_info.get("bbox")):
+            _CAPTION_GAP_MAX = 15.0
+            fx0, fy0, fx1, fy1 = crop_bbox
+            fwidth = fx1 - fx0
+            close_caption = None
+            for r in text_rects:
+                if r.y0 < fy1 or (r.y0 - fy1) > _CAPTION_GAP_MAX:
+                    continue  # not directly below, or too far to plausibly be a caption
+                overlap = min(r.x1, fx1) - max(r.x0, fx0)
+                if overlap > 0.4 * min(r.x1 - r.x0, fwidth):
+                    if close_caption is None or r.y0 < close_caption.y0:
+                        close_caption = r
+            if close_caption is not None:
+                logger.info(
+                    "Page %s: adopted a geometrically-close caption below a figure "
+                    "with no Docling caption link (gap %.1fpt)",
+                    page_no, close_caption.y0 - fy1,
+                )
+                crop_bbox = [min(fx0, close_caption.x0), fy0,
+                             max(fx1, close_caption.x1), max(fy1, close_caption.y1)]
 
         # Collision = the overlap covers >10% of whichever of the two rects is
         # SMALLER (pad strip vs the other rect). Using only the OTHER rect's area
@@ -1557,24 +1599,38 @@ def _figure_block(pdf_path, document_id, page_no, filename, bbox, page_lines, co
                        for r in rects)
 
         x0, y0, x1, y1 = crop_bbox
+        w, h = (x1 - x0), (y1 - y0)
+        # padded_bbox's own manual delta stays this small historical constant on a
+        # clean (no-collision) edge -- crop_region() ALWAYS adds its own much larger
+        # default padding on top of padded_bbox regardless (unless crop_kwargs
+        # suppresses it below), so widening this value too would double-pad.
         pad = 10.0
+        # The collision CHECK zone is a separate, wider thing: it must match what
+        # crop_region() will actually reach on each edge (see PDFCropper's
+        # DEFAULT_* constants), or real nearby content sitting beyond this pad's
+        # own narrow reach but within crop_region()'s real default can still bleed
+        # into the final crop, completely undetected (confirmed live, 12-Aug: a
+        # NOTE paragraph 10-49pt away bled into a figure crop this way).
+        check_side_pad = w * PDFCropper.DEFAULT_SIDE_FRAC + PDFCropper.DEFAULT_SIDE_PAD_PTS
+        check_top_pad = h * PDFCropper.DEFAULT_TOP_FRAC
+        check_bottom_pad = h * PDFCropper.DEFAULT_BOTTOM_FRAC + PDFCropper.DEFAULT_CAPTION_PAD_PTS
 
         # Left edge check
-        px0 = max(page_rect.x0, x0 - pad)
+        px0 = max(page_rect.x0, x0 - check_side_pad)
         left_collision = _collides(fitz.Rect(px0, y0, x0, y1))
 
         # Right edge check
-        px1 = min(page_rect.x1, x1 + pad)
+        px1 = min(page_rect.x1, x1 + check_side_pad)
         right_collision = _collides(fitz.Rect(x1, y0, px1, y1))
 
         # Top edge check
-        py0 = max(page_rect.y0, y0 - pad)
+        py0 = max(page_rect.y0, y0 - check_top_pad)
         top_collision = _collides(fitz.Rect(x0, py0, x1, y0))
 
         # Bottom edge check
-        py1 = min(page_rect.y1, y1 + pad)  # was page_rect.x1 (width, not height) -- fixed
+        py1 = min(page_rect.y1, y1 + check_bottom_pad)
         bottom_collision = _collides(fitz.Rect(x0, y1, x1, py1))
-        
+
         final_pad_left = 0.0 if left_collision else pad
         final_pad_right = 0.0 if right_collision else pad
         final_pad_top = 0.0 if top_collision else pad

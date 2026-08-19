@@ -1,0 +1,32 @@
+schemaVersion: "1.0"
+servers:
+  local:
+    description: "The built-in local MCP server"
+    version: "1.0.0"
+    transport:
+      kind: "stdio"
+      command: "echo"
+      args: ["dummy"]
+    dataIsolation:
+      directBackingStoreAccessProhibited: true
+      backingStoreDescription: "Local runtime"
+      verificationMethod: "In-memory test"
+    auth:
+      type: "api_key"
+      enforcement:
+        toolsList: true
+        toolsCall: true
+      cache:
+        enabled: false
+        ttlSeconds: 60
+        policyVersionSource: "${env:POLICY_VERSION}"
+      revocationList:
+        source: "${env:REVOCATION_LIST}"
+        refreshIntervalSec: 60
+    network:
+      allowedSourceCidrs: ["127.0.0.0/8"]
+      requireMutualTLS: false
+    auditLog:
+      destination: "${env:AUDIT_LOG_DEST}"
+      tamperEvident: true
+      durabilityMode: "sync"

@@ -55,3 +55,10 @@ def make_jsonrpc_success(
         "id": req_id,
         "result": result,
     }
+
+def handle_gmail_error(e: Exception) -> dict:
+    return {
+        "status": "failed",
+        "error": "gmail_api_error",
+        "message": str(e)
+    }

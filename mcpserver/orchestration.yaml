@@ -1,0 +1,14 @@
+schemaVersion: "1.0"
+capabilities:
+  notify-alert:
+    description: "Mock capability for routing fallback"
+    inputSchema:
+      type: object
+    routing:
+      mode: priority
+    bindings:
+      - bindingId: "default-email"
+        server: "local"
+        tool: "send_email"
+        parameterMapping:
+          recipient: "to"

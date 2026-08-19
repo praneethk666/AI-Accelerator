@@ -1,0 +1,75 @@
+schemaVersion: "1.0"
+
+vishal:
+  agentId: "vishal"
+  description: "Vishal local testing"
+  environment: "dev"
+  credential:
+    credentialId: "c1"
+    source: "${env:VISHAL_TEST_TOKEN}"
+    revocationCheckRequired: true
+    ttlSeconds: 3600
+  role: "admin-role"
+  mcpServers:
+    - server: "local"
+      toolPolicy:
+        allow: ["*"]
+        deny: []
+        
+vinod:
+  agentId: "vinod"
+  description: "Vinod local testing"
+  environment: "dev"
+  credential:
+    credentialId: "c2"
+    source: "${env:VINOD_TEST_TOKEN}"
+    revocationCheckRequired: true
+    ttlSeconds: 3600
+  role: "admin-role"
+  mcpServers:
+    - server: "local"
+      toolPolicy:
+        allow: ["*"]
+        deny: []
+
+admin:
+  agentId: "admin"
+  description: "Admin User"
+  environment: "prod"
+  credential:
+    credentialId: "c3"
+    source: "${env:ADMIN_TOKEN_SECRET}"
+  role: "admin-role"
+  mcpServers:
+    - server: "local"
+      toolPolicy:
+        allow: ["*"]
+        deny: []
+
+agent_alpha:
+  agentId: "agent_alpha"
+  description: "Standard Agent"
+  environment: "prod"
+  credential:
+    credentialId: "c4"
+    source: "${env:AGENT_TOKEN_ALPHA}"
+  role: "standard-role"
+  mcpServers:
+    - server: "local"
+      toolPolicy:
+        allow: ["get_current_datetime", "send_email"]
+        deny: []
+
+agent_beta:
+  agentId: "agent_beta"
+  description: "Restricted Agent"
+  environment: "prod"
+  credential:
+    credentialId: "c5"
+    source: "${env:AGENT_TOKEN_BETA}"
+  role: "restricted-role"
+  mcpServers:
+    - server: "local"
+      toolPolicy:
+        allow: ["get_current_datetime"]
+        deny: ["send_email"]

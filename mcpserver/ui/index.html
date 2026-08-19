@@ -1,26 +1,29 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Groq AI + Streamable MCP Server | Ultra-Fast Agent Hub</title>
+  <title>Groq AI + Multi-Server MCP Architecture | Ultra-Fast Agent Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
   <style>
     :root {
-      --bg-primary: #080c14;
-      --bg-secondary: #0d131f;
-      --bg-card: rgba(15, 23, 42, 0.75);
-      --bg-card-hover: rgba(30, 41, 59, 0.85);
-      --border-color: rgba(255, 255, 255, 0.08);
-      --border-glow: rgba(245, 80, 54, 0.35);
+      --bg-primary: #060911;
+      --bg-secondary: #0b101d;
+      --bg-card: rgba(15, 23, 42, 0.7);
+      --bg-card-hover: rgba(24, 34, 53, 0.85);
+      --border-color: rgba(255, 255, 255, 0.09);
+      --border-glow: rgba(245, 80, 54, 0.4);
       --primary: #f55036;
-      --primary-hover: #e03e25;
-      --primary-glow: rgba(245, 80, 54, 0.25);
-      --groq-gradient: linear-gradient(135deg, #f55036 0%, #ff7844 50%, #facc15 100%);
-      --text-main: #f3f4f6;
-      --text-muted: #9ca3af;
+      --primary-hover: #ff684e;
+      --primary-glow: rgba(245, 80, 54, 0.35);
+      --groq-gradient: linear-gradient(135deg, #f55036 0%, #ff7844 50%, #ffb800 100%);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
       --accent-green: #10b981;
       --accent-amber: #f59e0b;
       --accent-red: #ef4444;
@@ -33,6 +36,24 @@
       padding: 0;
     }
 
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 999px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(245, 80, 54, 0.4);
+    }
+
     body {
       font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
       background-color: var(--bg-primary);
@@ -41,47 +62,50 @@
       display: flex;
       flex-direction: column;
       overflow-x: hidden;
-      background-image: 
+      background-image:
         radial-gradient(circle at 15% 15%, rgba(245, 80, 54, 0.12) 0%, transparent 45%),
         radial-gradient(circle at 85% 85%, rgba(99, 102, 241, 0.09) 0%, transparent 45%);
     }
 
     /* ── Header ── */
     header {
-      background: rgba(8, 12, 20, 0.85);
-      backdrop-filter: blur(16px);
+      background: rgba(6, 9, 17, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
       border-bottom: 1px solid var(--border-color);
-      padding: 1rem 2rem;
+      padding: 0.9rem 2rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
       top: 0;
       z-index: 50;
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
     }
 
     .logo-container {
       display: flex;
       align-items: center;
-      gap: 0.85rem;
+      gap: 0.9rem;
     }
 
     .logo-badge {
-      width: 40px;
-      height: 40px;
+      width: 42px;
+      height: 42px;
       border-radius: 12px;
       background: var(--groq-gradient);
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 0 20px rgba(245, 80, 54, 0.4);
+      box-shadow: 0 0 25px rgba(245, 80, 54, 0.45);
       font-weight: 900;
       color: white;
-      font-size: 1.25rem;
+      font-size: 1.3rem;
+      letter-spacing: -0.03em;
     }
 
     .logo-title h1 {
-      font-size: 1.15rem;
+      font-size: 1.2rem;
       font-weight: 700;
       letter-spacing: -0.02em;
       background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
@@ -90,27 +114,29 @@
     }
 
     .logo-title p {
-      font-size: 0.75rem;
+      font-size: 0.76rem;
       color: var(--text-muted);
+      font-weight: 400;
     }
 
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 1rem;
+      gap: 0.75rem;
     }
 
     .status-pill {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
+      gap: 0.55rem;
+      padding: 0.4rem 0.95rem;
       border-radius: 9999px;
       background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.25);
-      font-size: 0.75rem;
-      font-weight: 500;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-size: 0.78rem;
+      font-weight: 600;
       color: var(--accent-green);
+      box-shadow: 0 0 15px rgba(16, 185, 129, 0.15);
     }
 
     .status-dot {
@@ -118,86 +144,93 @@
       height: 8px;
       border-radius: 50%;
       background: var(--accent-green);
-      box-shadow: 0 0 8px var(--accent-green);
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(1.2); }
+      box-shadow: 0 0 10px var(--accent-green);
     }
 
     /* ── Main Layout ── */
     .app-container {
       display: grid;
-      grid-template-columns: 330px 1fr;
+      grid-template-columns: 340px 1fr;
       flex: 1;
-      height: calc(100vh - 73px);
+      height: calc(100vh - 69px);
       overflow: hidden;
+      position: relative;
+      z-index: 1;
     }
 
     /* ── Left Sidebar ── */
     aside {
-      background: var(--bg-secondary);
+      background: rgba(11, 16, 29, 0.85);
+      backdrop-filter: blur(16px);
       border-right: 1px solid var(--border-color);
-      padding: 1.25rem;
+      padding: 1.35rem;
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
+      gap: 1.35rem;
       overflow-y: auto;
     }
 
     .sidebar-section h2 {
       font-size: 0.78rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.09em;
       color: var(--text-muted);
       margin-bottom: 0.75rem;
-      font-weight: 600;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
     }
 
     .config-card {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
-      border-radius: 12px;
-      padding: 1rem;
+      border-radius: 14px;
+      padding: 1.1rem;
       display: flex;
       flex-direction: column;
-      gap: 0.85rem;
+      gap: 0.9rem;
+      transition: border-color 0.25s ease;
+    }
+
+    .config-card:hover {
+      border-color: rgba(255, 255, 255, 0.15);
     }
 
     .form-group {
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
+      gap: 0.4rem;
     }
 
     .form-group label {
-      font-size: 0.75rem;
+      font-size: 0.76rem;
       color: var(--text-muted);
-      font-weight: 500;
+      font-weight: 600;
     }
 
-    input, select {
+    input,
+    select {
       width: 100%;
-      background: rgba(0, 0, 0, 0.45);
+      background: rgba(0, 0, 0, 0.5);
       border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 0.55rem 0.75rem;
+      border-radius: 9px;
+      padding: 0.6rem 0.8rem;
       color: var(--text-main);
       font-family: inherit;
-      font-size: 0.82rem;
+      font-size: 0.84rem;
       outline: none;
-      transition: all 0.2s ease;
+      transition: all 0.25s ease;
     }
 
-    input:focus, select:focus {
+    input:focus,
+    select:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 2px var(--primary-glow);
+      box-shadow: 0 0 15px var(--primary-glow);
     }
 
     .tool-chip {
-      background: rgba(255, 255, 255, 0.03);
+      background: rgba(15, 23, 42, 0.5);
       border: 1px solid var(--border-color);
       border-radius: 10px;
       padding: 0.75rem;
@@ -209,8 +242,7 @@
 
     .tool-chip:hover {
       background: var(--bg-card-hover);
-      border-color: var(--border-glow);
-      transform: translateY(-1px);
+      border-color: rgba(255, 255, 255, 0.2);
     }
 
     .tool-header {
@@ -221,18 +253,19 @@
 
     .tool-name {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
+      font-size: 0.82rem;
       font-weight: 600;
-      color: var(--accent-cyan);
+      color: var(--primary);
     }
 
     .tool-tag {
       font-size: 0.65rem;
-      padding: 0.15rem 0.4rem;
+      padding: 0.15rem 0.45rem;
       border-radius: 4px;
       background: rgba(245, 80, 54, 0.15);
       color: var(--primary);
       font-weight: 600;
+      text-transform: uppercase;
     }
 
     .tool-desc {
@@ -244,61 +277,73 @@
     .prompt-suggestions {
       display: flex;
       flex-direction: column;
-      gap: 0.45rem;
+      gap: 0.5rem;
     }
 
     .prompt-pill {
-      background: rgba(255, 255, 255, 0.03);
+      background: rgba(255, 255, 255, 0.04);
       border: 1px solid var(--border-color);
       border-radius: 8px;
-      padding: 0.55rem 0.75rem;
+      padding: 0.6rem 0.8rem;
       font-size: 0.76rem;
-      color: var(--text-main);
-      cursor: pointer;
+      color: var(--text-muted);
       text-align: left;
+      cursor: pointer;
       transition: all 0.2s ease;
-      line-height: 1.3;
+      font-family: inherit;
     }
 
     .prompt-pill:hover {
       background: rgba(245, 80, 54, 0.1);
       border-color: var(--primary);
-      color: white;
+      color: var(--text-main);
+      transform: translateX(4px);
     }
 
-    /* ── Main Chat Area ── */
+    /* ── Main Chat Workspace ── */
     main {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      background: transparent;
+      overflow: hidden;
       position: relative;
     }
 
     .chat-messages {
       flex: 1;
       overflow-y: auto;
-      padding: 1.5rem 2rem;
+      padding: 2rem;
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
+      gap: 1.5rem;
     }
 
     .message-row {
       display: flex;
       gap: 1rem;
-      max-width: 860px;
-      width: 100%;
-      margin: 0 auto;
-      animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      max-width: 820px;
+      animation: messageIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
+    @keyframes messageIn {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .message-row.user {
-      justify-content: flex-end;
+      align-self: flex-end;
+      flex-direction: row;
+    }
+
+    .message-row.assistant {
+      align-self: flex-start;
+      width: 100%;
     }
 
     .avatar {
@@ -308,51 +353,52 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      flex-shrink: 0;
       font-weight: 700;
-      font-size: 0.85rem;
+      font-size: 0.95rem;
+      flex-shrink: 0;
+    }
+
+    .avatar.user {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
     }
 
     .avatar.groq {
       background: var(--groq-gradient);
       color: white;
-      box-shadow: 0 0 14px rgba(245, 80, 54, 0.35);
-    }
-
-    .avatar.user {
-      background: #374151;
-      color: #f3f4f6;
+      box-shadow: 0 0 15px var(--primary-glow);
     }
 
     .message-bubble {
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 14px;
-      padding: 0.9rem 1.15rem;
-      font-size: 0.9rem;
-      line-height: 1.55;
-      max-width: 75%;
-      position: relative;
+      padding: 1.1rem 1.35rem;
+      border-radius: 16px;
+      font-size: 0.92rem;
+      line-height: 1.6;
     }
 
     .message-row.user .message-bubble {
-      background: linear-gradient(135deg, #c23821 0%, #9e2a16 100%);
-      border-color: rgba(245, 80, 54, 0.4);
+      background: linear-gradient(135deg, rgba(245, 80, 54, 0.25) 0%, rgba(245, 80, 54, 0.1) 100%);
+      border: 1px solid rgba(245, 80, 54, 0.35);
+      border-top-right-radius: 4px;
       color: white;
-      border-bottom-right-radius: 4px;
     }
 
     .message-row.assistant .message-bubble {
-      border-bottom-left-radius: 4px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-top-left-radius: 4px;
+      color: var(--text-main);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
     }
 
-    /* ── Tool Execution Widget ── */
     .tool-execution-card {
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(6, 182, 212, 0.3);
-      border-radius: 10px;
-      padding: 0.75rem 1rem;
-      margin: 0.6rem 0;
+      margin: 0.8rem 0;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(245, 80, 54, 0.25);
+      border-left: 3px solid var(--primary);
+      border-radius: 8px;
+      padding: 0.85rem 1.1rem;
       font-family: 'JetBrains Mono', monospace;
       font-size: 0.78rem;
     }
@@ -361,92 +407,85 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      color: var(--accent-cyan);
+      color: var(--primary);
       font-weight: 600;
       margin-bottom: 0.4rem;
     }
 
     .tool-execution-content {
-      background: rgba(0, 0, 0, 0.5);
-      border-radius: 6px;
-      padding: 0.5rem 0.75rem;
       color: #e2e8f0;
-      overflow-x: auto;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 0.6rem;
+      border-radius: 6px;
       white-space: pre-wrap;
-      font-size: 0.74rem;
+      word-break: break-all;
+      max-height: 220px;
+      overflow-y: auto;
     }
 
-    /* ── Input Section ── */
+    /* ── Input Bar ── */
     .chat-input-area {
       padding: 1.25rem 2rem;
-      background: rgba(8, 12, 20, 0.9);
-      backdrop-filter: blur(16px);
+      background: rgba(6, 9, 17, 0.9);
+      backdrop-filter: blur(20px);
       border-top: 1px solid var(--border-color);
     }
 
     .input-box-container {
-      max-width: 860px;
-      margin: 0 auto;
-      position: relative;
       display: flex;
       align-items: center;
-      background: var(--bg-card);
+      background: rgba(15, 23, 42, 0.8);
       border: 1px solid var(--border-color);
       border-radius: 14px;
-      padding: 0.4rem 0.6rem 0.4rem 1rem;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-      transition: all 0.2s ease;
+      padding: 0.4rem 0.6rem 0.4rem 1.1rem;
+      transition: all 0.25s ease;
+      box-shadow: 0 4px 25px rgba(0, 0, 0, 0.3);
     }
 
     .input-box-container:focus-within {
       border-color: var(--primary);
-      box-shadow: 0 0 0 2px var(--primary-glow), 0 8px 30px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 0 25px var(--primary-glow);
     }
 
     textarea {
-      width: 100%;
+      flex: 1;
       background: transparent;
       border: none;
+      outline: none;
       color: var(--text-main);
       font-family: inherit;
       font-size: 0.92rem;
       resize: none;
-      outline: none;
-      max-height: 140px;
       height: 24px;
-      line-height: 24px;
+      max-height: 120px;
+      line-height: 1.4;
+      padding: 0.3rem 0;
     }
 
     .send-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
       background: var(--groq-gradient);
       border: none;
-      color: white;
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: all 0.25s ease;
       flex-shrink: 0;
-      margin-left: 0.5rem;
+      margin-left: 0.6rem;
+      box-shadow: 0 4px 15px rgba(245, 80, 54, 0.35);
     }
 
     .send-btn:hover {
-      transform: scale(1.05);
-      box-shadow: 0 0 15px rgba(245, 80, 54, 0.5);
-    }
-
-    .send-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-      transform: none;
+      transform: scale(1.08) rotate(-3deg);
+      box-shadow: 0 0 20px rgba(245, 80, 54, 0.6);
     }
 
     .send-btn svg {
-      width: 18px;
-      height: 18px;
+      width: 19px;
+      height: 19px;
       fill: white;
     }
 
@@ -454,13 +493,13 @@
     .typing-indicator {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      padding: 0.3rem 0;
+      gap: 5px;
+      padding: 0.35rem 0;
     }
 
     .typing-indicator span {
-      width: 6px;
-      height: 6px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       background: var(--text-muted);
       animation: bounce 1.4s infinite ease-in-out both;
@@ -474,6 +513,100 @@
       40% { transform: scale(1); }
     }
 
+    /* ── Login Modal Overlay & Glassmorphic Card ── */
+    .login-modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(4, 7, 15, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      animation: fadeIn 0.3s ease;
+      padding: 1.5rem;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .login-card {
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      padding: 2.2rem 2rem;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7), 0 0 40px rgba(245, 80, 54, 0.2);
+    }
+
+    .login-header {
+      text-align: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .login-header h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 0.35rem;
+    }
+
+    .login-header p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .login-btn {
+      margin-top: 0.6rem;
+      background: var(--groq-gradient);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.92rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(245, 80, 54, 0.4);
+      transition: all 0.25s ease;
+    }
+
+    .login-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 25px rgba(245, 80, 54, 0.6);
+    }
+
+    .login-error-msg {
+      font-size: 0.8rem;
+      color: var(--accent-red);
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 0.55rem 0.8rem;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .logout-btn {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: var(--accent-red);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.35rem 0.7rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .logout-btn:hover {
+      background: rgba(239, 68, 68, 0.25);
+      border-color: var(--accent-red);
+    }
+
     @media (max-width: 900px) {
       .app-container {
         grid-template-columns: 1fr;
@@ -484,7 +617,31 @@
     }
   </style>
 </head>
+
 <body>
+
+  <!-- Login Modal Overlay -->
+  <div id="loginModalOverlay" class="login-modal-overlay">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo-badge" style="margin: 0 auto 0.75rem auto; width: 50px; height: 50px; font-size: 1.5rem;">🔐</div>
+        <h2>MCP Server Login</h2>
+        <p>Enter your Username & Password to access authorized tools</p>
+      </div>
+      <form id="loginForm" onsubmit="handleLoginSubmit(event)" style="display:flex; flex-direction:column; gap:0.85rem;">
+        <div class="form-group">
+          <label for="loginUsername">Username</label>
+          <input type="text" id="loginUsername" placeholder="e.g. vishal, vinod, admin" required autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password" />
+        </div>
+        <div id="loginErrorMsg" class="login-error-msg" style="display:none;"></div>
+        <button type="submit" class="login-btn" id="loginBtn">Sign In to Agent Hub</button>
+      </form>
+    </div>
+  </div>
 
   <!-- Header -->
   <header>
@@ -492,89 +649,97 @@
       <div class="logo-badge">G</div>
       <div class="logo-title">
         <h1>Groq AI Agent Hub</h1>
-        <p>Powered by Ultra-Fast Groq LPU™ Inference & Streamable MCP Server</p>
+        <p>Multi-Server MCP Architecture (Gmail Server :8101 + Time Server :8102)</p>
       </div>
     </div>
-    <div class="header-actions">
-      <div class="status-pill" id="serverStatusBadge">
-        <div class="status-dot"></div>
-        <span id="serverStatusText">MCP Server Connected</span>
+    <div class="header-actions" style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+      <div class="status-pill" id="gmailStatusBadge">
+        <div class="status-dot" id="gmailStatusDot"></div>
+        <span id="gmailStatusText">📧 Gmail :8101</span>
+      </div>
+      <div class="status-pill" id="timeStatusBadge">
+        <div class="status-dot" id="timeStatusDot"></div>
+        <span id="timeStatusText">🕒 Time & System :8102</span>
       </div>
     </div>
   </header>
 
   <div class="app-container">
-    
-    <!-- Left Sidebar: Configuration & MCP Tools -->
+
+    <!-- Left Sidebar -->
     <aside>
       <div class="sidebar-section">
         <h2>⚡ Groq API Configuration</h2>
         <div class="config-card">
           <div class="form-group">
             <label for="groqApiKey">Groq API Key</label>
-            <input type="password" id="groqApiKey" placeholder="gsk_..." />
+            <input type="password" id="groqApiKey" value="" placeholder="Enter Groq API Key (gsk_...)" />
           </div>
           <div class="form-group">
             <label for="groqModel">Model</label>
             <select id="groqModel">
-              <option value="llama-3.1-8b-instant" selected>llama-3.1-8b-instant (Recommended — Tool Calling & Fast)</option>
-              <option value="llama3-70b-8192">llama3-70b-8192 (Tool Calling — High Accuracy)</option>
-              <option value="llama3-8b-8192">llama3-8b-8192 (Tool Calling)</option>
+              <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (Recommended — High Accuracy & Tool Calling)</option>
+              <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile (High Accuracy)</option>
+              <option value="llama3-8b-8192">llama3-8b-8192 (Fast & Lightweight)</option>
+              <option value="qwen-2.5-32b">qwen-2.5-32b (Fast Reasoning)</option>
               <option value="deepseek-r1-distill-llama-70b">deepseek-r1-distill-llama-70b (Deep Reasoning)</option>
               <option value="gemma2-9b-it">gemma2-9b-it (General Chat)</option>
+              <option value="mixtral-8x7b-32768">mixtral-8x7b-32768 (High Context)</option>
             </select>
           </div>
         </div>
       </div>
 
       <div class="sidebar-section">
-        <h2>🔒 MCP Server Auth</h2>
+        <h2>🔒 Authenticated User Profile</h2>
         <div class="config-card">
-          <div class="form-group">
-            <label for="mcpEndpoint">MCP Endpoint</label>
-            <input type="text" id="mcpEndpoint" value="http://localhost:8100/mcp" />
-          </div>
-          <div class="form-group">
-            <label for="mcpToken">Bearer Token</label>
-            <input type="text" id="mcpToken" value="vishal-test-token" />
+          <div style="display:flex; flex-direction:column; gap:0.75rem;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
+              <div style="overflow:hidden;">
+                <div id="loggedInUserTitle" style="font-weight:700; font-size:0.92rem; color:var(--text-main); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">👤 Not Logged In</div>
+                <div id="loggedInUserRoleDesc" style="font-size:0.75rem; color:var(--text-muted);">Please sign in to access tools.</div>
+              </div>
+              <button id="logoutBtn" onclick="handleLogout()" class="logout-btn">Logout</button>
+            </div>
+            <input type="hidden" id="mcpToken" value="" />
+            <input type="hidden" id="mcpEndpoint" value="http://localhost:8100/mcp" />
+            <div id="roleAccessBadge" style="font-size:0.73rem; color:var(--accent-green); background:rgba(16,185,129,0.1); padding:0.4rem 0.6rem; border-radius:6px; border:1px solid rgba(16,185,129,0.25);">
+              🛡️ Status: <strong>Checking Session...</strong>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="sidebar-section">
-        <h2>🛠️ Connected MCP Tools (<span id="toolCount">2</span>)</h2>
+        <h2>🛠️ Multi-Server Tools (<span id="toolCount">0</span>)</h2>
         <div style="display: flex; flex-direction: column; gap: 0.6rem;" id="toolsList">
-          <div class="tool-chip">
-            <div class="tool-header">
-              <span class="tool-name">get_current_datetime</span>
-              <span class="tool-tag">Host Time</span>
-            </div>
-            <p class="tool-desc">Direct host laptop OS clock + IANA timezone converter.</p>
-          </div>
-          <div class="tool-chip">
-            <div class="tool-header">
-              <span class="tool-name">send_email</span>
-              <span class="tool-tag">SMTP Live</span>
-            </div>
-            <p class="tool-desc">Server-side SMTP dispatcher with allowlist & injection guard.</p>
-          </div>
+          <!-- Populated from Gmail (:8101) & Time (:8102) -->
         </div>
       </div>
 
       <div class="sidebar-section">
         <h2>💡 Quick Prompt Ideas</h2>
         <div class="prompt-suggestions">
-          <button class="prompt-pill" onclick="sendQuickPrompt('What is the exact time on my laptop right now?')">
-            🕒 What is the time on my laptop right now?
+          <button class="prompt-pill" onclick="sendQuickPrompt('What is the current time in Tokyo and London?')">
+            🕒 What is the time in Tokyo and London?
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('What time is it in Tokyo and London?')">
-            🌍 What time is it in Tokyo and London?
+          <button class="prompt-pill" onclick="sendQuickPrompt('Convert 04:30 PM New York time to Asia/Kolkata timezone.')">
+            🌐 Convert 4:30 PM NYC time to Kolkata
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Send an email to bonthumanoj999@gmail.com stating that our MCP server is online and operational.')">
+          <button class="prompt-pill" onclick="sendQuickPrompt('Show me my server uptime and platform metrics.')">
+            💻 Show server uptime & OS metrics
+          </button>
+          <button class="prompt-pill" onclick="sendQuickPrompt('Check and summarize my recent incoming emails from inbox.')">
+            📥 Check recent inbox emails
+          </button>
+          <button class="prompt-pill" onclick="sendQuickPrompt('Search my emails for keywords about MCP Server status.')">
+            🔍 Search emails for 'MCP Server'
+          </button>
+          <button class="prompt-pill" onclick="sendQuickPrompt('Create an email draft to vishalreddykonreddy@gmail.com with subject Project Update.')">
+            📝 Create an email draft to Vishal
+          </button>
+          <button class="prompt-pill" onclick="sendQuickPrompt('Send an email to bonthumanoj999@gmail.com stating that both Multi-MCP servers are operational.')">
             📧 Send an email alert to Manoj
-          </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Explain why Groq LPUs are so fast compared to traditional GPUs.')">
-            ⚡ Why are Groq LPUs so fast?
           </button>
         </div>
       </div>
@@ -590,10 +755,7 @@
           <div class="message-bubble">
             <p><strong>Welcome to the Groq AI Agent Hub!</strong></p>
             <p style="margin-top: 0.35rem; color: var(--text-muted);">
-              Powered by ultra-fast <strong>Groq LPU™ Inference</strong> and connected directly to your <strong>Streamable MCP Server</strong>. Ask any question in the world, and Groq will automatically invoke your local tools to check the <strong>hardware system clock</strong> or dispatch <strong>live SMTP emails</strong>.
-            </p>
-            <p style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--accent-cyan);">
-              🔑 Please enter your Groq API Key (from <a href="https://console.groq.com/keys" target="_blank" style="color:var(--primary);text-decoration:underline;">console.groq.com</a>) in the left sidebar to begin!
+              Powered by ultra-fast <strong>Groq LPU™ Inference</strong> and connected to your <strong>Multi-Server MCP Architecture</strong>. Ask any question in the world, and Groq will automatically invoke your local tools to check system time, convert timezones, check server uptime, or manage Gmail emails.
             </p>
           </div>
         </div>
@@ -618,31 +780,67 @@
     let conversationMessages = [
       {
         role: "system",
-        content: `You are an intelligent AI assistant connected to a Streamable MCP Server.
-You have 2 active local tools:
-1. get_current_datetime(timezone: string) - Reads the host laptop system clock.
-2. send_email(to: string, subject: string, body: string) - Dispatches email via SMTP.
+        content: `You are an intelligent AI assistant with access to a Multi-Server Model Context Protocol (MCP) Architecture.
 
-AUTHORIZED RECIPIENT ALLOWLIST:
-- bonthumanoj999@gmail.com (Manoj Bonthu)
-- vishalreddykonreddy@gmail.com (Vishal Reddy)
-- ops@company.com (Operations Team)
-- manager@company.com (Management)
-- alerts@company.com (System Alerts)
-- any address ending in @trusteddomain.com
+📧 GMAIL MCP SERVER (:8101):
+- send_email(to, subject, body): Dispatches outgoing email via Gmail SMTP with allowlist security.
+- read_inbox(max_results): Reads and summarizes recent incoming emails from Gmail inbox.
+- search_emails(query): Searches emails by keyword, sender, or subject.
+- create_draft(to, subject, body): Creates an email draft in Gmail.
 
-If the user asks who they can send emails to or asks for information, answer clearly by listing these authorized recipients.
-Only invoke the send_email tool when the user explicitly asks to send an email.`
+🕒 TIME & SYSTEM MCP SERVER (:8102):
+- get_current_datetime(timezone): Reads current host system clock with timezone support.
+- convert_timezone(time_str, from_tz, to_tz): Converts a timestamp between timezones.
+- get_system_uptime(): Returns server uptime and OS platform status.
+
+NAME & RECIPIENT DIRECTORY:
+- 'manoj' or 'bonthu' -> bonthumanoj999@gmail.com
+- 'vishal' -> vishalreddykonreddy@gmail.com
+- 'vinod' -> vinod@company.com
+
+CRITICAL TOOL INVOCATION RULES:
+1. When the user says 'send the mail to manoj' or 'send mail to vishal' or provides an explicit email address, DO NOT ask them for missing subject/body. Immediately compose a polite message (e.g. subject='Message from Groq AI', body='Hi, hope you are doing well!') and CALL send_email(to, subject, body) immediately!
+2. If the user asks to send an email to an unknown name (e.g. 'kunnu') without providing an email address, tell them you need their email address.
+3. When the user asks for time/clock/date, CALL get_current_datetime(timezone) immediately!
+4. When the user asks which emails can be sent or asks about allowed emails, list the authorized allowlist recipients.
+5. For general conversation ('hi', sports, coding), respond conversationally.`
       }
     ];
     let isGenerating = false;
     let mcpToolsSchema = [];
+    let toolServerMap = {};
 
-    // Load saved API key from localStorage
+    const MCP_SERVERS = [
+      {
+        id: "gmail",
+        name: "Gmail MCP Server",
+        url: "http://localhost:8101/mcp",
+        badgeId: "gmailStatusBadge",
+        dotId: "gmailStatusDot",
+        textId: "gmailStatusText",
+        tag: "Gmail :8101",
+        color: "var(--primary)"
+      },
+      {
+        id: "time",
+        name: "Time & System MCP Server",
+        url: "http://localhost:8102/mcp",
+        badgeId: "timeStatusBadge",
+        dotId: "timeStatusDot",
+        textId: "timeStatusText",
+        tag: "Time :8102",
+        color: "var(--accent-cyan)"
+      }
+    ];
+
+    // Load API key and auto-fetch currently active Groq models
     const savedKey = localStorage.getItem("GROQ_API_KEY");
     if (savedKey) {
       document.getElementById("groqApiKey").value = savedKey;
       fetchAvailableGroqModels(savedKey);
+    } else {
+      const initialKey = document.getElementById("groqApiKey").value.trim();
+      if (initialKey) fetchAvailableGroqModels(initialKey);
     }
 
     document.getElementById("groqApiKey").addEventListener("change", (e) => {
@@ -659,26 +857,48 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
         if (res.ok) {
           const data = await res.json();
           const select = document.getElementById("groqModel");
-          const chatModels = data.data
-            .filter(m => m.active && !m.id.includes("whisper") && !m.id.includes("guard") && !m.id.includes("tts"))
-            .sort((a, b) => a.id.localeCompare(b.id));
+          const allModels = (data.data || []).map(m => m.id);
 
-          if (chatModels.length > 0) {
-            const currentVal = select.value;
-            select.innerHTML = "";
-            chatModels.forEach(m => {
-              const opt = document.createElement("option");
-              opt.value = m.id;
-              opt.textContent = m.id;
-              if (m.id.includes("qwen") || m.id.includes("gpt") || m.id.includes("llama-3.1-8b") || m.id === currentVal) {
-                opt.selected = true;
-              }
-              select.appendChild(opt);
-            });
+          // Priority list of tool-calling models
+          const preferredModels = [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "llama3-8b-8192",
+            "qwen-2.5-32b",
+            "deepseek-r1-distill-llama-70b",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it"
+          ];
+
+          const availablePreferred = preferredModels.filter(m => allModels.includes(m));
+          const otherModels = allModels.filter(m => !preferredModels.includes(m) && !m.includes("whisper") && !m.includes("guard") && !m.includes("tts"));
+
+          select.innerHTML = "";
+
+          availablePreferred.forEach(m => {
+            const opt = document.createElement("option");
+            opt.value = m;
+            opt.textContent = `${m} (✨ Tool Calling & Fast)`;
+            select.appendChild(opt);
+          });
+
+          otherModels.forEach(m => {
+            const opt = document.createElement("option");
+            opt.value = m;
+            opt.textContent = m;
+            select.appendChild(opt);
+          });
+
+          // Always lock default selection to llama-3.3-70b-versatile if available
+          if (availablePreferred.includes("llama-3.3-70b-versatile")) {
+            select.value = "llama-3.3-70b-versatile";
+          } else if (availablePreferred.length > 0) {
+            select.value = availablePreferred[0];
           }
         }
       } catch (err) {
-        console.warn("Could not auto-fetch Groq models:", err);
+        console.warn("Could not dynamically fetch Groq models:", err);
       }
     }
 
@@ -700,43 +920,194 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
       handleUserSend();
     }
 
-    // ── Discover Tools from MCP Server ──
-    async function fetchMCPTools() {
-      const endpoint = document.getElementById("mcpEndpoint").value.trim();
-      const token = document.getElementById("mcpToken").value.trim();
-      
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "tools/list"
-          })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          mcpToolsSchema = data.result?.tools || [];
-          document.getElementById("serverStatusText").textContent = "MCP Server Connected";
-          document.getElementById("serverStatusBadge").style.color = "var(--accent-green)";
-        }
-      } catch (err) {
-        console.warn("Could not discover MCP tools:", err);
+    // ── User Authentication Accounts ──
+    const USER_ACCOUNTS = {
+      "vishal": { password: "vishal123", identity: "vishal_engineer", name: "Vishal Reddy", roleDesc: "Full Admin (All Tools)", token: "vishal-test-token", color: "var(--accent-green)" },
+      "vinod": { password: "vinod123", identity: "vinod_engineer", name: "Vinod Kumar", roleDesc: "Full Admin (All Tools)", token: "vinod-test-token", color: "var(--accent-green)" },
+      "admin": { password: "admin123", identity: "admin_user", name: "Admin User", roleDesc: "Superuser (All Tools)", token: "admin-token-secret", color: "var(--accent-green)" },
+      "agent_alpha": { password: "alpha123", identity: "agent_alpha", name: "Agent Alpha", roleDesc: "Standard User", token: "agent-token-alpha", color: "var(--accent-cyan)" },
+      "agent_beta": { password: "beta123", identity: "agent_beta", name: "Agent Beta", roleDesc: "Restricted User", token: "agent-token-beta", color: "var(--accent-amber)" },
+    };
+
+    function handleLoginSubmit(e) {
+      e.preventDefault();
+      const u = document.getElementById("loginUsername").value.trim().toLowerCase();
+      const p = document.getElementById("loginPassword").value;
+      const errEl = document.getElementById("loginErrorMsg");
+
+      const account = USER_ACCOUNTS[u];
+      if (account && account.password === p) {
+        errEl.style.display = "none";
+        sessionStorage.setItem("MCP_LOGGED_USER", u);
+        sessionStorage.setItem("MCP_AUTH_TOKEN", account.token);
+        applyLoggedInSession(account);
+      } else {
+        errEl.textContent = "❌ Invalid username or password. Please try again.";
+        errEl.style.display = "block";
       }
     }
 
-    fetchMCPTools();
+    function applyLoggedInSession(account) {
+      document.getElementById("loginModalOverlay").style.display = "none";
+      document.getElementById("mcpToken").value = account.token;
+      document.getElementById("loggedInUserTitle").textContent = `👤 ${account.name} (@${account.identity})`;
+      document.getElementById("loggedInUserRoleDesc").textContent = account.roleDesc;
 
-    // ── Execute MCP Tool ──
+      const badge = document.getElementById("roleAccessBadge");
+      badge.style.color = account.color;
+      badge.style.borderColor = account.color;
+      badge.innerHTML = `🛡️ Role: <strong>${account.identity}</strong> (${account.roleDesc})`;
+
+      fetchMCPTools();
+    }
+
+    function handleLogout() {
+      sessionStorage.removeItem("MCP_LOGGED_USER");
+      sessionStorage.removeItem("MCP_AUTH_TOKEN");
+      document.getElementById("loginUsername").value = "";
+      document.getElementById("loginPassword").value = "";
+      document.getElementById("loginErrorMsg").style.display = "none";
+      document.getElementById("loginModalOverlay").style.display = "flex";
+      document.getElementById("loggedInUserTitle").textContent = "👤 Not Logged In";
+      document.getElementById("loggedInUserRoleDesc").textContent = "Please sign in to access tools.";
+      document.getElementById("mcpToken").value = "";
+      
+      const badge = document.getElementById("roleAccessBadge");
+      badge.style.color = "var(--accent-red)";
+      badge.style.borderColor = "var(--accent-red)";
+      badge.innerHTML = `🛡️ Status: <strong>Logged Out</strong>`;
+
+      fetchMCPTools();
+    }
+
+    // Initialize session on load
+    window.addEventListener("DOMContentLoaded", () => {
+      const savedUser = sessionStorage.getItem("MCP_LOGGED_USER");
+      if (savedUser && USER_ACCOUNTS[savedUser]) {
+        applyLoggedInSession(USER_ACCOUNTS[savedUser]);
+      } else {
+        document.getElementById("loginModalOverlay").style.display = "flex";
+      }
+    });
+
+    // ── Discover Tools from Multi-Servers ──
+    async function fetchMCPTools() {
+      const token = document.getElementById("mcpToken").value.trim();
+      const toolsListEl = document.getElementById("toolsList");
+      
+      if (!token) {
+        mcpToolsSchema = [];
+        toolServerMap = {};
+        document.getElementById("toolCount").textContent = "0";
+        toolsListEl.innerHTML = `<div style="font-size:0.75rem; color:var(--text-muted); padding:0.5rem; text-align:center;">🔒 Sign in to view authorized MCP tools.</div>`;
+        return;
+      }
+
+      let allDiscoveredTools = [];
+      toolServerMap = {};
+
+      for (const srv of MCP_SERVERS) {
+        const badge = document.getElementById(srv.badgeId);
+        const text = document.getElementById(srv.textId);
+
+        try {
+          const res = await fetch(srv.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/list"
+            })
+          });
+
+          const data = await res.json();
+          if (res.ok && data.result && Array.isArray(data.result.tools)) {
+            const serverTools = data.result.tools;
+            serverTools.forEach(t => {
+              t._serverName = srv.name;
+              t._serverTag = srv.tag;
+              t._serverUrl = srv.url;
+              t._serverColor = srv.color;
+              toolServerMap[t.name] = srv.url;
+              allDiscoveredTools.push(t);
+            });
+
+            if (badge) {
+              badge.style.color = "var(--accent-green)";
+              badge.style.borderColor = "rgba(16,185,129,0.35)";
+            }
+            if (text) text.textContent = `🟢 ${srv.name.split(" ")[0]} :${srv.url.split(":")[2].split("/")[0]} (${serverTools.length})`;
+          } else {
+            if (badge) {
+              badge.style.color = "var(--accent-amber)";
+              badge.style.borderColor = "rgba(245,158,11,0.35)";
+            }
+            if (text) text.textContent = `🟡 ${srv.name.split(" ")[0]} (Unauthorized)`;
+          }
+        } catch (err) {
+          if (badge) {
+            badge.style.color = "var(--accent-red)";
+            badge.style.borderColor = "rgba(239,68,68,0.35)";
+          }
+          if (text) text.textContent = `🔴 ${srv.name.split(" ")[0]} Offline`;
+        }
+      }
+
+      // Fallback to single server 8100 if specialized servers are offline
+      if (allDiscoveredTools.length === 0) {
+        try {
+          const fallbackRes = await fetch("http://localhost:8100/mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+          });
+          const fbData = await fallbackRes.json();
+          if (fbData.result?.tools) {
+            fbData.result.tools.forEach(t => {
+              t._serverName = "Master Gateway";
+              t._serverTag = "MCP :8100";
+              t._serverUrl = "http://localhost:8100/mcp";
+              t._serverColor = "var(--accent-cyan)";
+              toolServerMap[t.name] = "http://localhost:8100/mcp";
+              allDiscoveredTools.push(t);
+            });
+          }
+        } catch (e) {}
+      }
+
+      mcpToolsSchema = allDiscoveredTools;
+      document.getElementById("toolCount").textContent = mcpToolsSchema.length;
+
+      // Render categorized tool chips
+      toolsListEl.innerHTML = "";
+      if (mcpToolsSchema.length === 0) {
+        toolsListEl.innerHTML = `<div style="font-size:0.75rem; color:var(--accent-amber); padding:0.6rem; background:rgba(245,158,11,0.1); border-radius:8px;">⚠️ No tools detected. Run <code>python run_servers.py</code> to launch all MCP servers.</div>`;
+      } else {
+        mcpToolsSchema.forEach(tool => {
+          const chip = document.createElement("div");
+          chip.className = "tool-chip";
+          chip.innerHTML = `
+            <div class="tool-header">
+              <span class="tool-name">${tool.name}</span>
+              <span class="tool-tag" style="background:rgba(255,255,255,0.08); color:${tool._serverColor || 'var(--primary)'};">${tool._serverTag || 'MCP Tool'}</span>
+            </div>
+            <p class="tool-desc">${tool.description}</p>
+          `;
+          toolsListEl.appendChild(chip);
+        });
+      }
+    }
+
+    // ── Execute MCP Tool with Dynamic Routing ──
     async function executeMCPTool(name, args) {
-      const endpoint = document.getElementById("mcpEndpoint").value.trim();
+      const targetServerUrl = toolServerMap[name] || "http://localhost:8100/mcp";
       const token = document.getElementById("mcpToken").value.trim();
 
-      const res = await fetch(endpoint, {
+      const res = await fetch(targetServerUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -755,7 +1126,7 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
 
       const data = await res.json();
       if (data.error) {
-        return { error: data.error.message || "MCP Tool Execution Failed" };
+        return { error: data.error.message || "MCP Tool Execution Failed", server: targetServerUrl };
       }
       try {
         const textContent = data.result?.content?.[0]?.text;
@@ -765,31 +1136,28 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
       }
     }
 
-    // ── Main Chat & Dual-Mode Tool Calling Loop ──
+    // ── Main Chat & AI Agent Loop ──
     async function handleUserSend() {
       if (isGenerating) return;
       const inputEl = document.getElementById("userInput");
       const userText = inputEl.value.trim();
       if (!userText) return;
-      const userLower = userText.toLowerCase();
 
       const apiKey = document.getElementById("groqApiKey").value.trim();
       if (!apiKey) {
-        alert("Please enter your API Key in the left sidebar!");
+        alert("Please enter your Groq API Key in the left sidebar!");
         return;
       }
 
-      // Add user message to UI
       appendMessage("user", userText);
       inputEl.value = "";
       inputEl.style.height = "24px";
       isGenerating = true;
       document.getElementById("sendBtn").disabled = true;
 
-      // Add typing bubble
       const typingBubbleId = appendTypingIndicator();
 
-      // Convert MCP tool schemas to OpenAI/Groq Tool Format
+      // Convert MCP tool schemas to Groq / OpenAI tool format
       const groqTools = mcpToolsSchema.map(tool => ({
         type: "function",
         function: {
@@ -799,7 +1167,6 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
         }
       }));
 
-      // Append user message to history
       conversationMessages.push({
         role: "user",
         content: userText
@@ -814,7 +1181,7 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
           messages: conversationMessages,
           tools: groqTools.length > 0 ? groqTools : undefined,
           tool_choice: "auto",
-          temperature: 0.2
+          temperature: 0.3
         };
 
         let response = await fetch(groqUrl, {
@@ -828,34 +1195,56 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
 
         let data = await response.json();
 
-        // If the model does not support native tools parameter, retry cleanly without it
-        if (data.error && data.error.message && (data.error.message.includes("tool") || data.error.message.includes("support"))) {
-          delete requestBody.tools;
-          delete requestBody.tool_choice;
-          response = await fetch(groqUrl, {
+        // If the selected model doesn't support tools, auto-retry without tools parameter
+        if (data.error && String(data.error.message || "").toLowerCase().includes("tool")) {
+          const fallbackRes = await fetch(groqUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "Authorization": `Bearer ${apiKey}`
             },
-            body: JSON.stringify(requestBody)
+            body: JSON.stringify({
+              model: model,
+              messages: conversationMessages,
+              temperature: 0.4
+            })
           });
-          data = await response.json();
+          data = await fallbackRes.json();
         }
 
         removeTypingIndicator(typingBubbleId);
 
         if (data.error) {
           appendMessage("assistant", `❌ **API Error:** ${data.error.message || JSON.stringify(data.error)}`);
-          isGenerating = false;
-          document.getElementById("sendBtn").disabled = false;
           return;
         }
 
-        const choice = data.choices?.[0];
-        const message = choice?.message;
+        let choice = data.choices?.[0];
+        let message = choice?.message;
 
-        // 1. Check for Native Tool Calls
+        // If the model returned empty text because tools were attached, re-query cleanly
+        if ((!message?.tool_calls || message.tool_calls.length === 0) && (!message?.content || message.content.trim() === "")) {
+          try {
+            let directRes = await fetch(groqUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+              },
+              body: JSON.stringify({
+                model: model,
+                messages: conversationMessages,
+                temperature: 0.4
+              })
+            });
+            let directData = await directRes.json();
+            if (directData.choices?.[0]?.message) {
+              message = directData.choices[0].message;
+            }
+          } catch (e) {}
+        }
+
+        // 1. Tool Call Triggered Autonomously by AI Agent via Function Calling
         if (message?.tool_calls && message.tool_calls.length > 0) {
           conversationMessages.push(message);
 
@@ -880,115 +1269,47 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
             });
           }
 
-          // Second roundtrip to generate final answer
+          // Second roundtrip: Agent receives tool execution result and synthesizes final answer
           const typingId2 = appendTypingIndicator();
-          const res2 = await fetch(groqUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: model,
-              messages: conversationMessages,
-              tools: groqTools
-            })
-          });
-          const data2 = await res2.json();
+          let finalReply = "";
+          try {
+            const res2 = await fetch(groqUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+              },
+              body: JSON.stringify({
+                model: model,
+                messages: conversationMessages,
+                temperature: 0.3
+              })
+            });
+            const data2 = await res2.json();
+            finalReply = data2.choices?.[0]?.message?.content || "";
+          } catch (e) {}
           removeTypingIndicator(typingId2);
 
-          const finalReply = data2.choices?.[0]?.message?.content || "Task completed successfully.";
+          if (!finalReply || finalReply.trim() === "") {
+            finalReply = "The requested tool action completed successfully.";
+          }
+
           appendMessage("assistant", finalReply);
           conversationMessages.push({ role: "assistant", content: finalReply });
 
-        // 2. Check for Text-based JSON Tool Action Blocks or Natural Intent Fallback
+        // 2. Direct Conversational Agent Response (General Knowledge, Sports, Coding, Q&A)
         } else {
-          let shouldCallTool = false;
-          let targetTool = "";
-          let targetArgs = {};
-
-          // Check if user is asking an informational question about recipients / tools
-          const isInfoQuery = userLower.includes("whom") || userLower.includes("who") || userLower.includes("can i") || userLower.includes("allowlist") || userLower.includes("allowed") || userLower.includes("list");
-          const isSendCommand = (userLower.includes("send") || userLower.includes("dispatch") || userLower.includes("write") || userLower.includes("compose")) && !isInfoQuery;
-
-          // 1. Explicit Send Email Command
-          if (isSendCommand && (userLower.includes("email") || userLower.includes("mail") || userLower.includes("alert") || userLower.includes("@"))) {
-            shouldCallTool = true;
-            targetTool = "send_email";
-
-            let recipient = "bonthumanoj999@gmail.com";
-            if (userLower.includes("vishal") || userLower.includes("vishalreddykonreddy")) {
-              recipient = "vishalreddykonreddy@gmail.com";
-            } else {
-              const emailMatch = userText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-              if (emailMatch) recipient = emailMatch[0];
-            }
-
-            targetArgs = {
-              to: recipient,
-              subject: "Alert Notification from MCP Web Agent",
-              body: `Hello!\n\nThis message was triggered from your Groq AI Chat Interface.\nUser prompt: "${userText}"\nDispatched via: Model Context Protocol (MCP) Server`
-            };
-
-          // 2. Explicit Time Query
-          } else if ((userLower.includes("time") || userLower.includes("date") || userLower.includes("clock")) && !isInfoQuery) {
-            shouldCallTool = true;
-            targetTool = "get_current_datetime";
-
-            let tz = null;
-            if (userLower.includes("tokyo")) tz = "Asia/Tokyo";
-            else if (userLower.includes("london")) tz = "Europe/London";
-            else if (userLower.includes("new york")) tz = "America/New_York";
-            else if (userLower.includes("kolkata")) tz = "Asia/Kolkata";
-            else if (userLower.includes("paris")) tz = "Europe/Paris";
-            else if (userLower.includes("utc")) tz = "UTC";
-
-            targetArgs = tz ? { timezone: tz } : {};
+          let replyText = message?.content;
+          if (!replyText || replyText.trim() === "") {
+            replyText = "Hello! How can I assist you today? Feel free to ask any question or execute MCP tools.";
           }
-
-          if (shouldCallTool) {
-            appendToolCard(targetTool, targetArgs, "Running tool on MCP Server...");
-            const toolResult = await executeMCPTool(targetTool, targetArgs);
-            appendToolCard(targetTool, toolResult, "Tool Result Received");
-
-            if (targetTool === "send_email") {
-              if (toolResult.status === "sent") {
-                appendMessage("assistant", `✅ **Email Dispatched Successfully!**\n- **Recipient:** \`${toolResult.recipient || targetArgs.to}\`\n- **Subject:** *${toolResult.subject || targetArgs.subject}*\n- **Message ID:** \`${toolResult.message_id}\`\n- **Mode:** \`${toolResult.delivery_mode}\``);
-              } else {
-                appendMessage("assistant", `❌ **Email Failed:** ${toolResult.message || toolResult.error}`);
-              }
-            } else if (targetTool === "get_current_datetime") {
-              if (toolResult.status === "success") {
-                appendMessage("assistant", `🕒 The current time is **${toolResult.formatted || toolResult.datetime_iso}**.\n*(Source: ${toolResult.source || 'Host System Clock'}, Timezone: ${toolResult.timezone || 'Local'})*`);
-              } else {
-                appendMessage("assistant", `❌ **Time Tool Error:** ${toolResult.message || toolResult.error}`);
-              }
-            }
-          } else {
-            // Informational Query or Normal Chat Response
-            let replyText = message?.content;
-            if (!replyText || replyText.trim() === "") {
-              if (userLower.includes("whom") || userLower.includes("who") || userLower.includes("mail") || userLower.includes("recipient") || userLower.includes("allowlist")) {
-                replyText = `You can send email notifications to any of the authorized recipients configured on the server:\n\n` +
-                            `1. 📧 **bonthumanoj999@gmail.com** (Manoj Bonthu)\n` +
-                            `2. 📧 **vishalreddykonreddy@gmail.com** (Vishal Reddy)\n` +
-                            `3. 📧 **ops@company.com** (Operations Team)\n` +
-                            `4. 📧 **manager@company.com** (Management Team)\n` +
-                            `5. 📧 **alerts@company.com** (System Alerts)\n` +
-                            `6. 📧 **\*@trusteddomain.com** (Any email under trusted domains)\n\n` +
-                            `To send an email, simply ask: *"Send an email to bonthumanoj999@gmail.com with status update"*`;
-              } else {
-                replyText = "Hello! I am your AI agent connected to your Streamable MCP Server. How can I assist you today?";
-              }
-            }
-            appendMessage("assistant", replyText);
-            conversationMessages.push({ role: "assistant", content: replyText });
-          }
+          appendMessage("assistant", replyText);
+          conversationMessages.push({ role: "assistant", content: replyText });
         }
 
       } catch (err) {
         removeTypingIndicator(typingBubbleId);
-        appendMessage("assistant", `❌ **Error:** Failed to connect. ${err.message}`);
+        appendMessage("assistant", `❌ **Error:** Failed to communicate with AI agent. ${err.message}`);
       } finally {
         isGenerating = false;
         document.getElementById("sendBtn").disabled = false;
@@ -1000,7 +1321,7 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
       const container = document.getElementById("chatMessages");
       const row = document.createElement("div");
       row.className = `message-row ${role}`;
-      
+
       const avatar = document.createElement("div");
       avatar.className = `avatar ${role === "user" ? "user" : "groq"}`;
       avatar.textContent = role === "user" ? "👤" : "G";
@@ -1075,8 +1396,16 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
       if (el) el.remove();
     }
 
+    function cleanModelResponse(text) {
+      if (!text) return "";
+      // Strip out <think>...</think> reasoning tags from models
+      let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      return cleaned;
+    }
+
     function formatMarkdown(text) {
-      return text
+      const cleaned = cleanModelResponse(text);
+      return cleaned
         .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
         .replace(/\*(.*?)\*/g, "<em>$1</em>")
         .replace(/`([^`]+)`/g, "<code style='background:rgba(255,255,255,0.1);padding:0.15rem 0.35rem;border-radius:4px;font-family:monospace;'>$1</code>")
@@ -1084,4 +1413,5 @@ Only invoke the send_email tool when the user explicitly asks to send an email.`
     }
   </script>
 </body>
+
 </html>

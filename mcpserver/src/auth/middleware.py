@@ -84,24 +84,52 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 2. Authentication check
         if cfg.auth.enabled:
             token = extract_token(request)
-            if not token or token not in cfg.auth.tokens:
-                logger.warning(f"Unauthorized access attempt to {request.url.path} | token_provided={bool(token)}")
+            if not token:
+                logger.warning(f"Unauthorized access attempt to {request.url.path} | token_provided=False")
                 return JSONResponse(
                     make_jsonrpc_error(
                         code=JSONRPCErrorCodes.UNAUTHORIZED,
-                        message="Unauthorized: Missing or invalid authentication credentials.",
+                        message="Unauthorized: Missing authentication credential.",
                     ),
                     status_code=401,
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            caller_identity = cfg.auth.tokens[token]
+            import src.globals as g
+            if g.identity_service:
+                identity = g.identity_service.resolve(token)
+                if not identity:
+                    logger.warning(f"Unauthorized access attempt to {request.url.path} | invalid token")
+                    return JSONResponse(
+                        make_jsonrpc_error(
+                            code=JSONRPCErrorCodes.UNAUTHORIZED,
+                            message="Unauthorized: Invalid authentication credentials.",
+                        ),
+                        status_code=401,
+                    )
+                caller_identity = identity["agentId"]
+                request.state.identity = identity
+            else:
+                # Fallback for tests if identity service is not loaded
+                if token not in cfg.auth.tokens:
+                    logger.warning(f"Unauthorized access attempt to {request.url.path} | invalid token")
+                    return JSONResponse(
+                        make_jsonrpc_error(
+                            code=JSONRPCErrorCodes.UNAUTHORIZED,
+                            message="Unauthorized: Missing or invalid authentication credentials.",
+                        ),
+                        status_code=401,
+                    )
+                caller_identity = cfg.auth.tokens[token]
+                request.state.identity = {"agentId": caller_identity}
+
             request.state.caller_identity = caller_identity
             request.state.caller_token = token
         else:
             caller_identity = "anonymous_caller"
             request.state.caller_identity = caller_identity
             request.state.caller_token = None
+            request.state.identity = {"agentId": "anonymous_caller"}
 
         # 3. Session validation and identity binding
         session_id = request.headers.get("mcp-session-id") or request.query_params.get("session_id")

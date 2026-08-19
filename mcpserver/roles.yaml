@@ -1,0 +1,16 @@
+schemaVersion: "1.0"
+policyVersion: 1
+roles:
+  admin-role:
+    description: "Admin role with access to everything"
+    allow: ["*"]
+    deny: []
+    maxClassification: "secret"
+
+classificationLevels:
+  - name: public
+    description: "Publicly shareable info"
+    externalShareAllowed: true
+  - name: secret
+    description: "Internal confidential data"
+    externalShareAllowed: false

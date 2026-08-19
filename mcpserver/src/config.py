@@ -5,7 +5,11 @@ config.py — Typed dataclasses for server, authentication, security, and SMTP c
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+import os
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
@@ -19,6 +23,7 @@ class ServerConfig:
 class AuthConfig:
     enabled: bool = True
     tokens: Dict[str, str] = field(default_factory=dict)  # token -> caller_identity
+    users: Dict[str, Dict[str, str]] = field(default_factory=dict)  # username -> {password, identity, token}
     permissions: Dict[str, List[str]] = field(default_factory=dict)  # caller_identity -> [allowed_tools]
 
 
@@ -68,6 +73,22 @@ class AppConfig:
 _config: Optional[AppConfig] = None
 
 
+def _resolve_env(value):
+    """Resolve ${env:VAR} placeholders from the current environment."""
+    if isinstance(value, str) and value.startswith("${env:") and value.endswith("}"):
+        env_name = value[6:-1]
+        return os.environ.get(env_name, "")
+    if isinstance(value, dict):
+        resolved_dict = {}
+        for k, v in value.items():
+            new_k = _resolve_env(k) if isinstance(k, str) else k
+            resolved_dict[new_k] = _resolve_env(v)
+        return resolved_dict
+    if isinstance(value, list):
+        return [_resolve_env(v) for v in value]
+    return value
+
+
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """Loads configuration dynamically from YAML file."""
     path = Path(config_path)
@@ -75,7 +96,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         return AppConfig()
 
     with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+        raw = _resolve_env(yaml.safe_load(f) or {})
 
     server_raw = raw.get("server", {})
     auth_raw = raw.get("auth", {})
@@ -110,6 +131,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         auth=AuthConfig(
             enabled=auth_raw.get("enabled", True),
             tokens=auth_raw.get("tokens", {}),
+            users=auth_raw.get("users", {}),
             permissions=auth_raw.get("permissions", {}),
         ),
         security=SecurityConfig(

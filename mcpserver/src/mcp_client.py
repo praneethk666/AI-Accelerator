@@ -52,7 +52,7 @@ class StreamableHttpClient(MCPClientManager):
             "jsonrpc": "2.0",
             "id": self._next_id(),
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "custom-mcp-gateway", "version": "1.0"}}
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "custom-mcp-gateway", "version": "1.0"}}
         }
         resp = await self._post(payload)
         return resp.get("result", {})
@@ -126,7 +126,7 @@ class StdioClient(MCPClientManager):
             "jsonrpc": "2.0",
             "id": self._next_id(),
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "custom-mcp-gateway", "version": "1.0"}}
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "custom-mcp-gateway", "version": "1.0"}}
         }
         resp = await self._send_request(payload)
         return resp.get("result", {})

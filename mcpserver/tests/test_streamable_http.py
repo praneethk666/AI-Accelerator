@@ -15,7 +15,7 @@ def test_mcp_initialize(client: TestClient, auth_headers):
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "test-client", "version": "1.0.0"},
         },
@@ -23,7 +23,7 @@ def test_mcp_initialize(client: TestClient, auth_headers):
     resp = client.post("/mcp", json=payload, headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["result"]["protocolVersion"] == "2024-11-05"
+    assert data["result"]["protocolVersion"] == "2025-06-18"
     assert "tools" in data["result"]["capabilities"]
     assert "Mcp-Session-Id" in resp.headers
 

@@ -44,7 +44,7 @@ setup_logging()
 logger = logging.getLogger("GmailMCPServer")
 
 GMAIL_MCP_PORT = 8101
-MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {
     "name": "gmail-mcp-server",
     "version": "1.0.0",

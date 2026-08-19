@@ -7,11 +7,11 @@ async def test_streamable_http_client_initialize():
     client = StreamableHttpClient("test-server", {"transport": {"url": "http://test/mcp"}})
     
     mock_post = AsyncMock()
-    mock_post.return_value = {"result": {"protocolVersion": "2024-11-05"}}
+    mock_post.return_value = {"result": {"protocolVersion": "2025-06-18"}}
     
     with patch.object(client, "_post", mock_post):
         result = await client.initialize()
-        assert result.get("protocolVersion") == "2024-11-05"
+        assert result.get("protocolVersion") == "2025-06-18"
         mock_post.assert_awaited_once()
 
 @pytest.mark.asyncio

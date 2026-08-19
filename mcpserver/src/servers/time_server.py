@@ -35,7 +35,7 @@ setup_logging()
 logger = logging.getLogger("TimeMCPServer")
 
 TIME_MCP_PORT = 8102
-MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {
     "name": "time-system-mcp-server",
     "version": "1.0.0",

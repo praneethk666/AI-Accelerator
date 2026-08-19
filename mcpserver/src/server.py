@@ -42,7 +42,7 @@ import contextlib
 setup_logging()
 logger = logging.getLogger(__name__)
 
-MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {
     "name": "streamable-mcp-server",
     "version": "0.2.0",

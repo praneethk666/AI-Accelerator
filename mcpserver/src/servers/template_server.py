@@ -33,7 +33,7 @@ logger = logging.getLogger("TemplateMCPServer")
 
 # ── 1. Configure Server Identity & Port ──────────────────────────────────────
 SERVER_PORT = 8103  # Choose an available port (e.g., 8103, 8104, etc.)
-MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {
     "name": "custom-mcp-server-template",
     "version": "1.0.0",

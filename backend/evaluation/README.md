@@ -39,10 +39,27 @@ Three numbers, because they answer different questions:
   confident, unsourced answers, and it can regress while accuracy stays flat.
 
 ```bash
-# uses config query.agent.intent by default; --provider/--model to override
-python -m backend.evaluation.intent_eval --provider groq --model llama-3.3-70b-versatile \
+# no flags = the configured query.agent.intent model, i.e. what actually ships
+python -m backend.evaluation.intent_eval --json results.json
+
+# --provider/--model to score a candidate before switching to it
+python -m backend.evaluation.intent_eval --provider openai --model gpt-4o-mini \
     --delay 2.1 --json results.json
 ```
 `--delay` paces requests for rate-limited free tiers. Exits non-zero if accuracy falls below
 95% or any grounding miss occurs, so it can gate a release. Needs a provider key and is run by
 hand; `tests/test_intent_dataset.py` validates the dataset and metric maths offline in CI.
+
+**Read `fallbacks` before the accuracy line.** The classifier catches its own errors and
+defaults to `document_question`, so an unusable model doesn't crash the run — it scores every
+case as a fallback and still prints a routing number that looks survivable. `fallbacks` equal
+to `total` means nothing was measured. Two ways to get there, both seen in practice:
+
+* a **retired model id** — the call 404s every time;
+* a **reasoning model** — `intent.max_tokens` is 12, and models like `openai/gpt-oss-*` spend
+  that entire budget on reasoning tokens, returning empty content. They need ~512 tokens to
+  emit a label at all, which defeats the one-cheap-call design.
+
+`main()` preflights the model with a single call to surface the first case immediately. The
+second is quieter: the preflight passes, because the model is real and answers a normal
+prompt — it only starves under the 12-token cap.

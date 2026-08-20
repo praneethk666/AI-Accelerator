@@ -20,7 +20,7 @@ config["llm"] keys (all optional except provider/model):
   temperature
 
 Recipes (config/global.yaml):
-  Groq:        provider: groq    model: llama-3.1-8b-instant
+  Groq:        provider: groq    model: openai/gpt-oss-20b
   NVIDIA NIM:  provider: openai  model: meta/llama-3.1-8b-instruct
                base_url: https://integrate.api.nvidia.com/v1  api_key: ${NVIDIA_API_KEY}
   Gemini:      provider: google  model: gemini-1.5-flash      api_key: ${GOOGLE_API_KEY}

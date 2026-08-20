@@ -19,7 +19,7 @@ And one safety counter that matters more than either:
 
 Usage:
     python -m backend.evaluation.intent_eval
-    python -m backend.evaluation.intent_eval --provider groq --model llama-3.3-70b-versatile
+    python -m backend.evaluation.intent_eval --provider groq --model openai/gpt-oss-20b
     python -m backend.evaluation.intent_eval --json results.json --delay 2.2
 
 --delay paces requests for rate-limited free tiers (Groq allows ~30 req/min).
@@ -196,6 +196,28 @@ def main(argv=None) -> int:
         pass
 
     llm, label = build_llm(args.provider, args.model, args.config)
+
+    # Preflight, because classify_intent() catches everything and falls back to
+    # document_question: an unusable model doesn't crash the run, it scores 75
+    # fallbacks and still prints a routing number that looks survivable. One call up
+    # front, built at the same max_tokens the real run uses, distinguishes the two
+    # ways that happens — a retired id raises, a reasoning model returns empty.
+    try:
+        probe = llm.invoke("Reply with the single word: ok")
+    except Exception as e:
+        print(f"model check failed for {label}:\n  {e}\n\n"
+              "Providers retire model ids without notice — confirm this one is still "
+              "listed by the provider, or pass a different --model.", file=sys.stderr)
+        return 2
+
+    if not (probe.content or "").strip():
+        print(f"{label} returned empty content under this token budget.\n\n"
+              "Reasoning models (e.g. openai/gpt-oss-*) spend the whole budget on "
+              "reasoning tokens before emitting any, so every case would score as a "
+              "fallback. Raise intent.max_tokens well past a label's length, or pick a "
+              "model that answers directly.", file=sys.stderr)
+        return 2
+
     print(f"Evaluating {len(CASES)} cases against {label}\n")
 
     summary = evaluate(llm, delay=args.delay, progress=not args.quiet)

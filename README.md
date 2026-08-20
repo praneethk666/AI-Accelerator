@@ -313,10 +313,16 @@ for it. The executor stops and returns `status: "needs_approval"` with what it
 wants to run; nothing happens until the caller re-invokes with
 `approved_writes=True` for the same message. Reads execute immediately.
 
-**Model:** `query.agent.provider`/`model` in config — defaults to Groq
-(`llama-3.3-70b-versatile`, free tier, native tool-calling), swappable to
-`gpt-4o-mini` for production by editing those two keys; the `llm.api_key`
-mechanism is unaffected.
+**Model:** `query.agent.provider`/`model` in config — today `openai` /
+`gpt-4o-mini`. Any tool-calling model works; the `llm.api_key` mechanism is
+unaffected by swapping it.
+
+Two caveats before pointing this at a different model. Ids get retired without
+notice, so check the provider's live list rather than trusting one named here.
+And `query.agent.intent` caps its call at 12 tokens — a *reasoning* model spends
+that budget on reasoning tokens and returns empty content, so the classifier
+silently falls back on every turn. Verify a candidate returns a bare label at
+`max_tokens=12` before switching.
 
 **Try it:**
 ```bash

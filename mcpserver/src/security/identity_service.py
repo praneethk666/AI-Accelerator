@@ -24,43 +24,32 @@ class IdentityService:
         self.roles = roles_config.get("roles", {})
         self.classification_levels = roles_config.get("classificationLevels", [])
 
-    def resolve(self, auth_token: str) -> Optional[Dict[str, Any]]:
+    def resolve(self, subject_id: str) -> Optional[Dict[str, Any]]:
         """
-        Validates the token against the agent configurations and returns
+        Validates the subject against the agent configurations and returns
         the resolved agent identity and role context.
         """
-        for agent_id, agent in self.agents.items():
+        agent = self.agents.get(subject_id)
+        if agent:
             cred = agent.get("credential", {})
-            source = cred.get("source", "")
+            # Check expiration
+            expires_at = cred.get("expiresAt")
+            if expires_at:
+                try:
+                    dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                    if datetime.now(dt.tzinfo or timezone.utc) > dt:
+                        logger.warning(f"Agent {subject_id} credential expired.")
+                        return None
+                except ValueError:
+                    pass
             
-            # Simple resolution for dev/demo if not using env vars
-            expected_token = None
-            if source.startswith("${env:") and source.endswith("}"):
-                env_var = source[6:-1]
-                expected_token = os.environ.get(env_var)
-            else:
-                # If it's hardcoded for testing
-                expected_token = source
-                
-            if expected_token and expected_token == auth_token:
-                # Check expiration
-                expires_at = cred.get("expiresAt")
-                if expires_at:
-                    try:
-                        dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                        if datetime.now(dt.tzinfo or timezone.utc) > dt:
-                            logger.warning(f"Agent {agent_id} credential expired.")
-                            return None
-                    except ValueError:
-                        pass
-                
-                return {
-                    "agentId": agent_id,
-                    "profile": agent,
-                    "role": self._resolve_role(agent.get("role"))
-                }
+            return {
+                "agentId": subject_id,
+                "profile": agent,
+                "role": self._resolve_role(agent.get("role"))
+            }
 
-        logger.warning("Authentication failed: token does not map to any active agent.")
+        logger.warning(f"Authentication failed: subject '{subject_id}' does not map to any active agent.")
         return None
 
     def _resolve_role(self, role_name: Optional[str]) -> Optional[Dict[str, Any]]:

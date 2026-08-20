@@ -8,7 +8,14 @@ from pydantic import ValidationError
 from src.security.allowlist import validate_email_allowlist
 from src.security.injection_detector import detect_prompt_injection
 from src.tools.email_tool import SendEmailInput, send_email_handler
+from src.config import load_config
 
+@pytest.fixture(autouse=True)
+def force_simulation_mode():
+    cfg = load_config()
+    cfg.smtp.mode = "simulation"
+    yield
+    
 
 @pytest.mark.asyncio
 async def test_send_email_success_simulation():

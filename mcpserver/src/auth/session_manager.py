@@ -28,6 +28,9 @@ class Session:
         self.events: List[StreamEvent] = []
         self.max_event_history = 100
         self.queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+        # Security Cache: stores f"{server}:{tool}" -> "ALLOW"/"DENY"
+        self.cached_permissions: Dict[str, str] = {}
+        self.permissions_cached_at: float = 0.0
 
     def add_event(self, event_name: str, data: str) -> StreamEvent:
         event = StreamEvent(

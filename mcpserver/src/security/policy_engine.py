@@ -13,8 +13,19 @@ class PolicyEngine:
         Evaluates whether the agent can execute the tool on the given server.
         Returns 'ALLOW', 'DENY', or 'REQUIRE_APPROVAL'.
         """
-        agent = identity.get("profile", {})
+        if not identity:
+            logger.warning("DENY: Identity is missing or undefined.")
+            return "DENY"
+
+        agent = identity.get("profile")
+        if not agent:
+            logger.warning("DENY: Agent profile is undefined.")
+            return "DENY"
+
         role = identity.get("role")
+        if not role:
+            logger.warning("DENY: Role is missing or unknown.")
+            return "DENY"
 
         # 1. Check Role Ceilings
         if role:

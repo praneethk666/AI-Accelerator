@@ -78,7 +78,7 @@ async def readiness_check(request: Request) -> JSONResponse:
 
 # ── JSON-RPC 2.0 Request Router ───────────────────────────────────────────────
 
-async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str, identity: Dict[str, Any] = None) -> Dict[str, Any]:
+async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str, identity: Dict[str, Any] = None, correlation_id: str = None, session: Any = None) -> Dict[str, Any]:
     """
     Processes a single JSON-RPC 2.0 request dictionary and returns response object.
     """
@@ -123,18 +123,17 @@ async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str, identity:
         
         # In Phase 2, we can filter visibly by role allowlist and agent allowlist.
         # But wait, we evaluate via PolicyEngine per tool to see if they can use it.
-        if g.policy_engine and identity and caller != "anonymous_caller":
+        if g.policy_engine and identity:
             visible_tools = []
             for t in all_tools:
-                # tools/list resolution logic is: only show tools that evaluate to ALLOW or REQUIRE_APPROVAL
-                # We need to map tool to a capability/server? 
-                # If they are remote tools, they are registered with names. Local tools evaluate on 'local'.
-                # For discovery, let's allow all that are not explicitly DENY.
                 res = g.policy_engine.evaluate(identity, "local", t["name"])
                 if res != "DENY":
                     visible_tools.append(t)
+        elif g.policy_engine and not identity:
+            # Policy Engine is enabled, but no identity provided -> Default DENY
+            visible_tools = []
         else:
-            # Fallback legacy behavior
+            # Fallback legacy behavior if Policy Engine is completely disabled
             cfg = load_config()
             caller_perms = cfg.auth.permissions.get(caller, ["*"]) if cfg.auth.enabled else ["*"]
             if "*" in caller_perms:
@@ -165,30 +164,66 @@ async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str, identity:
         if g.orchestration_resolver:
             target_server, target_tool = g.orchestration_resolver.resolve(tool_name)
 
-        if g.policy_engine and identity and caller != "anonymous_caller":
-            policy_res = g.policy_engine.evaluate(identity, target_server, target_tool)
+        if g.policy_engine and identity:
+            cache_key = f"{target_server}:{target_tool}"
+            now = __import__("time").time()
+            
+            # Use Session Cache (5-minute TTL)
+            if session and (now - getattr(session, "permissions_cached_at", 0)) < 300:
+                if cache_key in session.cached_permissions:
+                    policy_res = session.cached_permissions[cache_key]
+                else:
+                    policy_res = g.policy_engine.evaluate(identity, target_server, target_tool)
+                    session.cached_permissions[cache_key] = policy_res
+            else:
+                policy_res = g.policy_engine.evaluate(identity, target_server, target_tool)
+                if session:
+                    session.cached_permissions = {cache_key: policy_res}
+                    session.permissions_cached_at = now
             if policy_res == "DENY":
                 logger.warning(
-                    f"Policy authorization denied | agent={identity.get('agentId')} | target_server={target_server} | tool={target_tool}"
+                    f"Policy authorization denied | agent={identity.get('agentId')} | target_server={target_server} | tool={target_tool}",
+                    extra={"event_type": "authorization_denied", "subject": identity.get("agentId"), "server": target_server, "tool": target_tool, "decision": "DENY", "correlation_id": correlation_id}
                 )
                 return make_jsonrpc_error(
                     code=JSONRPCErrorCodes.FORBIDDEN,
                     message=f"Forbidden: Agent identity '{identity.get('agentId')}' is not authorized to execute capability '{tool_name}' (resolved to '{target_tool}' on '{target_server}').",
                     req_id=req_id,
                 )
+            else:
+                logger.info(
+                    f"Policy authorization allowed | agent={identity.get('agentId')} | target_server={target_server} | tool={target_tool}",
+                    extra={"event_type": "authorization_allowed", "subject": identity.get("agentId"), "server": target_server, "tool": target_tool, "decision": "ALLOW", "correlation_id": correlation_id}
+                )
+        elif g.policy_engine and not identity:
+            logger.warning(
+                f"Policy authorization denied | no identity | tool={tool_name}",
+                extra={"event_type": "authorization_denied", "subject": "anonymous", "tool": tool_name, "decision": "DENY", "correlation_id": correlation_id}
+            )
+            return make_jsonrpc_error(
+                code=JSONRPCErrorCodes.FORBIDDEN,
+                message=f"Forbidden: Authentication required to execute tool '{tool_name}'.",
+                req_id=req_id,
+            )
         else:
-            # Enforce legacy caller RBAC authorization
+            # Enforce legacy caller RBAC authorization if Policy Engine is entirely disabled
             cfg = load_config()
             if cfg.auth.enabled:
                 caller_perms = cfg.auth.permissions.get(caller, ["*"])
                 if "*" not in caller_perms and tool_name not in caller_perms:
                     logger.warning(
-                        f"RBAC authorization denied | caller={caller} | tool={tool_name} | allowed={caller_perms}"
+                        f"RBAC authorization denied | caller={caller} | tool={tool_name} | allowed={caller_perms}",
+                        extra={"event_type": "authorization_denied", "subject": caller, "tool": tool_name, "decision": "DENY", "correlation_id": correlation_id}
                     )
                     return make_jsonrpc_error(
                         code=JSONRPCErrorCodes.FORBIDDEN,
                         message=f"Forbidden: Caller identity '{caller}' is not authorized to execute tool '{tool_name}'.",
                         req_id=req_id,
+                    )
+                else:
+                    logger.info(
+                        f"RBAC authorization allowed | caller={caller} | tool={tool_name}",
+                        extra={"event_type": "authorization_allowed", "subject": caller, "tool": tool_name, "decision": "ALLOW", "correlation_id": correlation_id}
                     )
 
         try:
@@ -197,7 +232,7 @@ async def handle_jsonrpc_request(payload: Dict[str, Any], caller: str, identity:
             # prefixed or handles them internally. 
             # But the OrchestrationResolver already tells us the physical tool name. Let's pass the 
             # physical tool to `execute_tool`.
-            result = await execute_tool(tool_name=target_tool, arguments=arguments, caller=caller)
+            result = await execute_tool(tool_name=target_tool, arguments=arguments, caller=caller, correlation_id=correlation_id)
             
             is_error = result.get("status") == "failed"
             return make_jsonrpc_success(
@@ -317,12 +352,14 @@ async def mcp_post_endpoint(request: Request) -> JSONResponse:
 
     identity = getattr(request.state, "identity", None)
 
+    correlation_id = getattr(request.state, "correlation_id", None)
+    
     # Handle batch or single request
     if isinstance(payload, list):
-        responses = [await handle_jsonrpc_request(item, caller, identity) for item in payload]
-        response_data = responses
+        responses = await asyncio.gather(*(handle_jsonrpc_request(item, caller, identity, correlation_id, session) for item in payload))
+        response_data = list(responses)
     else:
-        response_data = await handle_jsonrpc_request(payload, caller, identity)
+        response_data = await handle_jsonrpc_request(payload, caller, identity, correlation_id, session)
 
     # Record event in session history if active
     if session:
@@ -454,7 +491,8 @@ async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:
         audit_logger = AuditLogger()
         
         def rbac_policy_checker(user_identity: dict, tool_name: str) -> str:
-            res = g.policy_engine.evaluate(user_identity, "local", tool_name)
+            target_server, target_tool = g.orchestration_resolver.resolve(tool_name)
+            res = g.policy_engine.evaluate(user_identity, target_server, target_tool)
             return res
             
         g.agent_runtime = AgentRuntime(

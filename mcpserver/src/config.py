@@ -20,11 +20,22 @@ class ServerConfig:
 
 
 @dataclass
+class JWTConfig:
+    enabled: bool = False
+    secret_key: str = ""
+    issuer: str = ""
+    audience: str = ""
+    algorithms: List[str] = field(default_factory=lambda: ["HS256"])
+    jwks_url: str = ""
+
+
+@dataclass
 class AuthConfig:
     enabled: bool = True
     tokens: Dict[str, str] = field(default_factory=dict)  # token -> caller_identity
     users: Dict[str, Dict[str, str]] = field(default_factory=dict)  # username -> {password, identity, token}
     permissions: Dict[str, List[str]] = field(default_factory=dict)  # caller_identity -> [allowed_tools]
+    jwt: JWTConfig = field(default_factory=JWTConfig)
 
 
 @dataclass
@@ -63,11 +74,26 @@ class SMTPConfig:
 
 
 @dataclass
+class OpenBaoConfig:
+    url: str
+    role_id: str
+    secret_id: str
+    path_mapping: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class CredentialsConfig:
+    provider: str
+    openbao: OpenBaoConfig
+
+
+@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     smtp: SMTPConfig = field(default_factory=SMTPConfig)
+    credentials: CredentialsConfig = field(default_factory=lambda: CredentialsConfig("env", OpenBaoConfig("", "", "")))
 
 
 _config: Optional[AppConfig] = None
@@ -91,6 +117,10 @@ def _resolve_env(value):
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """Loads configuration dynamically from YAML file."""
+    global _config
+    if _config is not None:
+        return _config
+
     path = Path(config_path)
     if not path.exists():
         return AppConfig()
@@ -105,6 +135,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     rl_raw = email_sec_raw.get("rate_limit", {})
     pi_raw = email_sec_raw.get("prompt_injection_guard", {})
     smtp_raw = raw.get("smtp", {})
+    cred_raw = raw.get("credentials", {})
+    bao_raw = cred_raw.get("openbao", {})
+    path_mapping = bao_raw.get("path_mapping", {})
 
     rate_limit = RateLimitConfig(
         max_calls=rl_raw.get("max_calls", 10),
@@ -133,6 +166,14 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             tokens=auth_raw.get("tokens", {}),
             users=auth_raw.get("users", {}),
             permissions=auth_raw.get("permissions", {}),
+            jwt=JWTConfig(
+                enabled=auth_raw.get("jwt", {}).get("enabled", False),
+                secret_key=auth_raw.get("jwt", {}).get("secret_key", ""),
+                issuer=auth_raw.get("jwt", {}).get("issuer", ""),
+                audience=auth_raw.get("jwt", {}).get("audience", ""),
+                algorithms=auth_raw.get("jwt", {}).get("algorithms", ["HS256"]),
+                jwks_url=auth_raw.get("jwt", {}).get("jwks_url", ""),
+            ),
         ),
         security=SecurityConfig(
             email=email_security,
@@ -146,6 +187,15 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             use_tls=smtp_raw.get("use_tls", True),
             sender_address=smtp_raw.get("sender_address", "notifications@company.com"),
         ),
+        credentials=CredentialsConfig(
+            provider=os.getenv("CREDENTIAL_PROVIDER", "env"),
+            openbao=OpenBaoConfig(
+                url=os.getenv("OPENBAO_URL", "http://127.0.0.1:8200"),
+                role_id=os.getenv("OPENBAO_ROLE_ID", ""),
+                secret_id=os.getenv("OPENBAO_SECRET_ID", ""),
+                path_mapping=path_mapping
+            )
+        )
     )
     return _config
 

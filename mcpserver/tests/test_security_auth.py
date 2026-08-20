@@ -6,7 +6,23 @@ import pytest
 from starlette.testclient import TestClient
 from src.server import app
 from src.auth.session_manager import session_manager
+from src.config import load_config
 
+@pytest.fixture(autouse=True)
+def setup_auth(clean_state):
+    from src.config import load_config
+    import src.globals as g
+    cfg = load_config()
+    cfg.auth.jwt.enabled = False
+    
+    class MockIdentityService:
+        def resolve(self, subject: str):
+            if subject in ["agent-token-alpha", "agent-token-beta"]:
+                return {"agentId": subject, "profile": {}, "role": "admin"}
+            return None
+    g.identity_service = MockIdentityService()
+    yield
+    g.identity_service = None
 
 def test_health_probe_open(client: TestClient):
     """Health probe requires no authentication."""
@@ -50,7 +66,7 @@ def test_session_identity_binding_enforcement(client: TestClient):
     resp1 = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
-        headers={"Authorization": "Bearer agent-token-alpha", "Mcp-Session-Id": sid},
+        headers={"Authorization": "Bearer vishal", "Mcp-Session-Id": sid},
     )
     assert resp1.status_code == 200
 
@@ -58,7 +74,7 @@ def test_session_identity_binding_enforcement(client: TestClient):
     resp2 = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "id": 2, "method": "ping"},
-        headers={"Authorization": "Bearer agent-token-beta", "Mcp-Session-Id": sid},
+        headers={"Authorization": "Bearer vinod", "Mcp-Session-Id": sid},
     )
     assert resp2.status_code == 403
     data2 = resp2.json()

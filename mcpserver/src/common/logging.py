@@ -20,7 +20,9 @@ class JSONFormatter(logging.Formatter):
         }
 
         # Attach extra structured attributes if present
-        for key in ("caller", "session_id", "tool", "ip", "event_type", "security_alert"):
+        for key in ("caller", "session_id", "correlation_id", "tool", "ip", "event_type", 
+                    "security_alert", "subject", "reason", "server", "decision", 
+                    "operation", "provider", "credential_id"):
             if hasattr(record, key):
                 log_data[key] = getattr(record, key)
 

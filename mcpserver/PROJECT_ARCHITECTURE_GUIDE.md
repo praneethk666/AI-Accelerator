@@ -75,6 +75,16 @@ Instead of hardcoding APIs into an AI prompt, MCP allows servers to expose **too
                  └──────────────────────────────────┘
 ```
 
+### 🔄 Exact Current Request Lifecycle Flow
+This is exactly what happens when you type a prompt in the Web UI:
+1. **User Input / SSE Setup**: User submits a POST request to `/mcp`. The UI connects a Server-Sent Events (SSE) stream.
+2. **JWT Authentication Boundary**: The `AuthMiddleware` verifies your JSON Web Token signature and locks your Identity to the session.
+3. **Agent Orchestration**: The Groq `Planner` dynamically creates an execution list. The `DecisionEngine` determines which logic pathways require which tool.
+4. **Policy Engine (JIT Evaluation)**: The requested tools are dynamically resolved to their physical upstream node (`OrchestrationResolver`) and mapped mathematically against your role (e.g., `admin-role`) via JIT evaluation to ensure you are allowed to execute it.
+5. **Execution Routing (Parallelized)**: The `ExecutionEngine` proxies the JSON-RPC tool directly to the physical microservice (e.g. `8101` for Gmail). If multiple tools are requested, it executes them concurrently via `asyncio.gather`.
+6. **Credential Retrieval**: The `CredentialService` dynamically performs an AppRole auth fetch onto the local **HashiCorp OpenBao (Vault)** to grab the Google SMTP Password straight into Python RAM (cached rigidly for 300s to completely prevent API rate limiting).
+7. **Synthesis**: The tool executes! It responds back up the chain and streams beautiful Markdown back directly into your browser window.
+
 ---
 
 ## 🏛️ The 3 Microservice Servers
@@ -144,19 +154,31 @@ Instead of hardcoding APIs into an AI prompt, MCP allows servers to expose **too
 
 ---
 
-## 🔐 User Authentication & Access Control (RBAC)
+## 🔐 User Authentication & Access Control (Zero-Trust RBAC)
 
-The system enforces authentication using **Bearer Tokens** and pre-configured user credentials:
+The system enforces strict zero-trust authentication using **Cryptographically Signed JWT Bearer Tokens**. All API requests must present a valid JWT signed by the `JWT_SECRET`.
 
-| Username | Password | Role / Identity | Permissions |
+| Username | Identity Subject (`sub`) | Role Definitions (via `roles.yaml`) | Expected Permissions |
 |---|---|---|---|
-| **`vishal`** | `vishal123` | `vishal_engineer` | 🟢 **Full Admin** (All 7 Tools) |
-| **`vinod`** | `vinod123` | `vinod_engineer` | 🟢 **Full Admin** (All 7 Tools) |
-| **`admin`** | `admin123` | `admin_user` | 🟢 **Superuser** (All 7 Tools) |
-| **`agent_alpha`** | `alpha123` | `agent_alpha` | 🟡 Standard Agent (`get_current_datetime`, `send_email`) |
-| **`agent_beta`** | `beta123` | `agent_beta` | 🟠 Restricted Read-Only (`get_current_datetime`) |
+| **`vishal`** | `vishal` | `admin-role` | 🟢 **Full Admin** (All 7 Tools) |
+| **`vinod`** | `vinod` | `admin-role` | 🟢 **Full Admin** (All 7 Tools) |
+| **`admin`** | `admin` | `admin-role` | 🟢 **Superuser** (All 7 Tools) |
+| **`agent_alpha`** | `agent_alpha` | `agent-role` | 🟡 Standard Agent (`get_current_datetime`, `send_email`) |
+| **`agent_beta`** | `agent_beta` | `read-only-role` | 🟠 Restricted Read-Only (`get_current_datetime`) |
+
+> **Note**: Passwords like `vishal123` in the Web UI are only local development placeholders. In production, the UI relies completely on an Identity Provider (IDP) to issue the JWT token!
 
 ---
+
+## 🗝️ Enterprise Secrets Management (HashiCorp OpenBao)
+
+174: Instead of storing sensitive API keys or SMTP passwords in `.env` files, this architecture integrates natively with **HashiCorp OpenBao (Vault)**.
+175: * **Workload Identity**: The Python servers authenticate with OpenBao using a dynamic AppRole/Kubernetes Token.
+176: * **Just-In-Time Fetching**: When the `send_email` tool is invoked, the `CredentialService` silently requests the Google App Password from OpenBao (`secret/mcp/smtp`) into RAM.
+177: * **In-Memory TTL Caching**: The Vault token and resulting secret data are rigidly cached in memory for a sliding 300-second window, completely eliminating Vault API rate limiting under multi-agent load.
+178: * **Zero Disk Storage**: The password is held in memory purely for the socket connection and wiped immediately after dispatch.
+179: 
+180: ---
 
 ## 🛡️ Security Guardrails & Enterprise Protections
 

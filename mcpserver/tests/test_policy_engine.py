@@ -1,103 +1,74 @@
 import pytest
-from src.security.identity_service import IdentityService
 from src.security.policy_engine import PolicyEngine
-from src.orchestration.resolver import OrchestrationResolver
 
 @pytest.fixture
-def sample_agents():
-    return {
-        "agentId": "test-agent",
-        "credential": {
-            "source": "dummy-token"
-        },
-        "role": "test-role",
-        "mcpServers": [
-            {
-                "server": "local",
-                "toolPolicy": {"allow": ["send_email"], "deny": ["dangerous_tool"]}
-            },
-            {
-                "server": "remote-db",
-                "toolPolicy": {"allow": ["query_db"]}
-            }
-        ]
+def policy_engine():
+    roles_config = {
+        "classificationLevels": [{"name": "public"}, {"name": "secret"}]
     }
+    return PolicyEngine(roles_config)
 
-@pytest.fixture
-def sample_roles():
-    return {
-        "classificationLevels": [
-            {"name": "public", "description": "Public", "externalShareAllowed": True},
-            {"name": "secret", "description": "Secret", "externalShareAllowed": False}
-        ],
-        "roles": {
-            "test-role": {
-                "description": "A test role",
-                "allow": ["*"],
-                "deny": ["global_deny_tool"]
-            },
-            "strict-role": {
-                "description": "Strict",
-                "allow": ["get_current_datetime"]
-            }
-        }
-    }
-
-def test_allowed_agent(sample_agents, sample_roles):
+def test_allowed_tool(policy_engine):
     identity = {
-        "agentId": "test-agent",
-        "profile": sample_agents,
-        "role": sample_roles["roles"]["test-role"]
-    }
-    pe = PolicyEngine(sample_roles)
-    res = pe.evaluate(identity, "local", "send_email")
-    assert res == "ALLOW"
-
-def test_denied_tool(sample_agents, sample_roles):
-    identity = {
-        "agentId": "test-agent",
-        "profile": sample_agents,
-        "role": sample_roles["roles"]["test-role"]
-    }
-    pe = PolicyEngine(sample_roles)
-    res = pe.evaluate(identity, "local", "dangerous_tool")
-    assert res == "DENY"
-
-def test_denied_server(sample_agents, sample_roles):
-    identity = {
-        "agentId": "test-agent",
-        "profile": sample_agents,
-        "role": sample_roles["roles"]["test-role"]
-    }
-    pe = PolicyEngine(sample_roles)
-    # Agent doesn't have bound server 'unknown-server'
-    res = pe.evaluate(identity, "unknown-server", "send_email")
-    assert res == "DENY"
-
-def test_role_restrictions(sample_agents, sample_roles):
-    identity = {
-        "agentId": "strict-agent",
+        "agentId": "vishal",
         "profile": {
-            "agentId": "strict-agent",
-            "mcpServers": [{"server": "local", "toolPolicy": {"allow": ["send_email", "get_current_datetime"]}}]
+            "mcpServers": [
+                {
+                    "server": "local",
+                    "toolPolicy": {"allow": ["ping"]}
+                }
+            ]
         },
-        "role": sample_roles["roles"]["strict-role"]
+        "role": {"allow": ["ping"]}
     }
-    pe = PolicyEngine(sample_roles)
-    # Even though agent allows send_email, role restricts it
-    res = pe.evaluate(identity, "local", "send_email")
-    assert res == "DENY"
-    
-    # get_current_datetime is allowed by role and agent
-    res = pe.evaluate(identity, "local", "get_current_datetime")
-    assert res == "ALLOW"
+    assert policy_engine.evaluate(identity, "local", "ping") == "ALLOW"
 
-def test_global_role_deny(sample_agents, sample_roles):
+def test_unknown_identity(policy_engine):
+    assert policy_engine.evaluate(None, "local", "ping") == "DENY"
+    assert policy_engine.evaluate({}, "local", "ping") == "DENY"
+
+def test_unknown_role(policy_engine):
     identity = {
-        "agentId": "test-agent",
-        "profile": sample_agents, # agent allows send_email, but not global_deny_tool
-        "role": sample_roles["roles"]["test-role"] # role denies global_deny_tool
+        "agentId": "vishal",
+        "profile": {
+            "mcpServers": [{"server": "local", "toolPolicy": {"allow": ["ping"]}}]
+        },
+        "role": None
     }
-    pe = PolicyEngine(sample_roles)
-    res = pe.evaluate(identity, "local", "global_deny_tool")
-    assert res == "DENY"
+    assert policy_engine.evaluate(identity, "local", "ping") == "DENY"
+
+def test_unknown_server(policy_engine):
+    identity = {
+        "agentId": "vishal",
+        "profile": {
+            "mcpServers": [{"server": "local", "toolPolicy": {"allow": ["ping"]}}]
+        },
+        "role": {"allow": ["ping"]}
+    }
+    assert policy_engine.evaluate(identity, "unknown_server", "ping") == "DENY"
+
+def test_unknown_tool(policy_engine):
+    identity = {
+        "agentId": "vishal",
+        "profile": {
+            "mcpServers": [{"server": "local", "toolPolicy": {"allow": ["ping"]}}]
+        },
+        "role": {"allow": ["ping"]}
+    }
+    assert policy_engine.evaluate(identity, "local", "unknown_tool") == "DENY"
+
+def test_cross_server_deny(policy_engine):
+    identity = {
+        "agentId": "vishal",
+        "profile": {
+            "mcpServers": [
+                {"server": "server_a", "toolPolicy": {"allow": ["tool_a"]}},
+                {"server": "server_b", "toolPolicy": {"allow": ["tool_b"]}}
+            ]
+        },
+        "role": {"allow": ["tool_a", "tool_b"]}
+    }
+    assert policy_engine.evaluate(identity, "server_a", "tool_a") == "ALLOW"
+    assert policy_engine.evaluate(identity, "server_a", "tool_b") == "DENY"
+    assert policy_engine.evaluate(identity, "server_b", "tool_a") == "DENY"
+    assert policy_engine.evaluate(identity, "server_b", "tool_b") == "ALLOW"

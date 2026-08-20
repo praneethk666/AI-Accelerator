@@ -57,8 +57,30 @@ def make_jsonrpc_success(
     }
 
 def handle_gmail_error(e: Exception) -> dict:
+    """Map Gmail / Google API exceptions to structured error payloads.
+
+    Distinguishes:
+      - HTTP 429  → rate_limited
+      - HTTP 401/403 → auth_error
+      - everything else → gmail_api_error
+    """
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+        if isinstance(e, HttpError):
+            status = int(e.resp.status)
+            if status == 429:
+                return {
+                    "status": "failed",
+                    "error": "rate_limited",
+                    "message": f"Gmail API rate limit exceeded. Please retry after 60 seconds. ({e})",
+                }
+            if status in (401, 403):
+                return {"status": "failed", "error": "auth_error", "message": str(e)}
+    except ImportError:
+        pass
+
     return {
         "status": "failed",
         "error": "gmail_api_error",
-        "message": str(e)
+        "message": str(e),
     }

@@ -330,6 +330,7 @@
         opacity: 0;
         transform: translateY(12px);
       }
+
       to {
         opacity: 1;
         transform: translateY(0);
@@ -505,12 +506,25 @@
       animation: bounce 1.4s infinite ease-in-out both;
     }
 
-    .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
-    .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+    .typing-indicator span:nth-child(1) {
+      animation-delay: -0.32s;
+    }
+
+    .typing-indicator span:nth-child(2) {
+      animation-delay: -0.16s;
+    }
 
     @keyframes bounce {
-      0%, 80%, 100% { transform: scale(0); }
-      40% { transform: scale(1); }
+
+      0%,
+      80%,
+      100% {
+        transform: scale(0);
+      }
+
+      40% {
+        transform: scale(1);
+      }
     }
 
     /* ── Login Modal Overlay & Glassmorphic Card ── */
@@ -529,8 +543,13 @@
     }
 
     @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
     }
 
     .login-card {
@@ -611,6 +630,7 @@
       .app-container {
         grid-template-columns: 1fr;
       }
+
       aside {
         display: none;
       }
@@ -624,18 +644,22 @@
   <div id="loginModalOverlay" class="login-modal-overlay">
     <div class="login-card">
       <div class="login-header">
-        <div class="logo-badge" style="margin: 0 auto 0.75rem auto; width: 50px; height: 50px; font-size: 1.5rem;">🔐</div>
+        <div class="logo-badge" style="margin: 0 auto 0.75rem auto; width: 50px; height: 50px; font-size: 1.5rem;">🔐
+        </div>
         <h2>MCP Server Login</h2>
         <p>Enter your Username & Password to access authorized tools</p>
       </div>
-      <form id="loginForm" onsubmit="handleLoginSubmit(event)" style="display:flex; flex-direction:column; gap:0.85rem;">
+      <form id="loginForm" onsubmit="handleLoginSubmit(event)"
+        style="display:flex; flex-direction:column; gap:0.85rem;">
         <div class="form-group">
           <label for="loginUsername">Username</label>
-          <input type="text" id="loginUsername" placeholder="e.g. vishal, vinod, admin" required autocomplete="username" />
+          <input type="text" id="loginUsername" placeholder="e.g. vishal, vinod, admin" required
+            autocomplete="username" />
         </div>
         <div class="form-group">
           <label for="loginPassword">Password</label>
-          <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password" />
+          <input type="password" id="loginPassword" placeholder="Enter your password" required
+            autocomplete="current-password" />
         </div>
         <div id="loginErrorMsg" class="login-error-msg" style="display:none;"></div>
         <button type="submit" class="login-btn" id="loginBtn">Sign In to Agent Hub</button>
@@ -678,7 +702,8 @@
           <div class="form-group">
             <label for="groqModel">Model</label>
             <select id="groqModel">
-              <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (Recommended — High Accuracy & Tool Calling)</option>
+              <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (Recommended — High Accuracy &
+                Tool Calling)</option>
               <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile (High Accuracy)</option>
               <option value="llama3-8b-8192">llama3-8b-8192 (Fast & Lightweight)</option>
               <option value="qwen-2.5-32b">qwen-2.5-32b (Fast Reasoning)</option>
@@ -696,14 +721,18 @@
           <div style="display:flex; flex-direction:column; gap:0.75rem;">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem;">
               <div style="overflow:hidden;">
-                <div id="loggedInUserTitle" style="font-weight:700; font-size:0.92rem; color:var(--text-main); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">👤 Not Logged In</div>
-                <div id="loggedInUserRoleDesc" style="font-size:0.75rem; color:var(--text-muted);">Please sign in to access tools.</div>
+                <div id="loggedInUserTitle"
+                  style="font-weight:700; font-size:0.92rem; color:var(--text-main); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;">
+                  👤 Not Logged In</div>
+                <div id="loggedInUserRoleDesc" style="font-size:0.75rem; color:var(--text-muted);">Please sign in to
+                  access tools.</div>
               </div>
               <button id="logoutBtn" onclick="handleLogout()" class="logout-btn">Logout</button>
             </div>
             <input type="hidden" id="mcpToken" value="" />
             <input type="hidden" id="mcpEndpoint" value="http://localhost:8100/mcp" />
-            <div id="roleAccessBadge" style="font-size:0.73rem; color:var(--accent-green); background:rgba(16,185,129,0.1); padding:0.4rem 0.6rem; border-radius:6px; border:1px solid rgba(16,185,129,0.25);">
+            <div id="roleAccessBadge"
+              style="font-size:0.73rem; color:var(--accent-green); background:rgba(16,185,129,0.1); padding:0.4rem 0.6rem; border-radius:6px; border:1px solid rgba(16,185,129,0.25);">
               🛡️ Status: <strong>Checking Session...</strong>
             </div>
           </div>
@@ -723,22 +752,27 @@
           <button class="prompt-pill" onclick="sendQuickPrompt('What is the current time in Tokyo and London?')">
             🕒 What is the time in Tokyo and London?
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Convert 04:30 PM New York time to Asia/Kolkata timezone.')">
+          <button class="prompt-pill"
+            onclick="sendQuickPrompt('Convert 04:30 PM New York time to Asia/Kolkata timezone.')">
             🌐 Convert 4:30 PM NYC time to Kolkata
           </button>
           <button class="prompt-pill" onclick="sendQuickPrompt('Show me my server uptime and platform metrics.')">
             💻 Show server uptime & OS metrics
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Check and summarize my recent incoming emails from inbox.')">
+          <button class="prompt-pill"
+            onclick="sendQuickPrompt('Check and summarize my recent incoming emails from inbox.')">
             📥 Check recent inbox emails
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Search my emails for keywords about MCP Server status.')">
+          <button class="prompt-pill"
+            onclick="sendQuickPrompt('Search my emails for keywords about MCP Server status.')">
             🔍 Search emails for 'MCP Server'
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Create an email draft to vishalreddykonreddy@gmail.com with subject Project Update.')">
+          <button class="prompt-pill"
+            onclick="sendQuickPrompt('Create an email draft to vishalreddykonreddy@gmail.com with subject Project Update.')">
             📝 Create an email draft to Vishal
           </button>
-          <button class="prompt-pill" onclick="sendQuickPrompt('Send an email to bonthumanoj999@gmail.com stating that both Multi-MCP servers are operational.')">
+          <button class="prompt-pill"
+            onclick="sendQuickPrompt('Send an email to bonthumanoj999@gmail.com stating that both Multi-MCP servers are operational.')">
             📧 Send an email alert to Manoj
           </button>
         </div>
@@ -748,14 +782,16 @@
     <!-- Main Chat Workspace -->
     <main>
       <div class="chat-messages" id="chatMessages">
-        
+
         <!-- Welcome Message -->
         <div class="message-row assistant">
           <div class="avatar groq">G</div>
           <div class="message-bubble">
             <p><strong>Welcome to the Groq AI Agent Hub!</strong></p>
             <p style="margin-top: 0.35rem; color: var(--text-muted);">
-              Powered by ultra-fast <strong>Groq LPU™ Inference</strong> and connected to your <strong>Multi-Server MCP Architecture</strong>. Ask any question in the world, and Groq will automatically invoke your local tools to check system time, convert timezones, check server uptime, or manage Gmail emails.
+              Powered by ultra-fast <strong>Groq LPU™ Inference</strong> and connected to your <strong>Multi-Server MCP
+                Architecture</strong>. Ask any question in the world, and Groq will automatically invoke your local
+              tools to check system time, convert timezones, check server uptime, or manage Gmail emails.
             </p>
           </div>
         </div>
@@ -767,7 +803,9 @@
         <div class="input-box-container">
           <textarea id="userInput" placeholder="Ask Groq anything or execute an MCP tool..." rows="1"></textarea>
           <button class="send-btn" id="sendBtn" onclick="handleUserSend()">
-            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            <svg viewBox="0 0 24 24">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+            </svg>
           </button>
         </div>
       </div>
@@ -904,11 +942,11 @@ CRITICAL TOOL INVOCATION RULES:
 
     // Auto-expand textarea
     const textarea = document.getElementById("userInput");
-    textarea.addEventListener("input", function() {
+    textarea.addEventListener("input", function () {
       this.style.height = "auto";
       this.style.height = (this.scrollHeight) + "px";
     });
-    textarea.addEventListener("keydown", function(e) {
+    textarea.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleUserSend();
@@ -922,11 +960,11 @@ CRITICAL TOOL INVOCATION RULES:
 
     // ── User Authentication Accounts ──
     const USER_ACCOUNTS = {
-      "vishal": { password: "vishal123", identity: "vishal_engineer", name: "Vishal Reddy", roleDesc: "Full Admin (All Tools)", token: "vishal-test-token", color: "var(--accent-green)" },
-      "vinod": { password: "vinod123", identity: "vinod_engineer", name: "Vinod Kumar", roleDesc: "Full Admin (All Tools)", token: "vinod-test-token", color: "var(--accent-green)" },
-      "admin": { password: "admin123", identity: "admin_user", name: "Admin User", roleDesc: "Superuser (All Tools)", token: "admin-token-secret", color: "var(--accent-green)" },
-      "agent_alpha": { password: "alpha123", identity: "agent_alpha", name: "Agent Alpha", roleDesc: "Standard User", token: "agent-token-alpha", color: "var(--accent-cyan)" },
-      "agent_beta": { password: "beta123", identity: "agent_beta", name: "Agent Beta", roleDesc: "Restricted User", token: "agent-token-beta", color: "var(--accent-amber)" },
+      "vishal": { password: "vishal123", identity: "vishal_engineer", name: "Vishal Reddy", roleDesc: "Full Admin (All Tools)", token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ2aXNoYWwiLCJpc3MiOiJsb2NhbC1tY3AtaXNzdWVyIiwiYXVkIjoibG9jYWwtbWNwLWF1ZGllbmNlIiwiZXhwIjoxODE4NzU1NzI2fQ.hxAo6EDZoxtuaBdwReiel2TdOCgu-HBY4Dey2Vjnj4U", color: "var(--accent-green)" },
+      "vinod": { password: "vinod123", identity: "vinod_engineer", name: "Vinod Kumar", roleDesc: "Full Admin (All Tools)", token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ2aW5vZCIsImlzcyI6ImxvY2FsLW1jcC1pc3N1ZXIiLCJhdWQiOiJsb2NhbC1tY3AtYXVkaWVuY2UiLCJleHAiOjE4MTg3NTU3MjZ9.fEz6wzRclAWdGPUuQAMxn4FaAyBok-zSZOnbdI-Mv1s", color: "var(--accent-green)" },
+      "admin": { password: "admin123", identity: "admin_user", name: "Admin User", roleDesc: "Superuser (All Tools)", token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlzcyI6ImxvY2FsLW1jcC1pc3N1ZXIiLCJhdWQiOiJsb2NhbC1tY3AtYXVkaWVuY2UiLCJleHAiOjE4MTg3NTU3MjZ9.vnN7R07dX43viQnp4rFfR_KYwAJub_PxxrszuR2R8q4", color: "var(--accent-green)" },
+      "agent_alpha": { password: "alpha123", identity: "agent_alpha", name: "Agent Alpha", roleDesc: "Standard User", token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZ2VudF9hbHBoYSIsImlzcyI6ImxvY2FsLW1jcC1pc3N1ZXIiLCJhdWQiOiJsb2NhbC1tY3AtYXVkaWVuY2UiLCJleHAiOjE4MTg3NTU1NzI2fQ.mIO5qJ8i2fUjB50Me1BKn52TJeTk6_jcNaw6XIhvC8U", color: "var(--accent-cyan)" },
+      "agent_beta": { password: "beta123", identity: "agent_beta", name: "Agent Beta", roleDesc: "Restricted User", token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZ2VudF9iZXRhIiwiaXNzIjoibG9jYWwtbWNwLWlzc3VlciIsImF1ZCI6ImxvY2FsLW1jcC1hdWRpZW5jZSIsImV4cCI6MTgxODc1NTcyNn0.mHUivzbY_LE6tgZ0k1HAlYenXkdLmq7LE9f9cWkKmb8", color: "var(--accent-amber)" },
     };
 
     function handleLoginSubmit(e) {
@@ -971,7 +1009,7 @@ CRITICAL TOOL INVOCATION RULES:
       document.getElementById("loggedInUserTitle").textContent = "👤 Not Logged In";
       document.getElementById("loggedInUserRoleDesc").textContent = "Please sign in to access tools.";
       document.getElementById("mcpToken").value = "";
-      
+
       const badge = document.getElementById("roleAccessBadge");
       badge.style.color = "var(--accent-red)";
       badge.style.borderColor = "var(--accent-red)";
@@ -994,7 +1032,7 @@ CRITICAL TOOL INVOCATION RULES:
     async function fetchMCPTools() {
       const token = document.getElementById("mcpToken").value.trim();
       const toolsListEl = document.getElementById("toolsList");
-      
+
       if (!token) {
         mcpToolsSchema = [];
         toolServerMap = {};
@@ -1076,7 +1114,7 @@ CRITICAL TOOL INVOCATION RULES:
               allDiscoveredTools.push(t);
             });
           }
-        } catch (e) {}
+        } catch (e) { }
       }
 
       mcpToolsSchema = allDiscoveredTools;
@@ -1241,7 +1279,7 @@ CRITICAL TOOL INVOCATION RULES:
             if (directData.choices?.[0]?.message) {
               message = directData.choices[0].message;
             }
-          } catch (e) {}
+          } catch (e) { }
         }
 
         // 1. Tool Call Triggered Autonomously by AI Agent via Function Calling
@@ -1287,7 +1325,7 @@ CRITICAL TOOL INVOCATION RULES:
             });
             const data2 = await res2.json();
             finalReply = data2.choices?.[0]?.message?.content || "";
-          } catch (e) {}
+          } catch (e) { }
           removeTypingIndicator(typingId2);
 
           if (!finalReply || finalReply.trim() === "") {
@@ -1297,7 +1335,7 @@ CRITICAL TOOL INVOCATION RULES:
           appendMessage("assistant", finalReply);
           conversationMessages.push({ role: "assistant", content: finalReply });
 
-        // 2. Direct Conversational Agent Response (General Knowledge, Sports, Coding, Q&A)
+          // 2. Direct Conversational Agent Response (General Knowledge, Sports, Coding, Q&A)
         } else {
           let replyText = message?.content;
           if (!replyText || replyText.trim() === "") {

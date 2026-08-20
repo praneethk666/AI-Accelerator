@@ -11,37 +11,44 @@
 
 auth:
   enabled: true
+  jwt:
+    enabled: true
+    secret_key: "${env:JWT_SECRET}"
+    issuer: "local-mcp-issuer"
+    audience: "local-mcp-audience"
+    algorithms:
+      - "HS256"
   tokens:
-    "${env:AGENT_TOKEN_ALPHA}": "agent_alpha"
-    "${env:AGENT_TOKEN_BETA}": "agent_beta"
-    "${env:ADMIN_TOKEN_SECRET}": "admin_user"
-    "${env:VISHAL_TEST_TOKEN}": "vishal_engineer"
-    "${env:VINOD_TEST_TOKEN}": "vinod_engineer"
+    "agent_alpha": "agent_alpha"
+    "agent_beta": "agent_beta"
+    "admin": "admin"
+    "vishal": "vishal"
+    "vinod": "vinod"
   users:
     vishal:
       password: "vishal123"
-      identity: "vishal_engineer"
-      token: "vishal-test-token"
+      identity: "vishal"
+      token: "${env:VISHAL_TEST_TOKEN}"
     vinod:
       password: "vinod123"
-      identity: "vinod_engineer"
-      token: "vinod-test-token"
+      identity: "vinod"
+      token: "${env:VINOD_TEST_TOKEN}"
     admin:
       password: "admin123"
-      identity: "admin_user"
-      token: "admin-token-secret"
+      identity: "admin"
+      token: "${env:ADMIN_TOKEN_SECRET}"
     agent_alpha:
       password: "alpha123"
       identity: "agent_alpha"
-      token: "agent-token-alpha"
+      token: "${env:AGENT_TOKEN_ALPHA}"
     agent_beta:
       password: "beta123"
       identity: "agent_beta"
-      token: "agent-token-beta"
+      token: "${env:AGENT_TOKEN_BETA}"
   permissions:
-    vishal_engineer: ["*"]
-    vinod_engineer: ["*"]
-    admin_user: ["*"]
+    vishal: ["*"]
+    vinod: ["*"]
+    admin: ["*"]
     agent_alpha: ["get_current_datetime", "send_email"]
     agent_beta: ["get_current_datetime"]  # Read-only agent (no email dispatch access)
 
@@ -72,3 +79,9 @@ smtp:
   password: "${env:SMTP_PASS}"
   use_tls: true
   sender_address: "${env:SMTP_USER}"
+
+credentials:
+  provider: "${env:CREDENTIAL_PROVIDER}"
+  openbao:
+    path_mapping:
+      smtp: "mcp/smtp"

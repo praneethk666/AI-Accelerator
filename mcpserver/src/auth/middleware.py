@@ -3,6 +3,7 @@ middleware.py — Authentication, Origin validation, and Session validation laye
 """
 
 import logging
+import uuid
 from typing import Callable, Optional, Tuple
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -68,6 +69,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         cfg = load_config()
+        correlation_id = uuid.uuid4().hex
+        request.state.correlation_id = correlation_id
 
         # 1. Origin header validation
         origin = request.headers.get("origin")
@@ -85,7 +88,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if cfg.auth.enabled:
             token = extract_token(request)
             if not token:
-                logger.warning(f"Unauthorized access attempt to {request.url.path} | token_provided=False")
+                logger.warning(
+                    f"Unauthorized access attempt to {request.url.path} | token_provided=False",
+                    extra={"event_type": "authentication_failure", "reason": "missing_token", "correlation_id": correlation_id}
+                )
                 return JSONResponse(
                     make_jsonrpc_error(
                         code=JSONRPCErrorCodes.UNAUTHORIZED,
@@ -96,10 +102,37 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             import src.globals as g
+            
+            # If JWT is enabled in config, we strictly validate it
+            if cfg.auth.jwt and cfg.auth.jwt.enabled:
+                from src.auth.jwt_validator import default_jwt_validator
+                
+                auth_ctx = default_jwt_validator.validate(token)
+                if not auth_ctx:
+                    logger.warning(
+                        f"Unauthorized access attempt to {request.url.path} | invalid JWT",
+                        extra={"event_type": "authentication_failure", "reason": "invalid_jwt", "correlation_id": correlation_id}
+                    )
+                    return JSONResponse(
+                        make_jsonrpc_error(
+                            code=JSONRPCErrorCodes.UNAUTHORIZED,
+                            message="Unauthorized: Invalid or expired JWT.",
+                        ),
+                        status_code=401,
+                    )
+                
+                subject = auth_ctx.client_id
+            else:
+                # Fallback purely for legacy demo/tests mode if JWT not enabled
+                subject = token
+
             if g.identity_service:
-                identity = g.identity_service.resolve(token)
+                identity = g.identity_service.resolve(subject)
                 if not identity:
-                    logger.warning(f"Unauthorized access attempt to {request.url.path} | invalid token")
+                    logger.warning(
+                        f"Unauthorized access attempt to {request.url.path} | no identity for subject '{subject}'",
+                        extra={"event_type": "authentication_failure", "reason": "identity_not_found", "subject": subject, "correlation_id": correlation_id}
+                    )
                     return JSONResponse(
                         make_jsonrpc_error(
                             code=JSONRPCErrorCodes.UNAUTHORIZED,
@@ -111,8 +144,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.identity = identity
             else:
                 # Fallback for tests if identity service is not loaded
-                if token not in cfg.auth.tokens:
-                    logger.warning(f"Unauthorized access attempt to {request.url.path} | invalid token")
+                if subject not in cfg.auth.tokens:
+                    logger.warning(
+                        f"Unauthorized access attempt to {request.url.path} | invalid token/subject",
+                        extra={"event_type": "authentication_failure", "reason": "invalid_subject", "subject": subject, "correlation_id": correlation_id}
+                    )
                     return JSONResponse(
                         make_jsonrpc_error(
                             code=JSONRPCErrorCodes.UNAUTHORIZED,
@@ -120,8 +156,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         ),
                         status_code=401,
                     )
-                caller_identity = cfg.auth.tokens[token]
+                caller_identity = cfg.auth.tokens[subject]
                 request.state.identity = {"agentId": caller_identity}
+
+            logger.info(
+                f"Authentication successful for {caller_identity}",
+                extra={"event_type": "authentication_success", "subject": subject, "correlation_id": correlation_id}
+            )
 
             request.state.caller_identity = caller_identity
             request.state.caller_token = token

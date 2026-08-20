@@ -70,7 +70,7 @@ class ToolRegistry:
             for t in self.tool_definitions
         ]
 
-    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any], caller: Optional[str] = None) -> dict:
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any], caller: Optional[str] = None, correlation_id: Optional[str] = None) -> dict:
         """Executes the requested tool by name, locally or remotely."""
         for tool_meta in self.tool_definitions:
             if tool_meta["name"] == tool_name:
@@ -79,7 +79,13 @@ class ToolRegistry:
                     model_cls = tool_meta["_model_cls"]
                     handler = tool_meta["_local_handler"]
                     validated_input = model_cls(**(arguments or {}))
-                    return await handler(validated_input, caller=caller)
+                    # Attempt to pass correlation_id if handler accepts it, else don't
+                    import inspect
+                    sig = inspect.signature(handler)
+                    kwargs = {"caller": caller}
+                    if "correlation_id" in sig.parameters:
+                        kwargs["correlation_id"] = correlation_id
+                    return await handler(validated_input, **kwargs)
                 else:
                     # Remote execution
                     server_name = tool_meta.get("_remote_server")
@@ -103,5 +109,5 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
     return global_tool_registry.get_tool_definitions()
 
 
-async def execute_tool(tool_name: str, arguments: Dict[str, Any], caller: Optional[str] = None) -> dict:
-    return await global_tool_registry.execute_tool(tool_name, arguments, caller=caller)
+async def execute_tool(tool_name: str, arguments: Dict[str, Any], caller: Optional[str] = None, correlation_id: Optional[str] = None) -> dict:
+    return await global_tool_registry.execute_tool(tool_name, arguments, caller=caller, correlation_id=correlation_id)

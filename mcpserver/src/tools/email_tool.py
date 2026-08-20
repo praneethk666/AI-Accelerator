@@ -152,8 +152,19 @@ async def send_email_handler(
     # 4. Email Delivery (SMTP or Safe Simulation)
     timestamp_iso = datetime.now(timezone.utc).isoformat()
     smtp_cfg = cfg.smtp
+    from src.credentials.service import get_credential_service
+    cred_service = get_credential_service(cfg.credentials)
+    smtp_creds = cred_service.get("smtp", caller_subject=caller_id)
+    username = smtp_creds.get("username") if smtp_creds else ""
+    password = smtp_creds.get("password") if smtp_creds else ""
 
     if smtp_cfg.mode.lower() == "smtp":
+        if not smtp_creds:
+            return {
+                "status": "failed",
+                "error": "credential_unavailable",
+                "message": "Failed to retrieve secure SMTP credentials.",
+            }
         try:
             loop = asyncio.get_event_loop()
             msg_id = await loop.run_in_executor(
@@ -161,8 +172,8 @@ async def send_email_handler(
                 _send_smtp_sync,
                 smtp_cfg.host,
                 smtp_cfg.port,
-                smtp_cfg.username,
-                smtp_cfg.password,
+                username,
+                password,
                 smtp_cfg.sender_address,
                 input_data.to,
                 input_data.subject,
@@ -179,11 +190,11 @@ async def send_email_handler(
                 "delivery_mode": "smtp",
             }
         except Exception as exc:
-            logger.error(f"SMTP sending failed: {exc}", exc_info=True)
+            logger.error("SMTP sending failed: %s", exc.__class__.__name__, exc_info=True)
             return {
                 "status": "failed",
                 "error": "smtp_delivery_failed",
-                "message": f"Failed to send email via SMTP server: {exc}",
+                "message": "Failed to send email via SMTP server.",
             }
     else:
         # Simulation / Safe Demo Mode

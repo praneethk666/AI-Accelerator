@@ -10,6 +10,7 @@ Tools:
 """
 
 import asyncio
+import inspect
 from datetime import datetime, timezone
 import email
 import email.utils
@@ -103,7 +104,7 @@ def _send_smtp_sync(host, port, username, password, sender, to, subject, body, u
             return msg["Message-ID"]
 
 
-async def handle_send_email(data: SendEmailInput, caller: Optional[str] = None) -> dict:
+async def handle_send_email(data: SendEmailInput, caller: Optional[str] = None, correlation_id: Optional[str] = None) -> dict:
     cfg = load_config()
     caller_id = caller or "anonymous_caller"
 
@@ -131,12 +132,24 @@ async def handle_send_email(data: SendEmailInput, caller: Optional[str] = None) 
     timestamp_iso = datetime.now(timezone.utc).isoformat()
     smtp_cfg = cfg.smtp
 
+    # Inject CredentialService
+    from src.credentials.service import get_credential_service
+    cred_service = get_credential_service(cfg.credentials)
+    smtp_creds = cred_service.get("smtp", caller_subject=caller, correlation_id=correlation_id)
+
+    # If OpenBao or other provider returned None, fail safely
+    if smtp_cfg.mode.lower() == "smtp" and not smtp_creds:
+        return {"status": "failed", "error": "credential_unavailable", "message": "Failed to retrieve secure SMTP credentials."}
+
+    username = smtp_creds.get("username") if smtp_creds else ""
+    password = smtp_creds.get("password") if smtp_creds else ""
+
     if smtp_cfg.mode.lower() == "smtp":
         try:
             loop = asyncio.get_event_loop()
             msg_id = await loop.run_in_executor(
                 None, _send_smtp_sync,
-                smtp_cfg.host, smtp_cfg.port, smtp_cfg.username, smtp_cfg.password,
+                smtp_cfg.host, smtp_cfg.port, username, password,
                 smtp_cfg.sender_address, data.to, data.subject, data.body, smtp_cfg.use_tls
             )
             return {
@@ -175,17 +188,20 @@ async def handle_send_email(data: SendEmailInput, caller: Optional[str] = None) 
         }
 
 
-async def handle_read_inbox(data: ReadInboxInput, caller: Optional[str] = None) -> dict:
+async def handle_read_inbox(data: ReadInboxInput, caller: Optional[str] = None, correlation_id: Optional[str] = None) -> dict:
     cfg = load_config()
-    username = cfg.smtp.username
-    password = cfg.smtp.password
+    from src.credentials.service import get_credential_service
+    cred_service = get_credential_service(cfg.credentials)
+    smtp_creds = cred_service.get("smtp", caller_subject=caller, correlation_id=correlation_id)
+    username = smtp_creds.get("username") if smtp_creds else ""
+    password = smtp_creds.get("password") if smtp_creds else ""
 
     # If valid Gmail credentials exist, attempt real IMAP read with strict 2-second timeout
     if username and password and "gmail" in cfg.smtp.host:
         try:
             def _read_imap():
                 import socket
-                socket.setdefaulttimeout(2.5)
+                socket.setdefaulttimeout(10.0)
                 mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
                 mail.login(username, password)
                 mail.select("INBOX", readonly=True)
@@ -210,7 +226,7 @@ async def handle_read_inbox(data: ReadInboxInput, caller: Optional[str] = None) 
                 return emails_list
 
             loop = asyncio.get_event_loop()
-            results = await asyncio.wait_for(loop.run_in_executor(None, _read_imap), timeout=3.0)
+            results = await asyncio.wait_for(loop.run_in_executor(None, _read_imap), timeout=15.0)
             return {
                 "status": "success",
                 "total_fetched": len(results),
@@ -218,7 +234,7 @@ async def handle_read_inbox(data: ReadInboxInput, caller: Optional[str] = None) 
                 "server": "Gmail MCP Server (:8101)",
             }
         except Exception as exc:
-            logger.warning(f"IMAP read skipped/timed out ({exc}), using safe inbox view.")
+            logger.warning("IMAP read skipped/timed out (%s), using safe inbox view.", exc.__class__.__name__)
 
     # Simulated inbox fallback
     return {
@@ -353,7 +369,7 @@ GMAIL_TOOLS = [
 
 # ── JSON-RPC Request Router ─────────────────────────────────────────────────
 
-async def handle_jsonrpc(payload: Dict[str, Any], caller: str) -> Dict[str, Any]:
+async def handle_jsonrpc(payload: Dict[str, Any], caller: str, correlation_id: Optional[str] = None) -> Dict[str, Any]:
     req_id = payload.get("id")
     method = payload.get("method")
     params = payload.get("params") or {}
@@ -389,8 +405,13 @@ async def handle_jsonrpc(payload: Dict[str, Any], caller: str) -> Dict[str, Any]
         for tool_meta in GMAIL_TOOLS:
             if tool_meta["name"] == tool_name:
                 try:
-                    validated = tool_meta["model_cls"](**args)
-                    res = await tool_meta["handler"](validated, caller=caller)
+                    model_cls: type[BaseModel] = tool_meta["model_cls"]  # type: ignore
+                    handler: Callable = tool_meta["handler"]  # type: ignore
+                    validated = model_cls(**args)
+                    kwargs = {"caller": caller}
+                    if "correlation_id" in inspect.signature(handler).parameters:
+                        kwargs["correlation_id"] = correlation_id
+                    res = await handler(validated, **kwargs)
                     is_err = res.get("status") == "failed"
                     return make_jsonrpc_success(
                         result={
@@ -431,9 +452,9 @@ async def mcp_post(request: Request) -> JSONResponse:
         return JSONResponse(make_jsonrpc_error(JSONRPCErrorCodes.PARSE_ERROR, "Invalid JSON payload"), status_code=400)
 
     if isinstance(payload, list):
-        res = [await handle_jsonrpc(item, caller) for item in payload]
+        res = [await handle_jsonrpc(item, caller, getattr(request.state, "correlation_id", None)) for item in payload]
     else:
-        res = await handle_jsonrpc(payload, caller)
+        res = await handle_jsonrpc(payload, caller, getattr(request.state, "correlation_id", None))
 
     if session:
         session.add_event(event_name="message", data=json.dumps(res))

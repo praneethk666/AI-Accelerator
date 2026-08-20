@@ -20,7 +20,7 @@ class MockExecutor:
     def __init__(self):
         self.call_counts = {}
 
-    def execute(self, tool_name: str, args: dict) -> str:
+    async def execute(self, tool_name: str, args: dict) -> str:
         self.call_counts[tool_name] = self.call_counts.get(tool_name, 0) + 1
         
         if tool_name == "failing_tool":
@@ -50,6 +50,9 @@ class MockLLMClient:
             # Planner prompt
             if "description of first action" in prompt_lower: # basic check if it is planner prompt
                 return {"steps": [{"step_id": "1", "description": "Call denied tool"}]}
+            return {"tool_name": "denied_tool", "arguments": {}}
+            
+        if "denied tool" in prompt_lower:
             return {"tool_name": "denied_tool", "arguments": {}}
         
         if "do timeout" in prompt_lower:
@@ -83,53 +86,63 @@ def agent_runtime(audit_logger, mock_executor, mock_llm_client):
         idempotent_tools=["timeout_tool"]
     )
 
-def test_simple_request(agent_runtime):
-    state = agent_runtime.process_request("1", "execute some task", "admin")
+@pytest.mark.asyncio
+async def test_simple_request(agent_runtime):
+    state = await agent_runtime.process_request("1", "execute some task", "admin")
     assert len(state.completed_steps) == 1
     assert state.completed_steps[0].status == StepResult.SUCCESS
 
-def test_policy_denied(agent_runtime, audit_logger):
-    state = agent_runtime.process_request("2", "policy denied", "denied_tool_user")
+@pytest.mark.asyncio
+async def test_policy_denied(agent_runtime, audit_logger):
+    state = await agent_runtime.process_request("2", "policy denied", "denied_tool_user")
     assert len(state.completed_steps) == 1
     assert state.completed_steps[0].status == StepResult.BLOCKED
     assert "Policy denied for denied_tool" in state.decisions
     # Check audit log hash chain mutated
     assert audit_logger._last_hash != "0" * 64
 
-def test_retry_for_timeout(agent_runtime, mock_executor):
+@pytest.mark.asyncio
+async def test_retry_for_timeout(agent_runtime, mock_executor):
     # 'timeout_tool' returns "ERROR: connection timeout", which triggers retry.
     # It is marked as idempotent, so it will retry up to 3 times (total 4 calls).
     # Since we didn't add it to Planner/DecisionEngine in tests, let's patch DecisionEngine for the test
     original_choose = agent_runtime.decision_engine.choose_capability
     agent_runtime.decision_engine.choose_capability = lambda step: ("timeout_tool", {}) if "timeout" in step.description.lower() else original_choose(step)
     
-    state = agent_runtime.process_request("3", "do timeout", "admin")
+    state = await agent_runtime.process_request("3", "do timeout", "admin")
     assert mock_executor.call_counts.get("timeout_tool", 0) == 4
     assert state.completed_steps[0].status == StepResult.FAILED
 
-def test_no_retry_for_non_idempotent(agent_runtime, mock_executor):
+@pytest.mark.asyncio
+async def test_no_retry_for_non_idempotent(agent_runtime, mock_executor):
     # Similar to above, but a tool not in idempotent_tools
     original_choose = agent_runtime.decision_engine.choose_capability
     agent_runtime.decision_engine.choose_capability = lambda step: ("non_idempotent_timeout", {}) if "timeout" in step.description.lower() else original_choose(step)
     
     # Needs to return timeout error
     original_exec = agent_runtime.execution_engine.execute
-    agent_runtime.execution_engine.execute = lambda name, args: "ERROR: connection timeout" if name == "non_idempotent_timeout" else original_exec(name, args)
+    async def mock_execute(name, args):
+        if name == "non_idempotent_timeout":
+            return "ERROR: connection timeout"
+        return await original_exec(name, args)
     
-    state = agent_runtime.process_request("4", "do timeout", "admin")
+    agent_runtime.execution_engine.execute = mock_execute
+    
+    state = await agent_runtime.process_request("4", "do timeout", "admin")
     # Only 1 call because not idempotent
     assert state.completed_steps[0].status == StepResult.FAILED
 
-def test_approval_flow(agent_runtime, mock_executor):
+@pytest.mark.asyncio
+async def test_approval_flow(agent_runtime, mock_executor):
     original_choose = agent_runtime.decision_engine.choose_capability
     agent_runtime.decision_engine.choose_capability = lambda step: ("require_approval_tool", {}) if "approval" in step.description.lower() else original_choose(step)
     
     # 1. First run, it should pause for approval
-    state1 = agent_runtime.process_request("5", "run approval task", "admin")
+    state1 = await agent_runtime.process_request("5", "run approval task", "admin")
     assert state1.plan[0].status == StepResult.WAITING_FOR_APPROVAL
     assert "require_approval_tool" not in mock_executor.call_counts
     
     # 2. Resuming with approval
-    state2 = agent_runtime.process_request("5", "run approval task", "admin", user_approval_for_step=state1.plan[0].step_id)
+    state2 = await agent_runtime.process_request("5", "run approval task", "admin", user_approval_for_step=state1.plan[0].step_id)
     assert mock_executor.call_counts.get("require_approval_tool", 0) == 1
     assert state2.completed_steps[0].status == StepResult.SUCCESS

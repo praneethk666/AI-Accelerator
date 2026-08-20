@@ -50,13 +50,25 @@ follow_up - refers to the conversation so far and can be answered from it, inclu
 restating, reformatting, shortening, tabulating or translating a previous answer, e.g. \
 "summarise that", "explain your last answer", "put that in a table".
 general - general knowledge, reasoning, chit-chat, maths, or definitions that need \
-neither the documents nor the prior conversation.
+neither the documents nor the prior conversation. Only choose this when the question \
+would have the same answer for any user; if it turns on THIS user's equipment, \
+paperwork or data, it is a document_question.
 
 Tie-breakers, in order:
 1. A terse phrase or bare noun phrase with no conversational reference (e.g. "model \
 name", "max load", "warranty terms") is a document_question — the user is naming a \
 field they want looked up in their files.
-2. If the message plausibly needs the user's documents at all, choose \
+2. "the" before a thing the user owns or filed ("the contract", "the battery", "the \
+manual") points at their documents even with no filename given — "who signed the \
+contract?" is a document_question, not general knowledge.
+3. Asking whether something is present or stated ("are there any warnings about X?", \
+"does it mention Y?") is a document_question: the files must be searched to answer, \
+and "no" is still an answer that requires looking.
+4. A question about recommended values, intervals, procedures or requirements for \
+equipment is a document_question — those live in the user's manuals. Choose general \
+only when the user explicitly signals they want generic or industry-wide context \
+("generally", "in general terms", "what's a reasonable X to buy").
+5. If the message plausibly needs the user's documents at all, choose \
 document_question. Answering a document question without the documents is the worst \
 outcome; an unnecessary search is merely wasteful.
 Reply with the label only."""

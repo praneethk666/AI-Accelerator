@@ -258,6 +258,19 @@ query:
     intent:
       enabled: true
       max_tokens: 12          # a label is a few tokens; keeps the call cheap
+    # Long-chat context: once history exceeds trigger_tokens, the turns that have
+    # aged out are folded into a rolling summary instead of being dropped. The most
+    # recent keep_recent messages are always sent verbatim (follow-ups depend on the
+    # exact prior wording). The summary is cached on the session row, so a quiet
+    # turn costs no extra LLM call. Any failure degrades to plain truncation.
+    context:
+      enabled: true
+      trigger_tokens: 3000    # compact only once history is genuinely long
+      keep_recent: 6          # messages (~3 Q&A pairs) never summarised
+      max_summary_tokens: 400 # cap on the rolling summary itself
+      history_window: 200     # turns loaded from Postgres and handed to compaction;
+                              # must exceed max_history_messages or compaction only
+                              # ever sees the tail it was meant to preserve
 document_types:
 - invoice
 - purchase_order

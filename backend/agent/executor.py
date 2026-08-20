@@ -30,6 +30,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from backend.agent.context_summarizer import as_context_message
 from backend.agent.intent_classifier import classify_intent
 from backend.agent_tools import AgentTool, build_agent_registry
 from backend.core import usage
@@ -1525,6 +1526,72 @@ def _build_async_graph(llm, tool_schemas: list[dict], registry: dict[str, AgentT
 _TOOL_MSG_MAX_CHARS = 2000
 
 
+def _compact_context(history, agent_cfg: dict, session_id: str, summary_llm=None):
+    """Compress aged-out turns into a rolling summary. Returns (summary, history).
+
+    Storage lives here rather than in context_summarizer so that module stays pure
+    and testable. Everything is best-effort: on any failure the caller gets the
+    history unchanged, which is the truncate-only behaviour that predates this.
+    """
+    cfg = (agent_cfg or {}).get("context") or {}
+    if not cfg.get("enabled", True) or not history:
+        return "", history
+
+    from backend.agent.context_summarizer import compact_session
+
+    prior_summary, covered, total = "", 0, len(history)
+    store = None
+    if session_id:
+        try:
+            from backend.storage.conversation_store import get_conversation_store
+            store = get_conversation_store()
+            prior_summary, covered = store.get_session_summary(session_id)
+            total = max(store.count_messages(session_id), len(history))
+        except Exception:
+            logger.debug("context summary state unavailable for %s", session_id,
+                         exc_info=True)
+            store, prior_summary, covered, total = None, "", 0, len(history)
+
+    try:
+        if summary_llm is None:
+            summary_llm = get_llm_for(
+                {"llm": cfg} if cfg.get("provider") else {},
+                {**agent_cfg, **cfg},
+                max_tokens=cfg.get("max_summary_tokens", 400),
+            )
+    except Exception:
+        logger.debug("no summariser model available; will truncate", exc_info=True)
+        summary_llm = None
+
+    try:
+        result, new_covered = compact_session(
+            history,
+            llm=summary_llm,
+            total_messages=total,
+            prior_summary=prior_summary,
+            covered=covered,
+            trigger_tokens=cfg.get("trigger_tokens", 3000),
+            keep_recent=cfg.get("keep_recent", 6),
+            max_summary_tokens=cfg.get("max_summary_tokens", 400),
+        )
+    except Exception:
+        logger.warning("context compaction failed; falling back to truncation",
+                       exc_info=True)
+        return "", history
+
+    # Persist only a summary that actually changed, so a quiet turn costs no write.
+    if store and result.summary and result.summary != prior_summary:
+        try:
+            store.set_session_summary(session_id, result.summary, new_covered)
+        except Exception:
+            logger.debug("could not persist session summary", exc_info=True)
+
+    if result.triggered and not result.fallback:
+        logger.info("[CONTEXT] compacted %d turns for session %s",
+                    result.compacted, session_id or "-")
+    return result.summary, result.messages
+
+
 def _prune_messages_for_llm(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Reduce ToolMessage payload size without losing answer or citations.
 
@@ -1658,9 +1725,11 @@ def run_agent(
     session_id: str = "",
     active_document_id: str | None = None,
     intent_llm=None,
+    summary_llm=None,
 ) -> dict:
-    """`intent_llm` overrides the model used for intent classification (tests inject
-    a scripted one). None -> built from config["query"]["agent"]["intent"]."""
+    """`intent_llm` / `summary_llm` override the models used for intent
+    classification and long-chat context summarisation (tests inject scripted
+    ones). None -> built from config["query"]["agent"]["intent"] / ["context"]."""
     registry = registry if registry is not None else build_agent_registry()
     agent_cfg = (config.get("query") or {}).get("agent") or {}
     max_iterations = agent_cfg.get("max_iterations", 5)
@@ -1749,7 +1818,21 @@ def run_agent(
         if isinstance(m, (HumanMessage, AIMessage)) and not getattr(m, "tool_calls", None)
     ]
     max_history = agent_cfg.get("max_history_messages", 20)
-    messages += clean_history[-max_history:]
+
+    # Long chats: compress the turns that have aged out instead of dropping them.
+    # Below the trigger this is a no-op, and any failure degrades to the plain
+    # truncation this used to do unconditionally.
+    context_summary, clean_history = _compact_context(
+        clean_history, agent_cfg, session_id, summary_llm=summary_llm
+    )
+    if context_summary:
+        messages.append(as_context_message(context_summary))
+        # Compaction already chose the verbatim tail; re-slicing to max_history
+        # could cut turns it deliberately kept (if keep_recent >= max_history) and
+        # they are no longer recoverable — they've been dropped from the window.
+        messages += clean_history
+    else:
+        messages += clean_history[-max_history:]
 
     if len(messages) > 1:  # there IS prior history for this session
         messages.append(SystemMessage(

@@ -42,6 +42,18 @@ class ConversationStore(Protocol):
         """Return the last n turns as [{"role", "content", "metadata"}, ...]."""
         ...
 
+    def get_session_summary(self, session_id: str) -> tuple[str, int]:
+        """(rolling summary of aged-out turns, how many oldest turns it covers)."""
+        ...
+
+    def set_session_summary(self, session_id: str, summary: str, covered: int) -> None:
+        """Persist the rolling summary and its watermark."""
+        ...
+
+    def count_messages(self, session_id: str) -> int:
+        """Total turns stored for a session."""
+        ...
+
     def list_sessions(self, limit: int = 50) -> list[dict]:
         """Most-recently-active sessions: [{"session_id", "title", "pinned", "last_active"}]."""
         ...
@@ -157,6 +169,18 @@ class PostgresConversationStore:
                 )
                 pg.conn.execute(
                     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS first_message TEXT"
+                )
+                # Rolling context summary for long chats: `summary` compresses the
+                # turns that have aged out of the verbatim window, and
+                # `summary_covered` is how many of the session's oldest messages it
+                # already accounts for — the watermark that stops a turn being
+                # folded into the summary twice.
+                pg.conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS summary TEXT"
+                )
+                pg.conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "
+                    "summary_covered INTEGER DEFAULT 0"
                 )
                 pg.conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at "
@@ -286,6 +310,61 @@ class PostgresConversationStore:
         finally:
             pg.close()
 
+
+    def get_session_summary(self, session_id: str) -> tuple[str, int]:
+        """Return (summary, messages_covered) for a session; ("", 0) if none yet."""
+        if not session_id:
+            return "", 0
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT summary, summary_covered FROM sessions WHERE session_id = %s",
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return "", 0
+            return (row[0] or ""), int(row[1] or 0)
+        finally:
+            pg.close()
+
+    def set_session_summary(self, session_id: str, summary: str, covered: int) -> None:
+        """UPSERT a session's rolling summary and its watermark.
+
+        `covered` counts the session's oldest messages already folded in, so the
+        next compaction only summarises what has aged out since.
+        """
+        if not session_id:
+            return
+        pg = _get_store()
+        try:
+            pg.conn.execute(
+                """
+                INSERT INTO sessions (session_id, summary, summary_covered, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (session_id)
+                DO UPDATE SET summary = EXCLUDED.summary,
+                              summary_covered = EXCLUDED.summary_covered,
+                              updated_at = NOW()
+                """,
+                (session_id, summary, int(covered)),
+            )
+        finally:
+            pg.close()
+
+    def count_messages(self, session_id: str) -> int:
+        """Total turns stored for a session — locates a loaded window in the whole
+        conversation, which is what makes the summary watermark meaningful."""
+        if not session_id:
+            return 0
+        pg = _get_store()
+        try:
+            row = pg.conn.execute(
+                "SELECT count(*) FROM conversations WHERE session_id = %s",
+                (session_id,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            pg.close()
 
     def load_history(self, session_id: str, n: int = 10) -> list[dict]:
         pg = _get_store()

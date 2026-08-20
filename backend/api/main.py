@@ -1368,19 +1368,33 @@ def agent_chat(req: AgentChatRequest, response: Response):
     if not quota.reserve(req.session_id, reserve):
         raise HTTPException(429, "Token budget exceeded for this session. Please try again later.")
 
-    max_history = (_config.get("query", {}).get("agent", {}) or {}).get("max_history_messages", 20)
-    history = _agent_sessions.get(req.session_id)
+    _agent_cfg = (_config.get("query", {}).get("agent", {}) or {})
+    max_history = _agent_cfg.get("max_history_messages", 20)
+    _ctx_cfg = _agent_cfg.get("context") or {}
+    _compaction_on = _ctx_cfg.get("enabled", True)
+
+    # With compaction on, hand run_agent a WIDE window and let it decide what to
+    # summarise vs keep — slicing to max_history here would throw away the very
+    # turns compaction exists to preserve. The in-memory cache only ever holds the
+    # truncated tail, so it can't serve that window: read the authoritative history
+    # from Postgres instead (one cheap query next to an LLM call). run_agent still
+    # truncates internally, so an over-wide window can't blow up the prompt.
+    history_window = int(_ctx_cfg.get("history_window", 200)) if _compaction_on else max_history * 2
+
+    history = None if _compaction_on else _agent_sessions.get(req.session_id)
     if history is None:
         try:
             history = _history_to_messages(
-                get_conversation_store().load_history(req.session_id, n=max_history * 2)
+                get_conversation_store().load_history(req.session_id, n=history_window)
             )
         except Exception:
             logger.debug("agent chat history load failed", exc_info=True)
             history = []
 
-    # Ensure clean Q&A pairs only and slice to max_history (strictly last 10 Q&A pairs / 20 messages max)
-    history = _qa_only(history)[-max_history:]
+    # Clean Q&A pairs only. Without compaction, keep the old hard slice to max_history.
+    history = _qa_only(history)
+    if not _compaction_on:
+        history = history[-max_history:]
 
     # Save user message immediately so it's persisted and visible if user switches/reloads.
     # The [Attached file: <name> — path: <disk_path>] annotation is an internal protocol
